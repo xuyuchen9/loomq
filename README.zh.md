@@ -266,42 +266,6 @@ LoomQ 消除串行化:
 mvn clean package -DskipTests
 ```
 
-### 测试分层（推荐）
-
-```bash
-# 日常快速反馈（默认）：排除 integration/slow/benchmark
-mvn test
-
-# 平衡模式：包含 integration，排除 slow/benchmark
-mvn test -Pbalanced-tests
-
-# 只跑集成测试
-mvn test -Pintegration-tests
-
-# 发版前全量验证
-mvn test -Pfull-tests
-```
-
-### 测试脚本（推荐）
-
-```bash
-# Windows PowerShell
-pwsh -File scripts/test.ps1 -Mode fast
-pwsh -File scripts/test.ps1 -Mode changed
-
-# Linux/macOS
-bash scripts/test.sh fast
-bash scripts/test.sh changed
-```
-
-### CI 执行策略
-
-```text
-PR / push(main): balanced-tests（快速回归）
-push(main): package -DskipTests（产物构建）
-nightly / 手动触发: full-tests（全量回归）
-```
-
 ### 单节点运行
 
 ```bash

@@ -310,42 +310,6 @@ Observation: Sub-millisecond latency at optimal concurrency (100-500)
 mvn clean package -DskipTests
 ```
 
-### Test Profiles
-
-```bash
-# Fast local feedback (default): excludes integration/slow/benchmark tests
-mvn test
-
-# Balanced mode: includes integration tests, excludes slow/benchmark tests
-mvn test -Pbalanced-tests
-
-# Integration only
-mvn test -Pintegration-tests
-
-# Full verification before release
-mvn test -Pfull-tests
-```
-
-### Test Scripts (Recommended)
-
-```bash
-# Windows PowerShell
-pwsh -File scripts/test.ps1 -Mode fast
-pwsh -File scripts/test.ps1 -Mode changed
-
-# Linux/macOS
-bash scripts/test.sh fast
-bash scripts/test.sh changed
-```
-
-### CI Strategy
-
-```text
-PR / push(main): balanced-tests (fast regression)
-push(main): package -DskipTests (artifact build)
-nightly / manual: full-tests (full regression)
-```
-
 ### Run Single Node
 
 ```bash
