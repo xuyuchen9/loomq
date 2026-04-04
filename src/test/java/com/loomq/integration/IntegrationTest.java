@@ -10,6 +10,7 @@ import com.loomq.store.TaskStore;
 import com.loomq.wal.WalEngine;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -18,6 +19,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@Tag("integration")
 class IntegrationTest {
 
     @TempDir

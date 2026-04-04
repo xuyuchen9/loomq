@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * 3. 执行层限流
  * 4. 完整任务生命周期
  */
+@Tag("integration")
 class LoomqEngineV2IntegrationTest {
 
     @TempDir

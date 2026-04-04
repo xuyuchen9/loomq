@@ -26,6 +26,8 @@
         <okhttp.version>4.12.0</okhttp.version>
         <junit.version>5.10.2</junit.version>
         <mockito.version>5.11.0</mockito.version>
+        <test.groups></test.groups>
+        <test.excludedGroups>benchmark,slow,integration</test.excludedGroups>
     </properties>
 
     <dependencies>
@@ -141,6 +143,8 @@
                 <version>3.2.5</version>
                 <configuration>
                     <argLine>--enable-preview</argLine>
+                    <groups>${test.groups}</groups>
+                    <excludedGroups>${test.excludedGroups}</excludedGroups>
                 </configuration>
             </plugin>
             <plugin>
@@ -177,4 +181,26 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>balanced-tests</id>
+            <properties>
+                <test.excludedGroups>benchmark,slow</test.excludedGroups>
+            </properties>
+        </profile>
+        <profile>
+            <id>integration-tests</id>
+            <properties>
+                <test.groups>integration</test.groups>
+                <test.excludedGroups></test.excludedGroups>
+            </properties>
+        </profile>
+        <profile>
+            <id>full-tests</id>
+            <properties>
+                <test.excludedGroups></test.excludedGroups>
+            </properties>
+        </profile>
+    </profiles>
 </project>

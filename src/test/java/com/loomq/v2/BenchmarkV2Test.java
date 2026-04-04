@@ -3,6 +3,7 @@ package com.loomq.v2;
 import com.loomq.entity.Task;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -21,6 +22,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * 4. 渐进加压 - 找到崩溃点
  * 5. 分离关注点 - 吞吐量、延迟、容量分开测
  */
+@Tag("benchmark")
 class BenchmarkV2Test {
 
     @TempDir

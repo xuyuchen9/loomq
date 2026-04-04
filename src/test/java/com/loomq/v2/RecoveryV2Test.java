@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * 2. WAL 数据不丢失
  * 3. 恢复 RTO ≤ 60s
  */
+@Tag("slow")
 class RecoveryV2Test {
 
     @TempDir
