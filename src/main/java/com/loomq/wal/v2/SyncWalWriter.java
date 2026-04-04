@@ -122,6 +122,20 @@ public class SyncWalWriter implements AutoCloseable {
         return all;
     }
 
+    /**
+     * 获取当前段序号
+     */
+    public int getSegmentSeq() {
+        return currentSegment != null ? currentSegment.getSegmentSeq() : 0;
+    }
+
+    /**
+     * 获取当前位置
+     */
+    public long getPosition() {
+        return currentSegment != null ? currentSegment.size() : 0;
+    }
+
     @Override
     public void close() {
         closed = true;

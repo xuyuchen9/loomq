@@ -69,6 +69,9 @@ public class AsyncWalWriter implements AutoCloseable {
     // 【P0-1 修复】移除背压阈值，改为严格阻塞模式
     // 不再允许覆盖未消费数据
 
+    // Checkpoint 管理器（可选）
+    private CheckpointManager checkpointManager;
+
     public AsyncWalWriter(WalConfig config) throws IOException {
         this.buffer = new WalEvent[BUFFER_SIZE];
         this.batchSize = 1000;
@@ -231,6 +234,27 @@ public class AsyncWalWriter implements AutoCloseable {
         totalFsyncs.incrementAndGet();
 
         logger.debug("Flushed batch, size={}, flushedSequence={}", batch.size(), flushedSequence);
+
+        // 检查是否需要 checkpoint
+        if (checkpointManager != null && checkpointManager.recordWrite()) {
+            try {
+                checkpointManager.checkpoint(
+                        flushedSequence,
+                        syncWriter.getSegmentSeq(),
+                        syncWriter.getPosition(),
+                        0  // taskCount 由外部更新
+                );
+            } catch (Exception e) {
+                logger.error("Checkpoint failed", e);
+            }
+        }
+    }
+
+    /**
+     * 设置 Checkpoint 管理器
+     */
+    public void setCheckpointManager(CheckpointManager checkpointManager) {
+        this.checkpointManager = checkpointManager;
     }
 
     /**

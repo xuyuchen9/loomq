@@ -94,6 +94,13 @@ public class MonitoringServiceV2 {
     private final AtomicLong recoveryDurationMs = new AtomicLong(0);
     private final AtomicLong recoveryTasksTotal = new AtomicLong(0);
 
+    // 调度延迟（scheduler_lag）
+    private final AtomicLong schedulerLagMs = new AtomicLong(0);
+
+    // 重复执行计数（duplicate_rate）
+    private final AtomicLong duplicateExecutions = new AtomicLong(0);
+    private final AtomicLong totalExecutions = new AtomicLong(0);
+
     // 告警状态
     private final AtomicLong lastWakeLatencyAlert = new AtomicLong(0);
     private final AtomicLong lastTotalLatencyAlert = new AtomicLong(0);
@@ -161,6 +168,33 @@ public class MonitoringServiceV2 {
             scheduler.shutdown();
         }
         logger.info("V2 Monitoring service stopped");
+    }
+
+    /**
+     * 重置所有监控计数器（测试用）
+     */
+    public void reset() {
+        // 重置计数器
+        tasksCreatedTotal.set(0);
+        tasksAckSuccessTotal.set(0);
+        tasksFailedTerminalTotal.set(0);
+        tasksCancelledTotal.set(0);
+        tasksRetryTotal.set(0);
+        webhookRequestsTotal.set(0);
+        webhookTimeoutTotal.set(0);
+        webhookErrorTotal.set(0);
+
+        // 重置延迟桶
+        for (int i = 0; i < LATENCY_BOUNDS.length; i++) {
+            wakeLatencyBuckets.get(i).set(0);
+            webhookLatencyBuckets.get(i).set(0);
+            totalLatencyBuckets.get(i).set(0);
+        }
+
+        // 重置样本计数
+        wakeLatencySampleCount.set(0);
+        webhookLatencySampleCount.set(0);
+        totalLatencySampleCount.set(0);
     }
 
     // ========== 计数器更新 ==========
@@ -249,6 +283,40 @@ public class MonitoringServiceV2 {
     public void recordRecovery(long durationMs, long tasksRecovered) {
         recoveryDurationMs.set(durationMs);
         recoveryTasksTotal.set(tasksRecovered);
+    }
+
+    // ========== 新增指标：调度延迟和重复执行 ==========
+
+    /**
+     * 更新调度延迟
+     */
+    public void updateSchedulerLag(long lagMs) {
+        schedulerLagMs.set(lagMs);
+    }
+
+    /**
+     * 记录执行（用于计算重复率）
+     */
+    public void recordExecution(boolean isDuplicate) {
+        totalExecutions.incrementAndGet();
+        if (isDuplicate) {
+            duplicateExecutions.incrementAndGet();
+        }
+    }
+
+    /**
+     * 获取调度延迟
+     */
+    public long getSchedulerLagMs() {
+        return schedulerLagMs.get();
+    }
+
+    /**
+     * 获取重复执行率
+     */
+    public double getDuplicateRate() {
+        long total = totalExecutions.get();
+        return total > 0 ? (double) duplicateExecutions.get() / total * 100 : 0;
     }
 
     // ========== P95 计算 ==========
@@ -521,6 +589,23 @@ public class MonitoringServiceV2 {
         sb.append("# HELP loomq_v2_recovery_tasks_total Tasks recovered\n");
         sb.append("# TYPE loomq_v2_recovery_tasks_total counter\n");
         sb.append("loomq_v2_recovery_tasks_total ").append(recoveryTasksTotal.get()).append("\n\n");
+
+        // 新增指标：调度延迟和重复执行率
+        sb.append("# HELP loomq_v2_scheduler_lag_ms Scheduler lag (time since earliest pending task)\n");
+        sb.append("# TYPE loomq_v2_scheduler_lag_ms gauge\n");
+        sb.append("loomq_v2_scheduler_lag_ms ").append(schedulerLagMs.get()).append("\n\n");
+
+        sb.append("# HELP loomq_v2_duplicate_executions_total Total duplicate task executions\n");
+        sb.append("# TYPE loomq_v2_duplicate_executions_total counter\n");
+        sb.append("loomq_v2_duplicate_executions_total ").append(duplicateExecutions.get()).append("\n\n");
+
+        sb.append("# HELP loomq_v2_total_executions_total Total task executions\n");
+        sb.append("# TYPE loomq_v2_total_executions_total counter\n");
+        sb.append("loomq_v2_total_executions_total ").append(totalExecutions.get()).append("\n\n");
+
+        sb.append("# HELP loomq_v2_duplicate_rate_percent Duplicate execution rate\n");
+        sb.append("# TYPE loomq_v2_duplicate_rate_percent gauge\n");
+        sb.append(String.format("loomq_v2_duplicate_rate_percent %.2f\n\n", getDuplicateRate()));
 
         // 告警状态
         sb.append("# HELP loomq_v2_alert_active Alert active status\n");

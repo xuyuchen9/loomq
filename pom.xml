@@ -9,7 +9,7 @@
     <version>0.1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>Loomq</name>
+    <name>loomq</name>
     <description>Lightweight delayed task scheduling engine based on Java 21 virtual threads</description>
 
     <properties>
@@ -91,6 +91,13 @@
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
             <version>33.0.0-jre</version>
+        </dependency>
+
+        <!-- YAML Parsing -->
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>2.2</version>
         </dependency>
 
         <!-- Testing -->

@@ -14,30 +14,35 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 时间桶调度器 (V0.2 核心创新)
+ * 时间桶调度器 (V0.3 优化版)
  *
- * 第一性原理推导：
- * 1. 延时调度的本质：在时间 T 执行任务 X
- * 2. V0.1 问题：每个任务独立调度 (Thread.sleep)，无法批量优化
- * 3. V0.2 方案：时间聚合，把同一秒的任务放入同一个桶
+ * 核心设计：
+ * - 可配置 bucket 粒度（默认 100ms）
+ * - ConcurrentSkipListMap 有序索引
+ * - taskBucketMap 支持 O(1) 取消
+ * - 批量到期任务获取
  *
- * 设计原理：
- * - 时间桶：Map<秒级时间戳, 优先队列(按毫秒排序)>
- * - 桶内排序：同一秒内的任务按毫秒时间排序
- * - 分批调度：每批次限制取出数量，避免执行风暴
+ * 时间精度模型：
+ * - 实际延迟 = bucketSize + schedulerTick + 调度抖动
+ * - 延迟分布 ~ U(0, bucketSize) + tick
  *
- * 收益：
- * - 消除唤醒风暴
- * - 支持批量优化
- * - 控制调度节奏
- * - 毫秒级调度精度
+ * V0.3 改进：
+ * - 更细粒度控制（100ms 桶 vs 1s 桶）
+ * - O(1) 任务取消（通过 taskBucketMap）
+ * - 更高效的批量扫描
  */
 public class TimeBucketScheduler {
 
     private static final Logger logger = LoggerFactory.getLogger(TimeBucketScheduler.class);
 
-    // 时间桶：key = 秒级时间戳，value = 优先队列（按 triggerTime 排序）
-    private final ConcurrentSkipListMap<Long, PriorityQueue<Task>> timeBuckets;
+    // 默认 bucket 大小：100ms
+    public static final long DEFAULT_BUCKET_SIZE_MS = 100;
+
+    // 时间桶：key = bucketId (triggerTime / bucketSizeMs)
+    private final ConcurrentSkipListMap<Long, Bucket> timeBuckets;
+
+    // 任务 ID -> bucketId 映射（用于 O(1) 取消）
+    private final ConcurrentHashMap<String, Long> taskBucketMap;
 
     // 待执行队列（有界）
     private final BlockingQueue<Task> readyQueue;
@@ -55,26 +60,29 @@ public class TimeBucketScheduler {
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     // 统计
-    private final AtomicLong totalScheduled = new AtomicLong(0);
-    private final AtomicLong totalDispatched = new AtomicLong(0);
+    private final Stats stats = new Stats();
 
     // 配置
     private final int readyQueueCapacity;
-    private final int bucketGranularityMs;  // 桶粒度：1000ms = 1秒
+    private final long bucketSizeMs;  // 桶粒度（默认 100ms）
     private final int maxDispatchPerBatch;  // 每批次最大分发数量
 
     public TimeBucketScheduler(TaskDispatcher dispatcher, int readyQueueCapacity) {
-        this(dispatcher, readyQueueCapacity, 1000, 1000);
+        this(dispatcher, readyQueueCapacity, DEFAULT_BUCKET_SIZE_MS, 1000);
     }
 
     public TimeBucketScheduler(TaskDispatcher dispatcher, int readyQueueCapacity,
-                               int bucketGranularityMs, int maxDispatchPerBatch) {
+                               long bucketSizeMs, int maxDispatchPerBatch) {
+        if (bucketSizeMs <= 0) {
+            throw new IllegalArgumentException("bucketSizeMs must be positive");
+        }
         this.dispatcher = dispatcher;
         this.readyQueueCapacity = readyQueueCapacity;
-        this.bucketGranularityMs = bucketGranularityMs;
+        this.bucketSizeMs = bucketSizeMs;
         this.maxDispatchPerBatch = maxDispatchPerBatch;
 
         this.timeBuckets = new ConcurrentSkipListMap<>();
+        this.taskBucketMap = new ConcurrentHashMap<>();
         this.readyQueue = new ArrayBlockingQueue<>(readyQueueCapacity);
 
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -84,6 +92,8 @@ public class TimeBucketScheduler {
         });
 
         this.executor = Executors.newVirtualThreadPerTaskExecutor();
+
+        logger.info("TimeBucketScheduler created, bucketSize={}ms", bucketSizeMs);
     }
 
     /**
@@ -100,8 +110,8 @@ public class TimeBucketScheduler {
         // 启动执行线程
         scheduler.submit(this::dispatchLoop);
 
-        logger.info("TimeBucketScheduler started, bucketGranularity={}ms, readyQueueCapacity={}, maxDispatchPerBatch={}",
-                bucketGranularityMs, readyQueueCapacity, maxDispatchPerBatch);
+        logger.info("TimeBucketScheduler started, bucketSize={}ms, readyQueueCapacity={}, maxDispatchPerBatch={}",
+                bucketSizeMs, readyQueueCapacity, maxDispatchPerBatch);
     }
 
     /**
@@ -122,48 +132,73 @@ public class TimeBucketScheduler {
             Thread.currentThread().interrupt();
         }
 
-        logger.info("TimeBucketScheduler stopped, scheduled={}, dispatched={}",
-                totalScheduled.get(), totalDispatched.get());
+        logger.info("TimeBucketScheduler stopped, stats={}", stats);
     }
 
     /**
      * 调度任务
-     * 核心逻辑：将任务放入对应的时间桶（桶内按触发时间排序）
+     * 核心逻辑：将任务放入对应的时间桶，并记录到 taskBucketMap 支持 O(1) 取消
      */
     public boolean schedule(Task task) {
         if (!running.get()) {
             return false;
         }
+        if (task == null || task.getTaskId() == null) {
+            return false;
+        }
 
-        // 计算桶时间（向下取整到桶粒度）
-        long bucketTime = alignToBucket(task.getTriggerTime());
+        // 计算 bucket ID
+        long bucketId = calculateBucketId(task.getTriggerTime());
 
-        // 放入桶（优先队列，按 triggerTime 排序）
-        timeBuckets.computeIfAbsent(bucketTime, k ->
-                new PriorityQueue<>((a, b) -> Long.compare(a.getTriggerTime(), b.getTriggerTime()))
-        ).offer(task);
-        totalScheduled.incrementAndGet();
+        // 获取或创建 bucket
+        Bucket bucket = timeBuckets.computeIfAbsent(bucketId, k ->
+                new Bucket(k, k * bucketSizeMs, (k + 1) * bucketSizeMs)
+        );
 
-        logger.debug("Task {} scheduled to bucket {}, triggerTime={}",
-                task.getTaskId(), bucketTime, task.getTriggerTime());
-        return true;
+        // 添加到 bucket
+        if (bucket.add(task)) {
+            // 记录任务位置（O(1) 取消）
+            taskBucketMap.put(task.getTaskId(), bucketId);
+            stats.recordSchedule();
+
+            logger.debug("Task {} scheduled to bucket {} (triggerTime={}, delayMs={})",
+                    task.getTaskId(), bucketId, task.getTriggerTime(),
+                    task.getTriggerTime() - System.currentTimeMillis());
+            return true;
+        }
+
+        return false;
     }
 
     /**
-     * 取消任务
+     * 取消任务（O(1) 查找）
      */
     public boolean cancel(String taskId) {
-        // 遍历所有桶查找并移除
-        for (Map.Entry<Long, PriorityQueue<Task>> entry : timeBuckets.entrySet()) {
-            PriorityQueue<Task> bucket = entry.getValue();
-            if (bucket.removeIf(t -> t.getTaskId().equals(taskId))) {
-                logger.debug("Task {} cancelled from bucket {}", taskId, entry.getKey());
-                return true;
-            }
+        if (taskId == null) {
+            return false;
         }
 
-        // 也检查 ready 队列
-        return readyQueue.removeIf(t -> t.getTaskId().equals(taskId));
+        // O(1) 查找任务所在 bucket
+        Long bucketId = taskBucketMap.remove(taskId);
+        if (bucketId == null) {
+            // 可能已在 ready 队列
+            return readyQueue.removeIf(t -> t.getTaskId().equals(taskId));
+        }
+
+        // 从 bucket 中移除
+        Bucket bucket = timeBuckets.get(bucketId);
+        if (bucket != null && bucket.remove(taskId)) {
+            stats.recordCancel();
+            logger.debug("Task {} cancelled from bucket {}", taskId, bucketId);
+
+            // 清理空 bucket
+            if (bucket.isEmpty()) {
+                timeBuckets.remove(bucketId);
+            }
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -175,8 +210,8 @@ public class TimeBucketScheduler {
     }
 
     /**
-     * 处理到期的时间桶
-     * 核心逻辑：每 100ms 检查是否有到期的桶，按时间顺序取出任务
+     * 处理到期的时间桶（V0.3 优化版）
+     * 批量获取所有到期 bucket 的任务
      */
     private void processBuckets() {
         if (!running.get()) {
@@ -184,47 +219,48 @@ public class TimeBucketScheduler {
         }
 
         long now = System.currentTimeMillis();
-        long currentBucket = alignToBucket(now);
+        long currentBucketId = calculateBucketId(now);
 
-        // 取出所有到期的桶
+        // 获取所有到期的 bucket
         List<Task> dueTasks = new ArrayList<>();
 
-        while (!timeBuckets.isEmpty()) {
-            Map.Entry<Long, PriorityQueue<Task>> first = timeBuckets.firstEntry();
-            if (first == null || first.getKey() > currentBucket) {
-                break;
-            }
+        // headMap 返回所有 key <= currentBucketId 的条目
+        var expiredBuckets = timeBuckets.headMap(currentBucketId, true);
 
-            // 移除桶
-            PriorityQueue<Task> bucket = timeBuckets.remove(first.getKey());
+        for (var entry : expiredBuckets.entrySet()) {
+            Bucket bucket = entry.getValue();
+            List<Task> tasks = bucket.drainAll();
 
-            // 按时间顺序取出到期的任务（限制每批数量）
-            if (bucket != null) {
-                while (!bucket.isEmpty() && dueTasks.size() < maxDispatchPerBatch) {
-                    Task task = bucket.poll();
-                    if (task != null && task.getTriggerTime() <= now) {
+            if (!tasks.isEmpty()) {
+                for (Task task : tasks) {
+                    // 从 taskBucketMap 中移除
+                    taskBucketMap.remove(task.getTaskId());
+
+                    // 检查是否真正到期
+                    if (task.getTriggerTime() <= now) {
                         dueTasks.add(task);
-                    } else if (task != null) {
-                        // 任务还未到时间，放回桶中
-                        bucket.offer(task);
-                        break;  // 优先队列有序，后面的任务更晚
+                    } else {
+                        // 还未到期（边界情况），重新调度
+                        schedule(task);
                     }
                 }
+            }
 
-                // 如果桶中还有任务，重新放回
-                if (!bucket.isEmpty()) {
-                    timeBuckets.put(first.getKey(), bucket);
-                }
+            // 移除空 bucket
+            timeBuckets.remove(entry.getKey());
+
+            if (dueTasks.size() >= maxDispatchPerBatch) {
+                break;
             }
         }
 
         if (!dueTasks.isEmpty()) {
-            logger.debug("Processing {} due tasks from buckets (sorted by time)", dueTasks.size());
+            stats.recordExpire(dueTasks.size());
+            logger.debug("Processing {} due tasks from buckets", dueTasks.size());
 
             // 放入 ready 队列
             for (Task task : dueTasks) {
                 if (!readyQueue.offer(task)) {
-                    // 队列满，记录警告
                     logger.warn("Ready queue full, task {} dropped", task.getTaskId());
                 }
             }
@@ -261,7 +297,7 @@ public class TimeBucketScheduler {
                 executor.submit(() -> {
                     try {
                         dispatcher.dispatch(task);
-                        totalDispatched.incrementAndGet();
+                        stats.recordDispatch();
                     } catch (Exception e) {
                         logger.error("Dispatch task {} failed", task.getTaskId(), e);
                     }
@@ -275,13 +311,17 @@ public class TimeBucketScheduler {
     }
 
     /**
-     * 将时间对齐到桶边界
+     * 计算 bucket ID
      */
-    private long alignToBucket(long timestamp) {
-        return (timestamp / bucketGranularityMs) * bucketGranularityMs;
+    private long calculateBucketId(long triggerTime) {
+        return triggerTime / bucketSizeMs;
     }
 
     // ========== 统计接口 ==========
+
+    public long getBucketSizeMs() {
+        return bucketSizeMs;
+    }
 
     public int getBucketCount() {
         return timeBuckets.size();
@@ -291,20 +331,20 @@ public class TimeBucketScheduler {
         return readyQueue.size();
     }
 
-    public long getTotalScheduled() {
-        return totalScheduled.get();
+    public int getPendingTaskCount() {
+        return taskBucketMap.size();
     }
 
-    public long getTotalDispatched() {
-        return totalDispatched.get();
+    public Stats getStats() {
+        return stats;
     }
 
-    public SchedulerStats getStats() {
+    public SchedulerStats getSchedulerStats() {
         return new SchedulerStats(
                 timeBuckets.size(),
                 readyQueue.size(),
-                totalScheduled.get(),
-                totalDispatched.get(),
+                stats.getScheduledCount(),
+                stats.getExpiredCount(),
                 running.get()
         );
     }
@@ -313,7 +353,78 @@ public class TimeBucketScheduler {
             int bucketCount,
             int readyQueueSize,
             long totalScheduled,
-            long totalDispatched,
+            long totalExpired,
             boolean running
     ) {}
+
+    // ========== 内部类 ==========
+
+    /**
+     * 时间桶
+     */
+    public static class Bucket {
+        private final long bucketId;
+        private final long startTime;
+        private final long endTime;
+        private final ConcurrentHashMap<String, Task> tasks;
+
+        Bucket(long bucketId, long startTime, long endTime) {
+            this.bucketId = bucketId;
+            this.startTime = startTime;
+            this.endTime = endTime;
+            this.tasks = new ConcurrentHashMap<>();
+        }
+
+        boolean add(Task task) {
+            return tasks.putIfAbsent(task.getTaskId(), task) == null;
+        }
+
+        boolean remove(String taskId) {
+            return tasks.remove(taskId) != null;
+        }
+
+        List<Task> drainAll() {
+            List<Task> result = new ArrayList<>(tasks.values());
+            tasks.clear();
+            return result;
+        }
+
+        boolean isEmpty() {
+            return tasks.isEmpty();
+        }
+
+        int size() {
+            return tasks.size();
+        }
+
+        public long getBucketId() { return bucketId; }
+        public long getStartTime() { return startTime; }
+        public long getEndTime() { return endTime; }
+    }
+
+    /**
+     * 统计信息
+     */
+    public static class Stats {
+        private final java.util.concurrent.atomic.LongAdder scheduledCount = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.LongAdder cancelledCount = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.LongAdder expiredCount = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.LongAdder dispatchedCount = new java.util.concurrent.atomic.LongAdder();
+
+        void recordSchedule() { scheduledCount.increment(); }
+        void recordCancel() { cancelledCount.increment(); }
+        void recordExpire(int count) { expiredCount.add(count); }
+        void recordDispatch() { dispatchedCount.increment(); }
+
+        public long getScheduledCount() { return scheduledCount.sum(); }
+        public long getCancelledCount() { return cancelledCount.sum(); }
+        public long getExpiredCount() { return expiredCount.sum(); }
+        public long getDispatchedCount() { return dispatchedCount.sum(); }
+
+        @Override
+        public String toString() {
+            return String.format("Stats{scheduled=%d, cancelled=%d, expired=%d, dispatched=%d}",
+                    getScheduledCount(), getCancelledCount(), getExpiredCount(), getDispatchedCount());
+        }
+    }
 }

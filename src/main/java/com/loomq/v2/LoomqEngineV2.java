@@ -7,35 +7,45 @@ import com.loomq.entity.v2.TaskLifecycle;
 import com.loomq.scheduler.v2.TaskDispatcher;
 import com.loomq.scheduler.v2.TimeBucketScheduler;
 import com.loomq.wal.v2.AsyncWalWriter;
+import com.loomq.wal.v2.CheckpointManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Loomq V2 引擎
+ * Loomq V2 引擎 - 恐怖吞吐量版本
  *
  * 第一性原理推导的最终实现：
  *
- * 1. 调度层：时间桶 + 批量唤醒
- *    - 消除唤醒风暴
- *    - 控制调度节奏
+ * 1. 调度层：时间桶调度器（100ms 粒度）
+ *    - 极致吞吐量：单桶 2000+ 任务并发执行
+ *    - O(1) 取消：ConcurrentHashMap 索引
+ *    - 虚拟线程爆发：到期任务全部由虚拟线程并发执行
  *
- * 2. 持久化层：异步 WAL + Group Commit
+ * 2. 持久化层：异步 WAL + Group Commit + Checkpoint
  *    - 消除全局锁
  *    - IO 与业务解耦
+ *    - 快速恢复支持（10万条检查点）
  *
- * 3. 执行层：限流器 + 背压
+ * 3. 高可用层：Leader-Follower + 故障转移
+ *    - 心跳检测
+ *    - 自动选举
+ *    - DISPATCHING 重放
+ *
+ * 4. 执行层：限流器 + 背压
  *    - 防止 webhook 洪峰
  *    - 保护下游服务
  *
- * 4. 生命周期：完整状态机
- *    - 状态一致性保证
- *    - 可追踪的状态转换
+ * 设计理念：
+ * - 互联网大部分延时任务（30分钟取消订单）不需要毫秒精度
+ * - 100ms 误差完全可接受，但对吞吐量要求极高
+ * - 用精度换吞吐，用批量换性能
  */
 public class LoomqEngineV2 implements TaskDispatcher {
 
@@ -46,6 +56,7 @@ public class LoomqEngineV2 implements TaskDispatcher {
     private final AsyncWalWriter walWriter;
     private final DispatchLimiter dispatcher;
     private final WebhookExecutor webhookExecutor;
+    private final CheckpointManager checkpointManager;
 
     // 运行状态
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -72,19 +83,24 @@ public class LoomqEngineV2 implements TaskDispatcher {
                 config.dispatchRatePerSecond()  // 速率限制
         );
 
-        // 每批次最大分发数量：如果设置了速率限制则用速率，否则默认 1000
-        int maxDispatchPerBatch = config.dispatchRatePerSecond() > 0
-                ? config.dispatchRatePerSecond()
-                : 1000;
-
+        // 创建时间桶调度器（100ms 粒度，恐怖吞吐量）
         this.scheduler = new TimeBucketScheduler(
                 this.dispatcher,
                 config.readyQueueCapacity(),
-                config.bucketGranularityMs(),
-                maxDispatchPerBatch
+                TimeBucketScheduler.DEFAULT_BUCKET_SIZE_MS,  // 100ms
+                2000  // 每批次最大 2000 任务并发执行
         );
 
         this.walWriter = new AsyncWalWriter(config.toWalConfig());
+
+        // 创建 Checkpoint 管理器
+        this.checkpointManager = new CheckpointManager(
+                Path.of(config.walDataDir()),
+                CheckpointManager.DEFAULT_CHECKPOINT_INTERVAL
+        );
+
+        // 设置 WalWriter 的 CheckpointManager
+        this.walWriter.setCheckpointManager(checkpointManager);
 
         // 初始化监控服务
         this.monitoring = MonitoringServiceV2.getInstance();
@@ -114,11 +130,13 @@ public class LoomqEngineV2 implements TaskDispatcher {
         });
         metricsScheduler.scheduleAtFixedRate(this::refreshMetrics, 1, 1, TimeUnit.SECONDS);
 
-        logger.info("LoomqEngineV2 started");
+        logger.info("LoomqEngineV2 started (TimeBucketScheduler + Checkpoint + HA)");
+        logger.info("  - bucketSize: {}ms", scheduler.getBucketSizeMs());
         logger.info("  - maxConcurrency: {}", config.maxConcurrency());
         logger.info("  - dispatchRatePerSecond: {}", config.dispatchRatePerSecond());
         logger.info("  - readyQueueCapacity: {}", config.readyQueueCapacity());
         logger.info("  - dispatchQueueCapacity: {}", config.dispatchQueueCapacity());
+        logger.info("  - checkpointInterval: {}", CheckpointManager.DEFAULT_CHECKPOINT_INTERVAL);
         logger.info("  - monitoring: enabled");
     }
 
@@ -128,7 +146,7 @@ public class LoomqEngineV2 implements TaskDispatcher {
     private void refreshMetrics() {
         try {
             // 刷新调度器指标
-            var schedulerStats = scheduler.getStats();
+            var schedulerStats = scheduler.getSchedulerStats();
             monitoring.updateSchedulerStats(
                     schedulerStats.bucketCount(),
                     schedulerStats.readyQueueSize()
@@ -374,9 +392,10 @@ public class LoomqEngineV2 implements TaskDispatcher {
 
     public EngineStats getStats() {
         return new EngineStats(
-                scheduler.getStats(),
+                scheduler.getSchedulerStats(),
                 dispatcher.getStats(),
                 walWriter.getStats(),
+                checkpointManager.getCurrentCheckpoint(),
                 running.get()
         );
     }
@@ -385,6 +404,7 @@ public class LoomqEngineV2 implements TaskDispatcher {
             TimeBucketScheduler.SchedulerStats scheduler,
             DispatchLimiter.LimiterStats dispatcher,
             AsyncWalWriter.WalStats wal,
+            CheckpointManager.Checkpoint checkpoint,
             boolean running
     ) {}
 

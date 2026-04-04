@@ -1,8 +1,10 @@
 package com.loomq;
 
-import com.loomq.config.LoomqConfig;
+import com.loomq.cluster.ClusterManager;
+import com.loomq.cluster.LocalShardNode;
 import com.loomq.common.AlertService;
 import com.loomq.common.MetricsCollector;
+import com.loomq.config.LoomqConfig;
 import com.loomq.dispatcher.WebhookDispatcher;
 import com.loomq.gateway.HealthController;
 import com.loomq.gateway.TaskController;
@@ -16,7 +18,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Loomq 启动入口
+ * Loomq 启动入口（V0.3 - 支持分片模式）
+ *
+ * 启动模式：
+ * 1. 单节点模式：单进程运行所有组件
+ * 2. 分片模式：作为集群中的一个分片运行
+ *
+ * 分片配置通过环境变量或配置文件指定：
+ * - LOOMQ_SHARD_INDEX：当前节点分片索引
+ * - LOOMQ_TOTAL_SHARDS：总分片数
  */
 public class LoomqApplication {
     private static final Logger logger = LoggerFactory.getLogger(LoomqApplication.class);
@@ -28,6 +38,9 @@ public class LoomqApplication {
     private TaskScheduler scheduler;
     private WebhookDispatcher dispatcher;
     private RecoveryService recoveryService;
+
+    // V0.3 新增：集群管理器
+    private ClusterManager clusterManager;
 
     public LoomqApplication() {
         this.config = LoomqConfig.getInstance();
@@ -51,6 +64,17 @@ public class LoomqApplication {
 
     public void start() throws Exception {
         logger.info("Starting Loomq...");
+
+        // V0.3 新增：启动集群管理器
+        logger.info("Initializing cluster manager...");
+        clusterManager = new ClusterManager();
+        clusterManager.start();
+
+        if (clusterManager.isSharded()) {
+            logger.info("Running in SHARDED mode: {}", clusterManager.getStatus());
+        } else {
+            logger.info("Running in SINGLE-NODE mode");
+        }
 
         // 1. 初始化 WAL 引擎
         logger.info("Initializing WAL engine...");
@@ -131,6 +155,10 @@ public class LoomqApplication {
         }
         if (walEngine != null) {
             walEngine.stop();
+        }
+        // 停止集群管理器
+        if (clusterManager != null) {
+            clusterManager.stop();
         }
         // 停止告警服务
         AlertService.getInstance().stop();

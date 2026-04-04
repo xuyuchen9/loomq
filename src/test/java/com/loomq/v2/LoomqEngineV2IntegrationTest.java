@@ -181,9 +181,10 @@ class LoomqEngineV2IntegrationTest {
         System.out.printf("创建耗时: %d ms%n", createDuration);
         System.out.printf("创建 QPS: %.0f%n", (double) successCount.get() / (createDuration / 1000.0));
 
-        // 验证时间桶状态
+        // 验证调度器状态
         var schedulerStats = engine.getStats().scheduler();
         System.out.printf("时间桶数量: %d%n", schedulerStats.bucketCount());
+        System.out.printf("就绪队列大小: %d%n", schedulerStats.readyQueueSize());
         System.out.printf("调度任务数: %d%n", schedulerStats.totalScheduled());
 
         // 验证 WAL 状态

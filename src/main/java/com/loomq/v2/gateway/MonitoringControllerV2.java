@@ -42,7 +42,8 @@ public class MonitoringControllerV2 {
                 "bucketCount", stats.scheduler().bucketCount(),
                 "readyQueueSize", stats.scheduler().readyQueueSize(),
                 "totalScheduled", stats.scheduler().totalScheduled(),
-                "totalDispatched", stats.scheduler().totalDispatched()
+                "totalExpired", stats.scheduler().totalExpired(),
+                "running", stats.scheduler().running()
         ));
         engineStats.put("dispatcher", Map.of(
                 "queueSize", stats.dispatcher().queueSize(),
@@ -57,6 +58,15 @@ public class MonitoringControllerV2 {
                 "totalFsyncs", stats.wal().totalFsyncs(),
                 "ringBufferUsage", stats.wal().ringBufferSize() + "/" + stats.wal().ringBufferCapacity()
         ));
+        // Checkpoint 信息
+        if (stats.checkpoint() != null) {
+            engineStats.put("checkpoint", Map.of(
+                    "lastRecordSeq", stats.checkpoint().lastRecordSeq(),
+                    "segmentSeq", stats.checkpoint().segmentSeq(),
+                    "segmentPosition", stats.checkpoint().segmentPosition(),
+                    "taskCount", stats.checkpoint().taskCount()
+            ));
+        }
         health.put("engine", engineStats);
 
         // 延迟指标
