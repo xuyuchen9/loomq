@@ -1,0 +1,26 @@
+name: Java CI
+
+# 触发时机：每次有人推送到 main，或者向 main 提 PR 时
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        java-version: '21'
+        distribution: 'temurin' # 官方推荐的开源 JDK 发行版
+        cache: maven           # 自动缓存依赖，加快后续编译速度
+        
+    - name: Build and Test
+      run: mvn -B package --file pom.xml
