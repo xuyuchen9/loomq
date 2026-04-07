@@ -18,9 +18,15 @@ public class MetricsCollector {
     private final AtomicLong tasksFailedTerminalTotal = new AtomicLong(0);
     private final AtomicLong tasksCancelledTotal = new AtomicLong(0);
     private final AtomicLong tasksRetryTotal = new AtomicLong(0);
+    private final AtomicLong tasksExpiredTotal = new AtomicLong(0);
+    private final AtomicLong tasksDeadLetterTotal = new AtomicLong(0);
     private final AtomicLong webhookRequestsTotal = new AtomicLong(0);
     private final AtomicLong webhookTimeoutTotal = new AtomicLong(0);
     private final AtomicLong webhookErrorTotal = new AtomicLong(0);
+
+    // Bucket 指标
+    private volatile long bucketTaskCount = 0;
+    private volatile long readyQueueSize = 0;
 
     // 恢复指标
     private final AtomicLong recoveryDurationMs = new AtomicLong(0);
@@ -112,6 +118,19 @@ public class MetricsCollector {
 
     public void incrementWebhookError() {
         webhookErrorTotal.incrementAndGet();
+    }
+
+    public void incrementTasksExpired() {
+        tasksExpiredTotal.incrementAndGet();
+    }
+
+    public void incrementTasksDeadLetter() {
+        tasksDeadLetterTotal.incrementAndGet();
+    }
+
+    public void updateBucketMetrics(long bucketTaskCount, long readyQueueSize) {
+        this.bucketTaskCount = bucketTaskCount;
+        this.readyQueueSize = readyQueueSize;
     }
 
     // ========== 恢复指标 ==========
@@ -300,6 +319,27 @@ public class MetricsCollector {
         sb.append("# HELP loomq_tasks_retry_total Total task retries\n");
         sb.append("# TYPE loomq_tasks_retry_total counter\n");
         sb.append(formatMetric("loomq_tasks_retry_total", tasksRetryTotal.get()));
+        sb.append("\n");
+
+        sb.append("# HELP loomq_tasks_expired_total Total tasks expired\n");
+        sb.append("# TYPE loomq_tasks_expired_total counter\n");
+        sb.append(formatMetric("loomq_tasks_expired_total", tasksExpiredTotal.get()));
+        sb.append("\n");
+
+        sb.append("# HELP loomq_tasks_dead_letter_total Total tasks in dead letter\n");
+        sb.append("# TYPE loomq_tasks_dead_letter_total counter\n");
+        sb.append(formatMetric("loomq_tasks_dead_letter_total", tasksDeadLetterTotal.get()));
+        sb.append("\n");
+
+        // Bucket 指标
+        sb.append("# HELP loomq_bucket_task_count Number of tasks in time buckets\n");
+        sb.append("# TYPE loomq_bucket_task_count gauge\n");
+        sb.append(formatMetric("loomq_bucket_task_count", bucketTaskCount));
+        sb.append("\n");
+
+        sb.append("# HELP loomq_ready_queue_size Size of ready queue\n");
+        sb.append("# TYPE loomq_ready_queue_size gauge\n");
+        sb.append(formatMetric("loomq_ready_queue_size", readyQueueSize));
         sb.append("\n");
 
         // Webhook 指标

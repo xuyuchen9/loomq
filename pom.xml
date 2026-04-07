@@ -186,7 +186,8 @@
         <profile>
             <id>balanced-tests</id>
             <properties>
-                <test.excludedGroups>benchmark,slow</test.excludedGroups>
+                <!-- CI 快速测试：排除耗时测试 -->
+                <test.excludedGroups>benchmark,slow,integration</test.excludedGroups>
             </properties>
         </profile>
         <profile>

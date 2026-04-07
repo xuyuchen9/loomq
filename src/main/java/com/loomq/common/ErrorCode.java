@@ -21,6 +21,7 @@ public enum ErrorCode {
     TASK_CANNOT_MODIFY(105, "task cannot be modified"),
     VERSION_CONFLICT(106, "version conflict, task has been modified"),
     DUPLICATE_TASK(107, "duplicate task"),
+    TASK_ALREADY_COMPLETED(108, "task already completed"),
 
     // 幂等相关错误 200-299
     IDEMPOTENCY_KEY_CONFLICT(200, "idempotency key conflict"),
