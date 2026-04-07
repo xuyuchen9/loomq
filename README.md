@@ -18,14 +18,12 @@ LoomQ is a delayed task scheduling engine designed for high-throughput scenarios
 
 | Metric | Value | Industry Benchmark |
 |--------|-------|-------------------|
-| Peak Write Throughput | **1,351,351 QPS** (V0.4) | 50K QPS (Redis ZSET) |
+| Peak Write Throughput | **609,756 QPS** | 50K QPS (Redis ZSET) |
 | Stable Throughput | 370K-420K QPS | - |
-| Query Throughput | **7,142,857 QPS** (V0.4) | 50K QPS (Redis) |
-| Memory per Task | ~700 bytes (V0.4) | 1-2KB (Redis) |
-| 1M Tasks Memory | 670MB (V0.4) | 1GB+ (Redis) |
+| Memory per Task | ~200 bytes | 1-2KB (Redis) |
 | 10M Tasks Capacity | 2.2GB heap | Requires Redis cluster |
 | Recovery Time (1M tasks) | <30s | Minutes (MQ replay) |
-| Test Coverage | 156+ tests, 100% pass | - |
+| Test Coverage | 156 tests, 100% pass | - |
 
 ---
 
@@ -312,42 +310,6 @@ Observation: Sub-millisecond latency at optimal concurrency (100-500)
 mvn clean package -DskipTests
 ```
 
-### Test Profiles
-
-```bash
-# Fast local feedback (default): excludes integration/slow/benchmark tests
-mvn test
-
-# Balanced mode: includes integration tests, excludes slow/benchmark tests
-mvn test -Pbalanced-tests
-
-# Integration only
-mvn test -Pintegration-tests
-
-# Full verification before release
-mvn test -Pfull-tests
-```
-
-### Test Scripts (Recommended)
-
-```bash
-# Windows PowerShell
-pwsh -File scripts/test.ps1 -Mode fast
-pwsh -File scripts/test.ps1 -Mode changed
-
-# Linux/macOS
-bash scripts/test.sh fast
-bash scripts/test.sh changed
-```
-
-### CI Strategy
-
-```text
-PR / push(main): balanced-tests (fast regression)
-push(main): package -DskipTests (artifact build)
-nightly / manual: full-tests (full regression)
-```
-
 ### Run Single Node
 
 ```bash
@@ -504,31 +466,9 @@ Built-in Prometheus metrics:
 | Version | Feature | Status |
 |---------|---------|--------|
 | V0.3 | Distributed sharding, consistent hash | ✅ Released |
-| V0.4 | Unified state machine, retry policies, idempotency enhancement | ✅ Released |
-| V0.5 | Async replication (1 primary + 1 replica) | 📋 Planned |
-| V0.6 | Raft consensus (strong consistency) | 📋 Planned |
-| V0.7 | Admin UI dashboard | 📋 Planned |
-
-### V0.4 Highlights
-
-**Unified State Machine (TaskStatusV3)**
-- 10 states: PENDING → SCHEDULED → READY → RUNNING → SUCCESS/FAILED/DEAD_LETTER
-- Atomic state transitions with validation
-- Comprehensive lifecycle management
-
-**Retry Policies**
-- Fixed interval retry
-- Exponential backoff
-- Configurable max retries
-
-**Enhanced Idempotency**
-- `idempotencyKey`: Request-level deduplication
-- `bizKey`: Business-level deduplication
-- Terminal state protection: completed tasks cannot be overwritten
-
-**New Query APIs**
-- `GET /tasks?bizKey={bizKey}` - Query by business key
-- `GET /tasks?status={status}` - Query by status
+| V0.4 | Async replication (1 primary + 1 replica) | 🚧 In Progress |
+| V0.5 | Raft consensus (strong consistency) | 📋 Planned |
+| V0.6 | Admin UI dashboard | 📋 Planned |
 
 ---
 

@@ -23,7 +23,6 @@ import java.util.concurrent.atomic.AtomicLong;
  * 5. 分离关注点 - 吞吐量、延迟、容量分开测
  */
 @Tag("benchmark")
-@Tag("slow")
 class BenchmarkV2Test {
 
     @TempDir
