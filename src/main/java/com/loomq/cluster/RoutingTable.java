@@ -90,9 +90,7 @@ public class RoutingTable {
             }
         }
 
-        // 原子性地检查版本并更新快照
-        TableSnapshot currentSnapshotRef = currentSnapshot.get();
-        long currentVersion = currentSnapshotRef.version();
+        long currentVersion = version.get();
         if (currentVersion != expectedVersion) {
             logger.warn("CAS failed: expected version {}, actual {}", expectedVersion, currentVersion);
             return false;
@@ -106,8 +104,8 @@ public class RoutingTable {
                 Instant.now()
         );
 
-        if (currentSnapshot.compareAndSet(currentSnapshotRef, newSnapshot)) {
-            version.set(newVersion);
+        if (currentSnapshot.compareAndSet(currentSnapshot.get(), newSnapshot)) {
+            version.incrementAndGet();
             logger.info("Routing table updated: version {} -> {}, nodes={}",
                     currentVersion, newVersion, nodeStates.size());
             notifyListeners(newSnapshot);

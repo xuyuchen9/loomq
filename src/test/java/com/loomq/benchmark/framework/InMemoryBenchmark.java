@@ -69,7 +69,7 @@ public class InMemoryBenchmark extends BenchmarkBase {
         long endMem = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
         long memoryUsedMB = (endMem - startMem) / 1024 / 1024;
 
-        return BenchmarkRunResult.of(0, taskCount, timer.getElapsedMs())
+        return BenchmarkRunResult.of(0, timer.getElapsedMs(), taskCount)
                 .withLatencies(latencyRecorder.getLatencies())
                 .withMemoryUsed(memoryUsedMB);
     }

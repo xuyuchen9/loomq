@@ -326,12 +326,10 @@ public abstract class BenchmarkBase {
         logger.info("╚════════════════════════════════════════════════════════════╝");
         logger.info("");
         logger.info("吞吐量统计:");
-        logger.info("  均值: {} ops/s", String.format("%.2f", stats.meanThroughput()));
-        logger.info("  标准差: {} ops/s", String.format("%.2f", stats.stdThroughput()));
-        logger.info("  变异系数: {}%", String.format("%.2f", stats.cvThroughput()));
-        logger.info("  范围: [{}, {}] ops/s",
-                String.format("%.2f", stats.minThroughput()),
-                String.format("%.2f", stats.maxThroughput()));
+        logger.info("  均值: {:.2f} ops/s", stats.meanThroughput());
+        logger.info("  标准差: {:.2f} ops/s", stats.stdThroughput());
+        logger.info("  变异系数: {:.2f}%", stats.cvThroughput());
+        logger.info("  范围: [{:.2f}, {:.2f}] ops/s", stats.minThroughput(), stats.maxThroughput());
         logger.info("");
         logger.info("延迟分位数:");
         logger.info("  P50: {} ms", stats.p50LatencyMs());
@@ -343,9 +341,9 @@ public abstract class BenchmarkBase {
 
         // 可信度判断
         boolean isCredible = stats.cvThroughput() < 10.0 && stats.outlierCount() == 0;
-        logger.info("可信度: {} (CV={}%, 异常值={})",
-                isCredible ? "可信" : "存疑",
-                String.format("%.2f", stats.cvThroughput()),
+        logger.info("可信度: {} (CV={:.2f}%, 异常值={})",
+                isCredible ? "✅ 可信" : "⚠️ 存疑",
+                stats.cvThroughput(),
                 stats.outlierCount());
 
         if (!isCredible) {

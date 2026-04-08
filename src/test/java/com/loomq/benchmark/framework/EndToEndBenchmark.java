@@ -122,7 +122,7 @@ public class EndToEndBenchmark extends BenchmarkBase {
                 logger.warn("端到端压测超时，已完成 {}/{} 任务", completedCount.get(), taskCount);
             }
 
-            return BenchmarkRunResult.of(0, completedCount.get(), elapsedMs)
+            return BenchmarkRunResult.of(0, elapsedMs, completedCount.get())
                     .withLatencies(latencyRecorder.getLatencies());
 
         } catch (Exception e) {

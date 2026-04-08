@@ -137,7 +137,7 @@ public class RecoveryBenchmark extends BenchmarkBase {
                         }
                     });
 
-            return BenchmarkRunResult.of(0, result.tasksRestored(), elapsedMs);
+            return BenchmarkRunResult.of(0, elapsedMs, result.tasksRestored());
 
         } catch (IOException e) {
             throw new RuntimeException("恢复压测失败", e);
