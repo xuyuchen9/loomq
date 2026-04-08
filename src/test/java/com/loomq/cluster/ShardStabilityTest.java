@@ -241,8 +241,8 @@ class ShardStabilityTest {
     @DisplayName("节点离线后旧节点任务应继续执行")
     void testRunningTasksContinueOnNodeOffline() {
         // 验证故障时策略配置
-        ClusterCoordinatorV2.FailureHandlingConfig config =
-                ClusterCoordinatorV2.FailureHandlingConfig.defaultConfig();
+        ClusterCoordinator.FailureHandlingConfig config =
+                ClusterCoordinator.FailureHandlingConfig.defaultConfig();
 
         assertTrue(config.keepRunningTasks(),
                 "默认配置应允许旧节点任务继续执行");
@@ -258,7 +258,7 @@ class ShardStabilityTest {
         ClusterConfig config = ClusterConfig.localMultiShard(2, TEST_PORT);
         LocalShardNode localNode = new LocalShardNode(0, 2, "localhost", TEST_PORT, 100);
 
-        ClusterCoordinatorV2 coordinator = new ClusterCoordinatorV2(
+        ClusterCoordinator coordinator = new ClusterCoordinator(
                 config, localNode, 1000, 3000
         );
 
@@ -395,7 +395,7 @@ class ShardStabilityTest {
         LocalShardNode localNode = new LocalShardNode(0, 3, "localhost", TEST_PORT, 100);
 
         // 使用较短的心跳间隔进行测试
-        ClusterCoordinatorV2 coordinator = new ClusterCoordinatorV2(
+        ClusterCoordinator coordinator = new ClusterCoordinator(
                 config, localNode, 100, 300
         );
 

@@ -4,6 +4,37 @@ All notable changes to LoomQ are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.4.8] - 2026-04-08
+
+### Added
+- **Replication Framework**: Primary-Replica replication with ACK mechanisms
+  - `ReplicationManager`: Central replication coordinator
+  - `ReplicatingWalWriter`: WAL writer with replication support
+  - `Ack`, `AckLevel`, `AckStatus`: ACK semantics for durability guarantees
+  - `ReplicationRecord`: Task change propagation format
+  - `ReplicaClient` / `ReplicaServer`: Netty-based replication protocol
+  - `WalCatchUpManager`: Replica catch-up on reconnection
+  - Configurable ACK levels: `ALL`, `QUORUM`, `ONE`, `NONE`
+
+- **Lease-based Cluster Coordination**: Improved failover with fencing
+  - `CoordinatorLease`: Epoch-based lease mechanism
+  - `FencingToken`: Monotonic fencing for split-brain prevention
+  - `HeartbeatManager`: Bidirectional health monitoring
+  - `ShardStateMachine`: Shard state transitions with fencing
+  - `FailoverController`: Automated failover with catch-up support
+  - Lease arbitration for "explainable high availability"
+
+- **Cluster Stability Enhancements**
+  - Routing table version monotonicity with CAS updates
+  - Node flapping detection (consecutive failures + time window)
+  - Idempotent routing: consistent task-to-shard mapping
+  - Task draining during failover with configurable timeout
+
+### Changed
+- Cluster coordination redesigned with lease arbitration (v0.5 lease concepts backported)
+- Enhanced failure handling with fencing tokens
+- Improved WAL with replication hooks
+
 ## [0.4.5] - 2026-04-08
 
 ### Added

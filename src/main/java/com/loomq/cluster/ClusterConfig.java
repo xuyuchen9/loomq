@@ -404,6 +404,53 @@ public class ClusterConfig {
         }
     }
 
+    // ========== v0.4.8 新增：租约配置 ==========
+
+    /**
+     * 租约配置
+     */
+    public record LeaseConfig(
+        boolean enabled,           // 是否启用租约机制
+        long durationMs,           // 租约有效期（毫秒）
+        double renewalWindowRatio, // 续约窗口比例（0.0-1.0）
+        boolean strictMode         // 严格模式：无有效租约拒绝写入
+    ) {
+        public LeaseConfig {
+            if (durationMs <= 0) {
+                throw new IllegalArgumentException("durationMs must be positive");
+            }
+            if (renewalWindowRatio < 0.0 || renewalWindowRatio > 1.0) {
+                throw new IllegalArgumentException("renewalWindowRatio must be in [0.0, 1.0]");
+            }
+        }
+
+        public static LeaseConfig defaultConfig() {
+            return new LeaseConfig(true, 10000L, 0.3, true);
+        }
+
+        public static LeaseConfig disabled() {
+            return new LeaseConfig(false, 10000L, 0.3, false);
+        }
+    }
+
+    /**
+     * Fencing Token 配置
+     */
+    public record FencingConfig(
+        boolean enabled,      // 是否启用 fencing token
+        long tokenTtlMs       // token 最长有效期（毫秒）
+    ) {
+        public FencingConfig {
+            if (tokenTtlMs <= 0) {
+                throw new IllegalArgumentException("tokenTtlMs must be positive");
+            }
+        }
+
+        public static FencingConfig defaultConfig() {
+            return new FencingConfig(true, 30000L);
+        }
+    }
+
     /**
      * 配置变更监听器
      */

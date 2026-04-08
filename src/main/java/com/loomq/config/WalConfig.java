@@ -26,4 +26,26 @@ public interface WalConfig extends Config {
     @Key("wal.sync_on_write")
     @DefaultValue("false")
     boolean syncOnWrite();
+
+    // ==================== Replication v0.4.8 ====================
+
+    @Key("wal.replication.enabled")
+    @DefaultValue("false")
+    boolean isReplicationEnabled();
+
+    @Key("wal.replication.replica_host")
+    @DefaultValue("localhost")
+    String replicaHost();
+
+    @Key("wal.replication.replica_port")
+    @DefaultValue("9090")
+    int replicaPort();
+
+    @Key("wal.replication.ack_timeout_ms")
+    @DefaultValue("30000")
+    long replicationAckTimeoutMs();
+
+    @Key("wal.replication.require_replicated_ack")
+    @DefaultValue("false")
+    boolean requireReplicatedAck();
 }
