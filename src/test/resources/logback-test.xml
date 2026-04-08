@@ -8,7 +8,7 @@
 
     <!-- 测试环境关闭 DEBUG 日志 -->
     <logger name="com.loomq" level="INFO"/>
-    <logger name="com.loomq.wal.v2.CheckpointManager" level="WARN"/>
+    <logger name="com.loomq.wal.CheckpointManager" level="WARN"/>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
