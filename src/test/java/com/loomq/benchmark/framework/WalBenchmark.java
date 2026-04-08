@@ -93,7 +93,7 @@ public class WalBenchmark extends BenchmarkBase {
             walSegment.close();
             walFile.delete();
 
-            return BenchmarkRunResult.of(0, elapsedMs, recordCount)
+            return BenchmarkRunResult.of(0, recordCount, elapsedMs)
                     .withLatencies(latencyRecorder.getLatencies())
                     .withMemoryUsed(memoryUsedMB);
 
