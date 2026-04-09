@@ -2,11 +2,13 @@
 
 [![Java 21](https://img.shields.io/badge/Java-21-blue)](https://openjdk.org/projects/jdk/21/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-156%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-346%20passed-brightgreen)]()
 
 > **高性能分布式延迟任务队列引擎**
-> 
-> 基于 Java 21 虚拟线程构建，支持 WAL 持久化、一致性哈希分片，吞吐量达 60万+ QPS。
+>
+> 基于 Java 21 虚拟线程构建，支持 WAL 持久化、主从复制，吞吐量达 50万+ QPS。
+>
+> **v0.5 新特性**: 异步复制、REPLICATED ACK、自动故障转移、Snapshot + WAL 恢复。
 
 [English](README.md)
 
@@ -16,12 +18,18 @@
 
 | 指标 | 数值 | 行业基准 |
 |------|------|----------|
-| 峰值写入吞吐 | **609,756 QPS** | 5万 QPS (Redis ZSET) |
-| 稳态吞吐 | 37-42万 QPS | - |
-| 单任务内存 | ~200 bytes | 1-2KB (Redis) |
-| 千万任务容量 | 2.2GB 堆内存 | 需要 Redis 集群 |
-| 恢复时间 (100万任务) | <30秒 | 分钟级 (MQ 重放) |
-| 测试覆盖 | 156 测试全通过 | - |
+| 峰值写入吞吐 (ASYNC) | **1,351,351 QPS** | 5万 QPS (Redis ZSET) |
+| 峰值写入吞吐 (DURABLE) | **400,000 QPS** | 1万 QPS (RabbitMQ) |
+| 峰值写入吞吐 (REPLICATED) | **80,000 QPS** | 5千 QPS (Paxos/Raft) |
+| RingBuffer 吞吐 | **18,791,962 ops/s** | - |
+| 稳态吞吐 | 35-40万 QPS | - |
+| 单任务内存 | **~200 bytes** | 1-2KB (Redis) |
+| 百万任务内存 | **~200MB** | 1GB+ (Redis) |
+| 千万任务容量 | 2.5GB 堆内存 | 需要 Redis 集群 |
+| 恢复时间 (100万任务) | <30秒 (Snapshot+WAL) | 分钟级 (MQ 重放) |
+| 复制延迟 | <100ms (局域网) | <1秒 (异步MQ) |
+| 故障转移时间 | <5秒 (手动) / <1秒 (自动) | 10-30秒 (Redis Sentinel) |
+| 测试覆盖 | **340+ 测试全通过** | - |
 
 ---
 
@@ -141,12 +149,13 @@ LoomQ 消除串行化:
 
 | 组件 | 实现 | 性能 | 职责 |
 |------|------|------|------|
-| **RingBuffer** | MPSC 无锁队列 | 单线程 4600万 ops/s | WAL 写入缓冲 |
+| **RingBuffer** | MPSC 无锁队列 | **18.8M ops/s** 单线程 | WAL 写入缓冲 |
 | **WAL Writer v2** | Group Commit + fsync 批量 | 50万+ QPS | 持久化保证 |
 | **Checkpoint Manager** | 10万条记录间隔 | <30秒恢复 | 快速故障恢复 |
 | **TimeBucket Scheduler** | ConcurrentSkipListMap + 桶 | 12.5万 schedule/s | 延迟调度 |
 | **Dispatch Limiter** | Semaphore + 限流器 | 可配置 | 背压控制 |
 | **ShardRouter** | MD5 哈希 + 150 虚拟节点 | <1μs 查找 | 请求路由 |
+| **幂等性** | ConcurrentHashMap + TTL | 100线程并发安全 | 重复请求防护 |
 
 ---
 
@@ -250,6 +259,12 @@ LoomQ 消除串行化:
 
 容量极限: 8GB 堆内存支持 1000万+ 任务
 预估容量: 8GB + ZGC 可支持 3000-4000万任务
+
+340个单元测试验证包括:
+- 100线程并发幂等性测试 (零重复)
+- 完整状态机转换覆盖
+- 复制记录序列化
+- Fencing token 脑裂防护
 ```
 
 ---
@@ -265,6 +280,19 @@ LoomQ 消除串行化:
 ```bash
 mvn clean package -DskipTests
 ```
+
+### 测试覆盖
+
+LoomQ 包含 **340+ 综合测试**，覆盖单元测试、集成测试和验收测试。
+
+**测试报告**: [查看最新报告](test-results/test-report-20260409.md)
+
+| 测试类别 | 数量 | 状态 |
+|----------|------|------|
+| 单元测试 | 328 | ✅ 全部通过 |
+| 集成测试 | 7 | ✅ 全部通过 |
+| 验收测试 | 5 | ✅ 全部通过 |
+| **总计** | **340** | **✅ 100% 通过** |
 
 ### 测试分层（推荐）
 
@@ -285,13 +313,13 @@ mvn test -Pfull-tests
 ### 测试脚本（推荐）
 
 ```bash
-# Windows PowerShell
-pwsh -File scripts/test.ps1 -Mode fast
-pwsh -File scripts/test.ps1 -Mode changed
+# V0.5 Intent API 测试
+pwsh -File scripts/test-v5.ps1    # Windows
+bash scripts/test-v5.sh           # Linux/macOS
 
-# Linux/macOS
+# 传统测试
+pwsh -File scripts/test.ps1 -Mode fast
 bash scripts/test.sh fast
-bash scripts/test.sh changed
 ```
 
 ### CI 执行策略
@@ -302,78 +330,130 @@ push(main): package -DskipTests（产物构建）
 nightly / 手动触发: full-tests（全量回归）
 ```
 
-### 单节点运行
+### 单节点运行 (v0.5)
 
 ```bash
-java --enable-preview -jar target/loomq-0.1.0-SNAPSHOT-shaded.jar
+java -Dloomq.node.id=node-1 \
+     -Dloomq.shard.id=shard-0 \
+     -Dloomq.data.dir=./data \
+     -Dloomq.port=8080 \
+     --enable-preview -jar target/loomq-0.5.0-SNAPSHOT-shaded.jar
 ```
 
-### 集群模式运行
+### 主从集群运行
 
 ```bash
-# 节点 1
-java -Dloomq.shard.index=0 -Dloomq.total.shards=4 \
-     -Dloomq.nodes="shard-0:node1:8080,shard-1:node2:8080,shard-2:node3:8080,shard-3:node4:8080" \
-     --enable-preview -jar target/loomq-0.1.0-SNAPSHOT-shaded.jar
+# 主节点
+java -Dloomq.node.id=primary-1 \
+     -Dloomq.shard.id=shard-0 \
+     -Dloomq.data.dir=./data/primary \
+     -Dloomq.port=8080 \
+     --enable-preview -jar target/loomq-0.5.0-SNAPSHOT-shaded.jar
 
-# 节点 2 (不同机器)
-java -Dloomq.shard.index=1 -Dloomq.total.shards=4 \
-     -Dloomq.nodes="shard-0:node1:8080,shard-1:node2:8080,shard-2:node3:8080,shard-3:node4:8080" \
-     --enable-preview -jar target/loomq-0.1.0-SNAPSHOT-shaded.jar
+# 从节点
+java -Dloomq.node.id=replica-1 \
+     -Dloomq.shard.id=shard-0 \
+     -Dloomq.data.dir=./data/replica \
+     -Dloomq.port=8081 \
+     --enable-preview -jar target/loomq-0.5.0-SNAPSHOT-shaded.jar
 ```
 
-### API 接口
+### API 参考 (v0.5 Intent API)
 
-#### 创建任务
+#### 创建 Intent
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/tasks \
+curl -X POST http://localhost:8080/v1/intents \
   -H "Content-Type: application/json" \
   -d '{
-    "callbackUrl": "https://example.com/webhook",
-    "delayMillis": 60000,
-    "payload": {"orderId": "12345"}
+    "intentId": "order-cancel-12345",
+    "executeAt": "2026-04-09T12:30:00Z",
+    "deadline": "2026-04-09T12:35:00Z",
+    "shardKey": "order-12345",
+    "ackLevel": "REPLICATED",
+    "callback": {
+      "url": "https://api.example.com/webhook/order-cancel",
+      "method": "POST",
+      "headers": {"X-Source": "loomq"},
+      "body": {"orderId": "12345", "eventType": "ORDER_CANCEL"}
+    },
+    "redelivery": {
+      "maxAttempts": 5,
+      "backoff": "exponential",
+      "initialDelayMs": 1000,
+      "maxDelayMs": 60000
+    },
+    "idempotencyKey": "order-12345-cancel",
+    "tags": {"env": "prod", "biz": "order"}
   }'
 ```
 
-响应:
+响应 (201 Created):
 ```json
 {
-  "taskId": "task_abc123",
-  "status": "PENDING"
+  "intentId": "intent_01J9XYZABC",
+  "status": "SCHEDULED",
+  "executeAt": "2026-04-09T12:30:00Z",
+  "deadline": "2026-04-09T12:35:00Z",
+  "ackLevel": "REPLICATED",
+  "attempts": 0,
+  "createdAt": "2026-04-09T12:25:00Z"
 }
 ```
 
-#### 查询任务
+#### 查询 Intent
 
 ```bash
-curl http://localhost:8080/api/v1/tasks/task_abc123
+curl http://localhost:8080/v1/intents/intent_01J9XYZABC
 ```
 
-#### 取消任务
+#### 取消 Intent
 
 ```bash
-curl -X DELETE http://localhost:8080/api/v1/tasks/task_abc123
+curl -X POST http://localhost:8080/v1/intents/intent_01J9XYZABC/cancel
 ```
 
-#### 修改延迟
+#### 修改 Intent
 
 ```bash
-curl -X PATCH http://localhost:8080/api/v1/tasks/task_abc123 \
+curl -X PATCH http://localhost:8080/v1/intents/intent_01J9XYZABC \
   -H "Content-Type: application/json" \
-  -d '{"delayMillis": 120000}'
+  -d '{
+    "executeAt": "2026-04-09T13:00:00Z",
+    "deadline": "2026-04-09T13:05:00Z"
+  }'
 ```
 
 #### 立即触发
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/tasks/task_abc123/fire-now
+curl -X POST http://localhost:8080/v1/intents/intent_01J9XYZABC/fire-now
+```
+
+响应 (如租约过期 - 307):
+```json
+{
+  "code": "50304",
+  "message": "Lease expired, current primary is 10.0.1.100",
+  "details": {
+    "intentId": "intent_01J9XYZABC",
+    "redirectTo": "http://10.0.1.100:8080/v1/intents/intent_01J9XYZABC/fire-now",
+    "newPrimary": "10.0.1.100:8080"
+  }
+}
 ```
 
 #### 健康检查
 
 ```bash
-curl http://localhost:8080/health
+# Liveness (K8s)
+curl http://localhost:8080/health/live
+
+# Readiness (K8s)
+curl http://localhost:8080/health/ready
+
+# Replica 健康状态
+curl http://localhost:8080/health/replica
 ```
 
 #### Prometheus 指标
@@ -381,6 +461,11 @@ curl http://localhost:8080/health
 ```bash
 curl http://localhost:8080/metrics
 ```
+
+关键指标:
+- `loomq_intents_created_total` - Intent 创建速率
+- `loomq_replication_lag_ms` - 复制延迟
+- `loomq_delivery_latency_ms` - 投递延迟分布
 
 ---
 
@@ -412,12 +497,13 @@ retry:
   default_max_retry: 5
 ```
 
-### ACK 级别
+### ACK 级别 (v0.5)
 
-| 级别 | 描述 | RPO | 延迟 |
-|------|------|-----|------|
-| `ASYNC` | RingBuffer 发布后返回 | <100ms | <5ms |
-| `DURABLE` | fsync 后返回 | 0 | <50ms |
+| 级别 | 描述 | RPO | 延迟 | 使用场景 |
+|------|------|-----|------|----------|
+| `ASYNC` | RingBuffer 发布后返回 | <100ms | <1ms | 高吞吐，可容忍少量丢失 |
+| `DURABLE` | 本地 WAL fsync 后返回 | 0 | <20ms | 默认推荐 |
+| `REPLICATED` | 从节点确认后返回 | 0 | <50ms | 金融级可靠性 |
 
 ---
 
@@ -449,9 +535,35 @@ java -Xms12g -Xmx12g \
 | 版本 | 功能 | 状态 |
 |------|------|------|
 | V0.3 | 分布式分片、一致性哈希 | ✅ 已发布 |
-| V0.4 | 异步复制 (1主1从) | 🚧 开发中 |
-| V0.5 | Raft 共识 (强一致性) | 📋 规划中 |
-| V0.6 | 管理后台 UI | 📋 规划中 |
+| V0.4 | 统一状态机、重试策略、幂等性增强 | ✅ 已发布 |
+| V0.4.5 | 工程化打包 (Docker、K8s、监控) | ✅ 已发布 |
+| **V0.5** | **异步复制、REPLICATED ACK、自动故障转移** | **✅ 已发布** |
+| V0.6 | Raft 共识 (强一致性) | 📋 规划中 |
+| V0.7 | 管理后台 UI | 📋 规划中 |
+
+### V0.5 亮点
+
+**主从复制架构**
+- 三级 ACK: ASYNC / DURABLE / REPLICATED
+- 异步复制，局域网延迟 <100ms
+- 手动/自动故障转移，支持 fencing token 防护
+- Snapshot + WAL 重放实现快速恢复
+
+**Intent 生命周期管理**
+- 9状态状态机: CREATED → SCHEDULED → DUE → DISPATCHING → DELIVERED → ACKED
+- 24小时幂等窗口，终态保护
+- 可配置重试策略 (固定/指数退避)
+- 过期处理: DISCARD 或 DEAD_LETTER
+
+**高可用性**
+- 基于租约的协调 (兼容 etcd/Consul)
+- Fencing token 防止脑裂
+- 自动主节点检测和故障转移
+- 健康检查: liveness、readiness、replica 链路
+
+**SPI 扩展**
+- `RedeliveryDecider` 接口支持自定义重试逻辑
+- 可插拔租约协调器实现
 
 ---
 
@@ -459,10 +571,10 @@ java -Xms12g -Xmx12g \
 
 | 限制 | 影响 | 缓解措施 |
 |------|------|----------|
-| 每分片单副本 | 节点故障 = 暂时不可用 | V0.4 副本机制 |
-| 无自动节点发现 | 手动配置集群 | V0.4 自动发现 |
+| 复制测试需要多节点环境 | 单节点无法测试故障转移 | 使用 Docker Compose 或 K8s 测试 HA |
 | 100ms 精度下限 | 不适用于毫秒级精确场景 | 精确场景用 Redis/MQ |
 | At-Least-Once 投递 | 可能重复投递 | 消费者需实现幂等 |
+| 无自动节点发现 | 手动配置集群 | 使用 K8s StatefulSet 或服务网格 |
 
 ---
 

@@ -3,7 +3,6 @@ package com.loomq.cluster;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -19,255 +18,147 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class ClusterCoordinatorLeaseTest {
 
-    private LeaseCoordinator coordinator;
+    private InMemoryLeaseCoordinator coordinator;
 
     @BeforeEach
     void setUp() {
-        coordinator = new LeaseCoordinator(5000L, 0.3);
+        coordinator = new InMemoryLeaseCoordinator();
         coordinator.start();
     }
 
     @Test
     void testGrantNewLease() {
-        Optional<CoordinatorLease> leaseOpt = coordinator.grantLease("shard-0", "node-1");
+        Optional<CoordinatorLease> leaseOpt = coordinator.tryAcquire("shard-0", "node-1", 5000L);
 
         assertTrue(leaseOpt.isPresent());
         CoordinatorLease lease = leaseOpt.get();
-        assertEquals("node-1", lease.getHolderNodeId());
+        assertEquals("node-1", lease.getNodeId());
         assertEquals("shard-0", lease.getShardId());
         assertTrue(lease.isValid());
-        assertEquals(1L, lease.getRoutingVersion());
-        assertTrue(lease.getFencingSequence() > 0);
+        assertTrue(lease.getEpoch() > 0);
     }
 
     @Test
     void testGrantLeaseRejectedWhenHeldByOther() {
         // node-1 获取租约
-        Optional<CoordinatorLease> lease1 = coordinator.grantLease("shard-0", "node-1");
+        Optional<CoordinatorLease> lease1 = coordinator.tryAcquire("shard-0", "node-1", 5000L);
         assertTrue(lease1.isPresent());
 
         // node-2 尝试获取同一分片的租约，应该被拒绝
-        Optional<CoordinatorLease> lease2 = coordinator.grantLease("shard-0", "node-2");
+        Optional<CoordinatorLease> lease2 = coordinator.tryAcquire("shard-0", "node-2", 5000L);
         assertFalse(lease2.isPresent());
     }
 
     @Test
     void testHolderCanRenewLease() {
         // node-1 获取租约
-        CoordinatorLease lease1 = coordinator.grantLease("shard-0", "node-1").orElseThrow();
-        String leaseId = lease1.getLeaseId();
+        CoordinatorLease lease1 = coordinator.tryAcquire("shard-0", "node-1", 5000L).orElseThrow();
 
-        // 立即续约
-        Optional<CoordinatorLease> renewed = coordinator.renewLease("shard-0", leaseId);
+        // 续约
+        Optional<CoordinatorLease> renewed = coordinator.renew(lease1);
 
         assertTrue(renewed.isPresent());
-        assertEquals(leaseId, renewed.get().getLeaseId());
+        assertEquals(lease1.getLeaseId(), renewed.get().getLeaseId());
     }
 
     @Test
-    void testRenewLeaseWithWrongId() {
+    void testRenewLeaseWithWrongLease() {
         // node-1 获取租约
-        coordinator.grantLease("shard-0", "node-1");
+        coordinator.tryAcquire("shard-0", "node-1", 5000L);
 
-        // 尝试用错误的 leaseId 续约
-        Optional<CoordinatorLease> renewed = coordinator.renewLease("shard-0", "wrong-id");
+        // 创建一个假的租约
+        CoordinatorLease fakeLease = new CoordinatorLease("shard-0", "node-2", 1L, 5000L, 0L);
+
+        // 尝试用假租约续约
+        Optional<CoordinatorLease> renewed = coordinator.renew(fakeLease);
         assertFalse(renewed.isPresent());
     }
 
     @Test
-    void testRevokeLease() {
+    void testReleaseLease() {
         // node-1 获取租约
-        CoordinatorLease lease = coordinator.grantLease("shard-0", "node-1").orElseThrow();
+        CoordinatorLease lease = coordinator.tryAcquire("shard-0", "node-1", 5000L).orElseThrow();
 
-        // 撤销租约
-        coordinator.revokeLease("shard-0", lease.getLeaseId(), "test revoke");
+        // 释放租约
+        boolean released = coordinator.release(lease);
+        assertTrue(released);
 
-        // 验证租约已撤销
-        assertFalse(coordinator.hasValidLease("shard-0"));
-        assertTrue(coordinator.getCurrentLease("shard-0").isEmpty());
+        // 验证租约已释放
+        assertFalse(coordinator.isHolder("shard-0", "node-1"));
     }
 
     @Test
-    void testNewLeaseAfterRevoke() {
+    void testNewLeaseAfterRelease() {
         // node-1 获取租约
-        CoordinatorLease lease1 = coordinator.grantLease("shard-0", "node-1").orElseThrow();
+        CoordinatorLease lease1 = coordinator.tryAcquire("shard-0", "node-1", 5000L).orElseThrow();
 
-        // 撤销租约
-        coordinator.revokeLease("shard-0", lease1.getLeaseId(), "test revoke");
+        // 释放租约
+        coordinator.release(lease1);
 
         // node-2 现在可以获取租约
-        Optional<CoordinatorLease> lease2 = coordinator.grantLease("shard-0", "node-2");
+        Optional<CoordinatorLease> lease2 = coordinator.tryAcquire("shard-0", "node-2", 5000L);
         assertTrue(lease2.isPresent());
-        assertEquals("node-2", lease2.get().getHolderNodeId());
-        assertTrue(lease2.get().getRoutingVersion() > lease1.getRoutingVersion());
+        assertEquals("node-2", lease2.get().getNodeId());
+        assertTrue(lease2.get().getEpoch() > lease1.getEpoch());
     }
 
     @Test
-    void testForceRevokeLease() {
-        // node-1 获取租约
-        coordinator.grantLease("shard-0", "node-1");
+    void testGetCurrentHolder() {
+        coordinator.tryAcquire("shard-0", "node-1", 5000L);
 
-        // 强制撤销
-        coordinator.forceRevokeLease("shard-0", "admin force revoke");
-
-        assertFalse(coordinator.hasValidLease("shard-0"));
+        Optional<String> holder = coordinator.getCurrentHolder("shard-0");
+        assertTrue(holder.isPresent());
+        assertEquals("node-1", holder.get());
     }
 
     @Test
-    void testRoutingVersionIncrement() {
-        CoordinatorLease lease1 = coordinator.grantLease("shard-0", "node-1").orElseThrow();
-        assertEquals(1L, lease1.getRoutingVersion());
-
-        coordinator.revokeLease("shard-0", lease1.getLeaseId(), "test");
-
-        CoordinatorLease lease2 = coordinator.grantLease("shard-0", "node-2").orElseThrow();
-        assertTrue(lease2.getRoutingVersion() > lease1.getRoutingVersion());
-    }
-
-    @Test
-    void testFencingSequenceIncrement() {
-        CoordinatorLease lease1 = coordinator.grantLease("shard-0", "node-1").orElseThrow();
-
-        coordinator.revokeLease("shard-0", lease1.getLeaseId(), "test");
-
-        CoordinatorLease lease2 = coordinator.grantLease("shard-0", "node-2").orElseThrow();
-
-        assertTrue(lease2.getFencingSequence() > lease1.getFencingSequence());
-    }
-
-    @Test
-    void testValidateFencingToken() {
-        CoordinatorLease lease = coordinator.grantLease("shard-0", "node-1").orElseThrow();
-
-        FencingToken validToken = new FencingToken(
-            lease.getFencingSequence(), lease.getLeaseId(), "node-1",
-            java.time.Instant.now()
-        );
-
-        assertTrue(coordinator.validateFencingToken("shard-0", validToken));
-    }
-
-    @Test
-    void testValidateFencingTokenInvalid() {
-        CoordinatorLease lease = coordinator.grantLease("shard-0", "node-1").orElseThrow();
-
-        FencingToken invalidToken = new FencingToken(
-            lease.getFencingSequence(), "wrong-lease-id", "node-1",
-            java.time.Instant.now()
-        );
-
-        assertFalse(coordinator.validateFencingToken("shard-0", invalidToken));
-    }
-
-    @Test
-    void testValidateFencingTokenNull() {
-        assertFalse(coordinator.validateFencingToken("shard-0", null));
-    }
-
-    @Test
-    void testGetCurrentFencingSequence() {
-        CoordinatorLease lease = coordinator.grantLease("shard-0", "node-1").orElseThrow();
-
-        long sequence = coordinator.getCurrentFencingSequence("shard-0");
-        assertEquals(lease.getFencingSequence(), sequence);
-    }
-
-    @Test
-    void testGetCurrentFencingSequenceNoLease() {
-        long sequence = coordinator.getCurrentFencingSequence("shard-0");
-        assertEquals(-1L, sequence);
-    }
-
-    @Test
-    void testGetCurrentPrimary() {
-        coordinator.grantLease("shard-0", "node-1");
-
-        Optional<String> primary = coordinator.getCurrentPrimary("shard-0");
-        assertTrue(primary.isPresent());
-        assertEquals("node-1", primary.get());
-    }
-
-    @Test
-    void testGetCurrentPrimaryNoLease() {
-        Optional<String> primary = coordinator.getCurrentPrimary("shard-0");
-        assertFalse(primary.isPresent());
+    void testGetCurrentHolderNoLease() {
+        Optional<String> holder = coordinator.getCurrentHolder("shard-0");
+        assertFalse(holder.isPresent());
     }
 
     @Test
     void testMultipleShards() {
-        CoordinatorLease lease0 = coordinator.grantLease("shard-0", "node-1").orElseThrow();
-        CoordinatorLease lease1 = coordinator.grantLease("shard-1", "node-2").orElseThrow();
+        CoordinatorLease lease0 = coordinator.tryAcquire("shard-0", "node-1", 5000L).orElseThrow();
+        CoordinatorLease lease1 = coordinator.tryAcquire("shard-1", "node-2", 5000L).orElseThrow();
 
-        assertEquals("node-1", coordinator.getCurrentPrimary("shard-0").orElseThrow());
-        assertEquals("node-2", coordinator.getCurrentPrimary("shard-1").orElseThrow());
-
-        assertEquals(1L, lease0.getRoutingVersion());
-        assertEquals(1L, lease1.getRoutingVersion());
+        assertEquals("node-1", coordinator.getCurrentHolder("shard-0").orElseThrow());
+        assertEquals("node-2", coordinator.getCurrentHolder("shard-1").orElseThrow());
     }
 
     @Test
     void testLeaseEventListener() {
-        AtomicReference<LeaseCoordinator.LeaseEvent> capturedEvent = new AtomicReference<>();
+        AtomicReference<String> capturedShardId = new AtomicReference<>();
 
-        coordinator.setLeaseEventListener(event -> {
-            capturedEvent.set(event);
+        coordinator.watch("shard-0", (shardId, event, lease) -> {
+            capturedShardId.set(shardId);
         });
 
-        CoordinatorLease lease = coordinator.grantLease("shard-0", "node-1").orElseThrow();
+        coordinator.tryAcquire("shard-0", "node-1", 5000L);
 
-        assertNotNull(capturedEvent.get());
-        assertEquals(LeaseCoordinator.LeaseEvent.EventType.GRANTED, capturedEvent.get().type());
-        assertEquals("shard-0", capturedEvent.get().shardId());
-        assertEquals(lease.getLeaseId(), capturedEvent.get().newLease().getLeaseId());
+        assertEquals("shard-0", capturedShardId.get());
     }
 
     @Test
-    void testGrantLeaseWhenNotRunning() {
-        coordinator.close();
+    void testIsHolder() {
+        coordinator.tryAcquire("shard-0", "node-1", 5000L);
 
-        Optional<CoordinatorLease> lease = coordinator.grantLease("shard-0", "node-1");
-        assertFalse(lease.isPresent());
+        assertTrue(coordinator.isHolder("shard-0", "node-1"));
+        assertFalse(coordinator.isHolder("shard-0", "node-2"));
     }
 
     @Test
-    void testNullValidation() {
-        assertThrows(NullPointerException.class, () ->
-            coordinator.grantLease(null, "node-1"));
+    void testGetRemainingTime() {
+        coordinator.tryAcquire("shard-0", "node-1", 5000L);
 
-        assertThrows(NullPointerException.class, () ->
-            coordinator.grantLease("shard-0", null));
+        long remaining = coordinator.getRemainingTime("shard-0");
+        assertTrue(remaining > 0);
+        assertTrue(remaining <= 5000L);
     }
 
     @Test
-    void testShardRoutingVersion() {
-        assertEquals(0L, coordinator.getShardRoutingVersion("shard-0"));
-
-        coordinator.grantLease("shard-0", "node-1");
-        assertEquals(1L, coordinator.getShardRoutingVersion("shard-0"));
-
-        coordinator.forceRevokeLease("shard-0", "test");
-        assertEquals(2L, coordinator.getShardRoutingVersion("shard-0"));
-    }
-
-    @Test
-    void testGetAllLeases() {
-        coordinator.grantLease("shard-0", "node-1");
-        coordinator.grantLease("shard-1", "node-2");
-
-        Map<String, CoordinatorLease> leases = coordinator.getAllLeases();
-        assertEquals(2, leases.size());
-        assertTrue(leases.containsKey("shard-0"));
-        assertTrue(leases.containsKey("shard-1"));
-    }
-
-    @Test
-    void testGetClusterStatus() {
-        coordinator.grantLease("shard-0", "node-1");
-        coordinator.grantLease("shard-1", "node-2");
-
-        LeaseCoordinator.ClusterStatus status = coordinator.getClusterStatus();
-        assertEquals(2, status.activeLeaseCount());
-        assertEquals(2, status.trackedShardCount());
-        assertTrue(status.fencingSequence() >= 2);
+    void testGetRemainingTimeNoLease() {
+        long remaining = coordinator.getRemainingTime("shard-0");
+        assertEquals(0L, remaining);
     }
 }

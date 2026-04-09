@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.function.Consumer;
@@ -116,6 +117,34 @@ public class RingBuffer<T> {
 
         stats.recordWrite();
         return true;
+    }
+
+    /**
+     * 写入元素（带超时等待）
+     *
+     * @param item 要写入的元素
+     * @param timeout 超时时间
+     * @param unit 时间单位
+     * @return true 如果写入成功，false 如果超时
+     */
+    public boolean offerWithTimeout(T item, long timeout, TimeUnit unit) {
+        if (item == null) {
+            throw new NullPointerException("Item cannot be null");
+        }
+
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+
+        while (System.nanoTime() < deadline) {
+            if (offer(item)) {
+                return true;
+            }
+
+            // 短暂自旋等待
+            Thread.yield();
+        }
+
+        // 超时
+        return false;
     }
 
     /**

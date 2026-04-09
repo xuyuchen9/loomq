@@ -40,27 +40,23 @@ class FencingTokenTest {
 
     @Test
     void testIsValidFor() {
-        String leaseId = UUID.randomUUID().toString();
+        // 构造函数: (shardId, nodeId, epoch, ttlMs, routingVersion)
+        CoordinatorLease lease = new CoordinatorLease("shard-0", "node-1", 1L, 10000L, 1L);
 
-        CoordinatorLease lease = new CoordinatorLease(
-            leaseId, "node-1", "shard-0",
-            Instant.now(), Instant.now().plusMillis(10000), 1L, 100L);
-
-        FencingToken validToken = new FencingToken(leaseId, "node-1");
+        FencingToken validToken = new FencingToken(lease.getLeaseId(), "node-1");
 
         assertTrue(validToken.isValidFor(lease));
     }
 
     @Test
     void testIsValidForExpiredLease() throws InterruptedException {
-        String leaseId = UUID.randomUUID().toString();
+        // 创建已过期的租约 (使用非常短的 TTL)
+        CoordinatorLease expiredLease = new CoordinatorLease("shard-0", "node-1", 1L, 10L, 1L);
 
-        // 创建已过期的租约
-        CoordinatorLease expiredLease = new CoordinatorLease(
-            leaseId, "node-1", "shard-0",
-            Instant.now().minusMillis(200), Instant.now().minusMillis(100), 1L, 100L);
+        // 等待过期
+        Thread.sleep(50);
 
-        FencingToken token = new FencingToken(leaseId, "node-1");
+        FencingToken token = new FencingToken(expiredLease.getLeaseId(), "node-1");
 
         assertFalse(token.isValidFor(expiredLease));
     }
@@ -70,9 +66,7 @@ class FencingTokenTest {
         String leaseId1 = UUID.randomUUID().toString();
         String leaseId2 = UUID.randomUUID().toString();
 
-        CoordinatorLease lease = new CoordinatorLease(
-            leaseId1, "node-1", "shard-0",
-            Instant.now(), Instant.now().plusMillis(10000), 1L, 100L);
+        CoordinatorLease lease = new CoordinatorLease("shard-0", "node-1", 1L, 10000L, 1L);
 
         FencingToken token = new FencingToken(leaseId2, "node-1");
 
@@ -81,13 +75,9 @@ class FencingTokenTest {
 
     @Test
     void testIsValidForMismatchedHolder() {
-        String leaseId = UUID.randomUUID().toString();
+        CoordinatorLease lease = new CoordinatorLease("shard-0", "node-1", 1L, 10000L, 1L);
 
-        CoordinatorLease lease = new CoordinatorLease(
-            leaseId, "node-1", "shard-0",
-            Instant.now(), Instant.now().plusMillis(10000), 1L, 100L);
-
-        FencingToken token = new FencingToken(leaseId, "node-2");
+        FencingToken token = new FencingToken(lease.getLeaseId(), "node-2");
 
         assertFalse(token.isValidFor(lease));
     }
@@ -179,11 +169,8 @@ class FencingTokenTest {
 
     @Test
     void testValidatorSuccess() {
-        String leaseId = UUID.randomUUID().toString();
-        CoordinatorLease lease = new CoordinatorLease(
-            leaseId, "node-1", "shard-0",
-            Instant.now(), Instant.now().plusMillis(10000), 1L, 100L);
-        FencingToken token = new FencingToken(leaseId, "node-1");
+        CoordinatorLease lease = new CoordinatorLease("shard-0", "node-1", 1L, 10000L, 1L);
+        FencingToken token = new FencingToken(lease.getLeaseId(), "node-1");
 
         FencingTokenValidator validator = new FencingTokenValidator(30000L);
 
@@ -192,8 +179,7 @@ class FencingTokenTest {
 
     @Test
     void testValidatorNullToken() {
-        CoordinatorLease lease = new CoordinatorLease(
-            "node-1", "shard-0", 10000L, 1L, 100L);
+        CoordinatorLease lease = new CoordinatorLease("shard-0", "node-1", 1L, 10000L, 1L);
 
         FencingTokenValidator validator = new FencingTokenValidator(30000L);
 
@@ -218,14 +204,11 @@ class FencingTokenTest {
 
     @Test
     void testValidatorExpiredToken() throws InterruptedException {
-        String leaseId = UUID.randomUUID().toString();
-        CoordinatorLease lease = new CoordinatorLease(
-            leaseId, "node-1", "shard-0",
-            Instant.now(), Instant.now().plusMillis(10000), 1L, 100L);
+        CoordinatorLease lease = new CoordinatorLease("shard-0", "node-1", 1L, 10000L, 1L);
 
         // 创建 200ms 前的 token
         FencingToken oldToken = new FencingToken(
-            1L, leaseId, "node-1", Instant.now().minusMillis(200));
+            1L, lease.getLeaseId(), "node-1", Instant.now().minusMillis(200));
 
         // 100ms TTL
         FencingTokenValidator validator = new FencingTokenValidator(100L);

@@ -4,6 +4,82 @@ All notable changes to LoomQ are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.0] - 2026-04-09
+
+### Added
+- **Intent-based Architecture (v5)**: Complete rewrite with Intent as the core abstraction
+  - `Intent`: Unified delayed task entity with lifecycle management
+  - `IntentStatus`: State machine with transitions (CREATED → SCHEDULED → DUE → DISPATCHING → DELIVERED → ACKED)
+  - `IntentStore`: In-memory storage with skip-list index for efficient time-based queries
+  - `IntentScheduler`: Virtual thread-based scheduling with pause/resume support
+  - `IntentController`: REST API for Intent CRUD operations
+
+- **WAL Health Monitoring**: Comprehensive health monitoring for Write-Ahead Log
+  - `WalWriter.isHealthy()`: Real-time health status
+  - `WalWriter.getHealthStatus()`: Detailed health metrics (idle time, error count, pending writes)
+  - Last flush time tracking with configurable idle threshold
+  - Flush error counting with automatic degradation detection
+
+- **WAL Backpressure Control**: RingBuffer overflow protection
+  - `appendAsyncWithTimeout()`: Timeout-based write with fast-fail semantics
+  - `WALOverloadException`: Dedicated exception for overload conditions
+  - Configurable timeout for backpressure scenarios
+  - Graceful degradation under high load
+
+- **WAL Future Separation**: Split commit and flush semantics
+  - `appendAsync()`: ASYNC level - returns after buffer commit
+  - `waitForFlush()`: DURABLE level - waits for fsync
+  - `flushNow()`: Force immediate flush
+  - Clear separation of concerns for different durability requirements
+
+- **Prometheus Metrics for WAL**: Full observability integration
+  - `loomq_wal_healthy`: Health status gauge
+  - `loomq_wal_idle_time_ms`: Time since last flush
+  - `loomq_wal_flush_errors_total`: Flush error counter
+  - `loomq_wal_flush_latency_avg_ms`: Average flush latency
+  - `loomq_wal_pending_writes`: Pending writes in buffer
+  - `loomq_wal_ring_buffer_size`: Current RingBuffer size
+
+- **Health Endpoints**: Comprehensive health check API
+  - `GET /health`: Overall system health with component status
+  - `GET /health/wal`: Detailed WAL health metrics
+  - `GET /health/replica`: Replication lag status
+  - `GET /health/ready`: Readiness probe for K8s
+  - `GET /health/live`: Liveness probe for K8s
+
+- **Idempotency Enhancement**: Window-based duplicate detection
+  - `IdempotencyRecord`: Time-windowed idempotency tracking
+  - Automatic cleanup of expired idempotency records
+  - Support for both request-level and business-level deduplication
+
+- **Test Infrastructure**: Comprehensive test suite with 340+ tests
+  - `TestUtils`: Reusable test utilities and configurations
+  - `WalBackpressureTest`: Stress tests for RingBuffer backpressure
+  - `WalWriterIntegrationTest`: End-to-end WAL integration tests
+  - `WalWriterTest`: Unified unit tests for WAL operations
+  - All tests pass with optimized execution time
+
+### Changed
+- Migrated from Task-based to Intent-based architecture
+- Removed legacy Task, TaskStatus, TaskStore, TaskScheduler classes
+- Improved WAL with self-healing flush loop
+- Enhanced `LoomQMetrics` with WAL-specific metrics
+- Optimized test execution time (3x faster than before)
+- Updated all health endpoints to use `MetricsEndpoint`
+
+### Removed
+- Legacy `Task` entity and related classes
+- Legacy `TaskStore` implementation
+- Legacy `TaskScheduler` implementation
+- Legacy `RecoveryService` implementations
+- Legacy `HealthController` (merged into `MetricsEndpoint`)
+- Legacy benchmark framework (replaced with simpler tests)
+
+### Fixed
+- Fixed duplicate `/health` endpoint registration
+- Fixed null payload handling in WAL records
+- Fixed health status not reflecting running state
+
 ## [0.4.8] - 2026-04-08
 
 ### Added

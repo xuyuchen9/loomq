@@ -15,6 +15,8 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentNavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
@@ -92,6 +94,18 @@ public class WalWriter implements AutoCloseable {
 
     // 活跃任务数（用于 checkpoint）
     private final AtomicLong activeTaskCount = new AtomicLong(0);
+
+    // ========== 健康监控 ==========
+
+    // 最后一次刷盘时间
+    private volatile long lastFlushTime = System.currentTimeMillis();
+
+    // 刷盘异常计数
+    private final LongAdder flushErrorCount = new LongAdder();
+
+    // 等待刷盘确认的 Future 映射
+    private final ConcurrentNavigableMap<Long, List<CompletableFuture<Long>>> pendingFlushMap =
+        new ConcurrentSkipListMap<>();
 
     /**
      * 写入请求
@@ -244,6 +258,8 @@ public class WalWriter implements AutoCloseable {
      * 刷盘循环
      */
     private void flushLoop() {
+        logger.info("Flush loop started");
+
         while (running.get() || !ringBuffer.isEmpty()) {
             try {
                 int flushed = flushBatch();
@@ -252,10 +268,26 @@ public class WalWriter implements AutoCloseable {
                     // 没有数据，短暂休眠
                     Thread.sleep(1);
                 }
-            } catch (Exception e) {
-                logger.error("Flush loop error", e);
+
+                // 更新健康状态
+                lastFlushTime = System.currentTimeMillis();
+
+            } catch (Throwable t) {
+                flushErrorCount.increment();
+                logger.error("Flush loop error, continuing...", t);
+                // 不退出循环，继续尝试刷盘
+
+                // 短暂休眠避免 CPU 空转
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
         }
+
+        logger.info("Flush loop ended");
     }
 
     /**
@@ -271,6 +303,8 @@ public class WalWriter implements AutoCloseable {
         }
 
         long startTime = System.nanoTime();
+        long firstSequence = batch.get(0).sequence;
+        long lastSequence = batch.get(batch.size() - 1).sequence;
 
         try {
             // 批量编码
@@ -287,11 +321,16 @@ public class WalWriter implements AutoCloseable {
                 currentChannel.force(false);
             }
 
-            // 完成 Future
+            // 获取当前文件位置
             long position = currentChannel.position();
+
+            // 完成已提交的 Future（ACK 语义：已入队即视为成功）
             for (WriteRequest request : batch) {
                 request.future.complete(position);
             }
+
+            // 通知等待刷盘确认的 Future
+            notifyPendingFlushFutures(firstSequence, lastSequence, position);
 
             // 统计
             long elapsedNs = System.nanoTime() - startTime;
@@ -309,9 +348,50 @@ public class WalWriter implements AutoCloseable {
             for (WriteRequest request : batch) {
                 request.future.completeExceptionally(e);
             }
+            // 通知等待的 Future 也失败
+            notifyPendingFlushFuturesExceptionally(firstSequence, lastSequence, e);
             logger.error("Flush batch failed", e);
             return batch.size();
         }
+    }
+
+    /**
+     * 通知等待刷盘确认的 Future
+     */
+    private void notifyPendingFlushFutures(long firstSeq, long lastSeq, long position) {
+        // 获取所有小于等于 lastSeq 的等待 Future
+        var headMap = pendingFlushMap.headMap(lastSeq, true);
+
+        for (var entry : headMap.entrySet()) {
+            long seq = entry.getKey();
+            if (seq >= firstSeq) {
+                // 完成该序列号对应的所有 Future
+                for (CompletableFuture<Long> future : entry.getValue()) {
+                    future.complete(position);
+                }
+            }
+        }
+
+        // 清理已完成的 Future
+        headMap.clear();
+    }
+
+    /**
+     * 通知等待刷盘确认的 Future（异常情况）
+     */
+    private void notifyPendingFlushFuturesExceptionally(long firstSeq, long lastSeq, IOException e) {
+        var headMap = pendingFlushMap.headMap(lastSeq, true);
+
+        for (var entry : headMap.entrySet()) {
+            long seq = entry.getKey();
+            if (seq >= firstSeq) {
+                for (CompletableFuture<Long> future : entry.getValue()) {
+                    future.completeExceptionally(e);
+                }
+            }
+        }
+
+        headMap.clear();
     }
 
     /**
@@ -396,9 +476,9 @@ public class WalWriter implements AutoCloseable {
     }
 
     /**
-     * 写入记录（异步）
+     * 写入记录（异步）- ASYNC 语义：已入队即返回
      *
-     * @return CompletableFuture，完成后返回文件位置
+     * @return CompletableFuture，记录已提交到 RingBuffer 即完成
      */
     public CompletableFuture<Long> appendAsync(String taskId, String bizKey,
                                                 EventType eventType, long eventTime,
@@ -425,7 +505,85 @@ public class WalWriter implements AutoCloseable {
     }
 
     /**
-     * 写入记录（同步）
+     * 写入记录（带超时尝试）- 支持背压控制
+     *
+     * @return CompletableFuture，如果无法立即入队则返回失败的 Future
+     */
+    public CompletableFuture<Long> appendAsyncWithTimeout(String taskId, String bizKey,
+                                                           EventType eventType, long eventTime,
+                                                           byte[] payload,
+                                                           long timeout, TimeUnit unit) {
+        if (closed.get()) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("Writer is closed"));
+        }
+
+        long seq = recordSeq.incrementAndGet();
+        WriteRequest request = new WriteRequest(
+                seq, taskId, bizKey, eventType, eventTime, payload
+        );
+
+        // 尝试写入 RingBuffer（带超时）
+        if (!ringBuffer.offerWithTimeout(request, timeout, unit)) {
+            stats.recordOverflow();
+            return CompletableFuture.failedFuture(
+                    new WALOverloadException("WAL write pressure too high, RingBuffer is full"));
+        }
+
+        stats.recordWrite();
+        return request.future;
+    }
+
+    /**
+     * 等待指定序列号的记录刷盘完成（DURABLE 语义）
+     *
+     * @param sequence 记录序列号（从 appendAsync 返回的 Future 获取）
+     * @return CompletableFuture，刷盘完成后返回文件位置
+     */
+    public CompletableFuture<Long> waitForFlush(long sequence) {
+        CompletableFuture<Long> flushFuture = new CompletableFuture<>();
+
+        // 检查是否已经刷盘
+        if (isFlushed(sequence)) {
+            flushFuture.complete(getCurrentPosition());
+            return flushFuture;
+        }
+
+        // 添加到等待映射
+        pendingFlushMap.computeIfAbsent(sequence, k -> new ArrayList<>()).add(flushFuture);
+
+        // 再次检查（避免竞态条件）
+        if (isFlushed(sequence)) {
+            pendingFlushMap.remove(sequence);
+            flushFuture.complete(getCurrentPosition());
+        }
+
+        return flushFuture;
+    }
+
+    /**
+     * 检查指定序列号是否已刷盘
+     */
+    private boolean isFlushed(long sequence) {
+        // 如果刷盘位置已超过该序列号，则认为已刷盘
+        return pendingFlushMap.isEmpty() || pendingFlushMap.firstKey() > sequence;
+    }
+
+    /**
+     * 获取当前文件位置
+     */
+    private long getCurrentPosition() {
+        try {
+            return currentChannel != null && currentChannel.isOpen()
+                ? currentChannel.position()
+                : -1;
+        } catch (IOException e) {
+            return -1;
+        }
+    }
+
+    /**
+     * 写入记录（同步）- DURABLE 语义：等待刷盘完成
      *
      * @return 文件位置
      * @throws IOException 如果写入失败
@@ -433,9 +591,43 @@ public class WalWriter implements AutoCloseable {
     public long append(String taskId, String bizKey,
                        EventType eventType, long eventTime,
                        byte[] payload) throws IOException {
+        return append(taskId, bizKey, eventType, eventTime, payload, true);
+    }
+
+    /**
+     * 写入记录（同步）- 可配置是否等待刷盘
+     *
+     * @param waitForFlush 是否等待刷盘完成
+     * @return 文件位置
+     * @throws IOException 如果写入失败
+     */
+    public long append(String taskId, String bizKey,
+                       EventType eventType, long eventTime,
+                       byte[] payload, boolean waitForFlush) throws IOException {
         try {
-            return appendAsync(taskId, bizKey, eventType, eventTime, payload)
-                    .get(writeTimeoutMs, TimeUnit.MILLISECONDS);
+            // 1. 提交到 RingBuffer
+            CompletableFuture<Long> committedFuture = appendAsync(
+                taskId, bizKey, eventType, eventTime, payload);
+
+            long sequence = recordSeq.get();
+
+            // 2. 等待入队完成
+            Long position = committedFuture.get(writeTimeoutMs, TimeUnit.MILLISECONDS);
+
+            // 3. ASYNC 语义：不等待刷盘
+            if (!waitForFlush) {
+                return position;
+            }
+
+            // 4. DURABLE 语义：等待刷盘完成
+            CompletableFuture<Long> flushFuture = waitForFlush(sequence);
+
+            // 动态计算超时：max(5s, batchInterval * 10)
+            long flushTimeoutMs = Math.max(writeTimeoutMs,
+                config.batchFlushIntervalMs() * 10);
+
+            return flushFuture.get(flushTimeoutMs, TimeUnit.MILLISECONDS);
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Write interrupted", e);
@@ -445,7 +637,7 @@ public class WalWriter implements AutoCloseable {
             }
             throw new IOException("Write failed", e.getCause());
         } catch (TimeoutException e) {
-            throw new IOException("Write timeout", e);
+            throw new IOException("Write timeout (may be in unknown state, check idempotency)", e);
         }
     }
 
@@ -497,6 +689,64 @@ public class WalWriter implements AutoCloseable {
     public Stats getStats() {
         return stats;
     }
+
+    // ========== 健康监控 API ==========
+
+    /**
+     * 获取最后一次刷盘时间
+     */
+    public long getLastFlushTime() {
+        return lastFlushTime;
+    }
+
+    /**
+     * 获取刷盘错误计数
+     */
+    public long getFlushErrorCount() {
+        return flushErrorCount.sum();
+    }
+
+    /**
+     * 健康检查
+     *
+     * @return true 如果健康
+     */
+    public boolean isHealthy() {
+        long idleTime = System.currentTimeMillis() - lastFlushTime;
+        long maxIdleTime = Math.max(5000, config.batchFlushIntervalMs() * 2);
+        return idleTime < maxIdleTime && flushErrorCount.sum() < 10;
+    }
+
+    /**
+     * 获取健康状态详情
+     */
+    public HealthStatus getHealthStatus() {
+        long idleTime = System.currentTimeMillis() - lastFlushTime;
+        long maxIdleTime = Math.max(5000, config.batchFlushIntervalMs() * 2);
+        boolean healthy = idleTime < maxIdleTime && flushErrorCount.sum() < 10;
+
+        return new HealthStatus(healthy, idleTime, flushErrorCount.sum(),
+            ringBuffer.size(), running.get());
+    }
+
+    /**
+     * 强制立即刷盘（紧急使用）
+     */
+    public void flushNow() {
+        flushAll();
+        lastFlushTime = System.currentTimeMillis();
+    }
+
+    /**
+     * 健康状态
+     */
+    public record HealthStatus(
+        boolean healthy,
+        long idleTimeMs,
+        long errorCount,
+        int pendingWrites,
+        boolean running
+    ) {}
 
     /**
      * 统计信息

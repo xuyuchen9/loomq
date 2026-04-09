@@ -32,7 +32,7 @@ class ShardMigratorTest {
         assertEquals("node-new", task.getTargetNode());
 
         // 等待迁移完成
-        Thread.sleep(500);
+        Thread.sleep(200); // 优化: 500 -> 200
 
         assertEquals(ShardMigrator.MigrationState.COMPLETED, task.getState());
         assertEquals(100, task.getProgress());
