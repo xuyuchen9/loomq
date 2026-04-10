@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # LoomQ Startup Script (Linux/macOS)
-# Version: 0.4.5
+# Version: 0.6.1
 #
 
 set -e
@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Default configuration
-JAR_FILE="target/loomq-0.1.0-SNAPSHOT-shaded.jar"
+JAR_FILE="target/loomq-0.6.0.jar"
 JVM_XMS="${JVM_XMS:-2g}"
 JVM_XMX="${JVM_XMX:-2g}"
 JVM_GC="${JVM_GC:-ZGC}"
@@ -44,8 +44,8 @@ check_java() {
     JAVA_VERSION=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}')
     JAVA_MAJOR=$(echo "$JAVA_VERSION" | awk -F. '{print $1}')
 
-    if [ "$JAVA_MAJOR" -lt 21 ]; then
-        print_error "Java 21+ is required, found: $JAVA_VERSION"
+    if [ "$JAVA_MAJOR" -lt 25 ]; then
+        print_error "Java 25+ is required, found: $JAVA_VERSION"
         exit 1
     fi
 
@@ -95,7 +95,6 @@ start_loomq() {
     JVM_ARGS="-Xms${JVM_XMS} -Xmx${JVM_XMX}"
     JVM_ARGS="${JVM_ARGS} -XX:+Use${JVM_GC}"
     JVM_ARGS="${JVM_ARGS} -XX:MaxGCPauseMillis=${JVM_GC_PAUSE}"
-    JVM_ARGS="${JVM_ARGS} --enable-preview"
 
     # System properties
     SYS_PROPS="-Dloomq.server.host=${LOOMQ_HOST}"
@@ -120,7 +119,7 @@ trap cleanup SIGTERM SIGINT
 
 # Main execution
 main() {
-    print_info "LoomQ Startup Script v0.4.5"
+    print_info "LoomQ Startup Script v0.6.1"
 
     check_java
     check_jar

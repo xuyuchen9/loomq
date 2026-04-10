@@ -1,23 +1,18 @@
 package com.loomq;
 
-import com.loomq.LoomqEngine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * LoomQ v0.5 应用程序入口
+ * LoomQ 应用程序入口
  *
- * 使用方式：
- * ```
- * java -Dloomq.node.id=node-1 \
- *      -Dloomq.shard.id=shard-0 \
- *      -Dloomq.data.dir=./data \
- *      -Dloomq.port=8080 \
- *      -jar loomq-0.5.0.jar
- * ```
+ * v0.6.1 简化引擎：
+ * - WAL: 8字节头+二进制，~100ns 序列化，零 GC
+ * - 投递: 批量同步替代异步回调
+ * - 目标: 200K+ QPS
  *
  * @author loomq
- * @since v0.5.0
+ * @since v0.6.1
  */
 public class LoomqApplication {
 
@@ -35,7 +30,7 @@ public class LoomqApplication {
         logger.info("Configuration: nodeId={}, shardId={}, dataDir={}, port={}",
             nodeId, shardId, dataDir, port);
 
-        // 创建并启动引擎
+        // 创建引擎
         LoomqEngine engine = new LoomqEngine(nodeId, shardId, dataDir, port);
 
         // 注册关闭钩子
@@ -45,6 +40,7 @@ public class LoomqApplication {
         }));
 
         try {
+            // 启动引擎
             engine.start();
 
             // 保持主线程运行
@@ -64,15 +60,15 @@ public class LoomqApplication {
 
     private static void printBanner() {
         System.out.println();
-        System.out.println("██╗      ██████╗  ██████╗ ███╗   ███╗ ██████╗ ██╗  ██╗    ██╗   ██╗ ██████╗ ██████╗");
-        System.out.println("██║     ██╔═══██╗██╔═══██╗████╗ ████║██╔═══██╗██║  ██║    ██║   ██║██╔═══██╗╚════██╗");
-        System.out.println("██║     ██║   ██║██║   ██║██╔████╔██║██║   ██║███████║    ██║   ██║██║   ██║ █████╔╝");
-        System.out.println("██║     ██║   ██║██║   ██║██║╚██╔╝██║██║▄▄ ██║██╔══██║    ╚██╗ ██╔╝██║   ██║██╔═══╝");
-        System.out.println("███████╗╚██████╔╝╚██████╔╝██║ ╚═╝ ██║╚██████╔╝██║  ██║     ╚████╔╝ ╚██████╔╝███████╗");
-        System.out.println("╚══════╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝ ╚══▀▀═╝ ╚═╝  ╚═╝      ╚═══╝   ╚═════╝ ╚══════╝");
+        System.out.println("██╗      ██████╗  ██████╗ ███╗   ███╗ ██████╗ ");
+        System.out.println("██║     ██╔═══██╗██╔═══██╗████╗ ████║██╔═══██╗");
+        System.out.println("██║     ██║   ██║██║   ██║██╔████╔██║██║   ██║");
+        System.out.println("██║     ██║   ██║██║   ██║██║╚██╔╝██║██║▄▄ ██║");
+        System.out.println("███████╗╚██████╔╝╚██████╔╝██║ ╚═╝ ██║╚██████╔╝");
+        System.out.println("╚══════╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝ ╚══▀▀═╝ ");
         System.out.println();
-        System.out.println("                    Event Infrastructure for Delayed Execution");
-        System.out.println("                               Version 0.5.0");
+        System.out.println(" Event Infrastructure for Delayed Execution");
+        System.out.println("              Version 0.6.1");
         System.out.println();
     }
 }

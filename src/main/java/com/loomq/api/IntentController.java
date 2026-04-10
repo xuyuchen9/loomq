@@ -2,6 +2,7 @@ package com.loomq.api;
 
 import com.loomq.entity.v5.Intent;
 import com.loomq.entity.v5.IntentStatus;
+import com.loomq.entity.v5.PrecisionTier;
 import com.loomq.replication.AckLevel;
 import com.loomq.store.IdempotencyResult;
 import com.loomq.store.IntentStore;
@@ -116,6 +117,7 @@ public class IntentController {
             intent.setExecuteAt(request.executeAt());
             intent.setDeadline(request.deadline());
             intent.setExpiredAction(request.expiredAction());
+            intent.setPrecisionTier(request.precisionTier() != null ? request.precisionTier() : PrecisionTier.STANDARD);
             intent.setShardKey(request.shardKey());
             intent.setAckLevel(request.ackLevel() != null ? request.ackLevel() : AckLevel.DURABLE);
             intent.setCallback(request.callback());

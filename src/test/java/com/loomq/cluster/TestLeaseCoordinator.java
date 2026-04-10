@@ -1,5 +1,6 @@
 package com.loomq.cluster;
 
+import com.loomq.cluster.v5.FencingToken;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -178,7 +179,7 @@ class TestLeaseCoordinator implements AutoCloseable {
             return false;
         }
         CoordinatorLease currentLease = activeLeases.get(shardId);
-        return currentLease != null && token.isValidFor(currentLease);
+        return currentLease != null && token.isValidAgainst(currentLease.toFencingToken());
     }
 
     public long getCurrentFencingSequence(String shardId) {

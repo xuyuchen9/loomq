@@ -2,6 +2,7 @@ package com.loomq.api;
 
 import com.loomq.entity.v5.Intent;
 import com.loomq.entity.v5.IntentStatus;
+import com.loomq.entity.v5.PrecisionTier;
 import com.loomq.replication.AckLevel;
 
 import java.time.Instant;
@@ -18,6 +19,7 @@ public record IntentResponse(
     Instant executeAt,
     Instant deadline,
     com.loomq.entity.v5.ExpiredAction expiredAction,
+    PrecisionTier precisionTier,
     AckLevel ackLevel,
     int attempts,
     String lastDeliveryId,
@@ -32,6 +34,7 @@ public record IntentResponse(
             intent.getExecuteAt(),
             intent.getDeadline(),
             intent.getExpiredAction(),
+            intent.getPrecisionTier(),
             intent.getAckLevel(),
             intent.getAttempts(),
             intent.getLastDeliveryId(),

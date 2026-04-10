@@ -1,0 +1,16 @@
+# LoomQ v0.6.0 Dockerfile
+FROM openjdk:21-jdk-slim
+
+# 安装 wrk 压测工具和依赖
+RUN apt-get update && apt-get install -y wrk curl && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 复制 jar 文件
+COPY target/loomq-0.6.0.jar /app/loomq.jar
+
+# 暴露端口
+EXPOSE 8080
+
+# 启动命令
+CMD ["java", "--enable-preview", "-jar", "loomq.jar"]

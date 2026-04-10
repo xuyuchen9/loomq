@@ -56,6 +56,12 @@ public class Intent {
      */
     private ExpiredAction expiredAction;
 
+    /**
+     * 精度档位：ULTRA / FAST / HIGH / STANDARD / ECONOMY
+     * 默认 STANDARD
+     */
+    private PrecisionTier precisionTier;
+
     // ========== 路由字段 ==========
 
     /**
@@ -121,6 +127,7 @@ public class Intent {
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
         this.expiredAction = ExpiredAction.DISCARD;
+        this.precisionTier = PrecisionTier.STANDARD;
         this.ackLevel = AckLevel.DURABLE;
         this.attempts = 0;
     }
@@ -131,6 +138,7 @@ public class Intent {
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
         this.expiredAction = ExpiredAction.DISCARD;
+        this.precisionTier = PrecisionTier.STANDARD;
         this.ackLevel = AckLevel.DURABLE;
         this.attempts = 0;
     }
@@ -254,6 +262,15 @@ public class Intent {
         this.updatedAt = Instant.now();
     }
 
+    public PrecisionTier getPrecisionTier() {
+        return precisionTier;
+    }
+
+    public void setPrecisionTier(PrecisionTier precisionTier) {
+        this.precisionTier = precisionTier;
+        this.updatedAt = Instant.now();
+    }
+
     public String getShardKey() {
         return shardKey;
     }
@@ -320,7 +337,7 @@ public class Intent {
 
     @Override
     public String toString() {
-        return String.format("Intent{id=%s, status=%s, executeAt=%s, deadline=%s}",
-            intentId, status, executeAt, deadline);
+        return String.format("Intent{id=%s, status=%s, executeAt=%s, deadline=%s, tier=%s}",
+            intentId, status, executeAt, deadline, precisionTier);
     }
 }

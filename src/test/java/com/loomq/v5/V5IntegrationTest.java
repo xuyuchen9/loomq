@@ -62,6 +62,7 @@ public class V5IntegrationTest {
         Thread.sleep(1000);
 
         // 配置 Unirest
+        Unirest.config().reset();
         Unirest.config()
             .socketTimeout(5000)
             .connectTimeout(5000);

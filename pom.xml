@@ -6,16 +6,16 @@
 
     <groupId>com.loomq</groupId>
     <artifactId>loomq</artifactId>
-    <version>0.5.0</version>
+    <version>0.6.1</version>
     <packaging>jar</packaging>
 
     <name>loomq</name>
-    <description>Lightweight delayed task scheduling engine based on Java 21 virtual threads</description>
+    <description>Lightweight delayed task scheduling engine based on Java 25 virtual threads</description>
 
     <properties>
-        <java.version>21</java.version>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
+        <java.version>25</java.version>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- Dependencies -->

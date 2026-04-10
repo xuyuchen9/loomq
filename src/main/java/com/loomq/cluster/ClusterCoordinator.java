@@ -1,5 +1,6 @@
 package com.loomq.cluster;
 
+import com.loomq.cluster.v5.FencingToken;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -942,7 +943,7 @@ public class ClusterCoordinator implements AutoCloseable {
             return false;
         }
 
-        return token.isValidFor(currentLease);
+        return token.isValidAgainst(currentLease.toFencingToken());
     }
 
     /**
