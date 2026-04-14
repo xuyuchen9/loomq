@@ -1,10 +1,9 @@
 package com.loomq.cluster;
 
-import com.loomq.cluster.v5.FencingToken;
+import com.loomq.domain.cluster.FencingToken;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -84,7 +83,7 @@ class TestLeaseCoordinator implements AutoCloseable {
         if (currentLease != null && currentLease.isValid()) {
             if (!currentLease.isHeldBy(nodeId)) {
                 logger.warn("Lease for shard {} is held by {}, rejecting request from {}",
-                    shardId, currentLease.getHolderNodeId(), nodeId);
+                    shardId, currentLease.getNodeId(), nodeId);
                 return Optional.empty();
             }
             return renewLeaseInternal(shardId, currentLease);
@@ -154,8 +153,8 @@ class TestLeaseCoordinator implements AutoCloseable {
         }
 
         CoordinatorLease newLease = new CoordinatorLease(
-            currentLease.getHolderNodeId(), shardId, leaseDurationMs,
-            currentLease.getRoutingVersion(), currentLease.getFencingSequence());
+            currentLease.getNodeId(), shardId, leaseDurationMs,
+            currentLease.getRoutingVersion(), currentLease.currentFencingToken());
 
         activeLeases.put(shardId, newLease);
         notifyLeaseEvent(new LeaseEvent(LeaseEvent.EventType.RENEWED, shardId, newLease, currentLease));
@@ -184,7 +183,7 @@ class TestLeaseCoordinator implements AutoCloseable {
 
     public long getCurrentFencingSequence(String shardId) {
         CoordinatorLease lease = activeLeases.get(shardId);
-        return lease != null && lease.isValid() ? lease.getFencingSequence() : -1;
+        return lease != null && lease.isValid() ? lease.currentFencingToken() : -1;
     }
 
     // ========== 查询 ==========
@@ -200,7 +199,7 @@ class TestLeaseCoordinator implements AutoCloseable {
     }
 
     public Optional<String> getCurrentPrimary(String shardId) {
-        return getCurrentLease(shardId).map(CoordinatorLease::getHolderNodeId);
+        return getCurrentLease(shardId).map(CoordinatorLease::getNodeId);
     }
 
     public long getShardRoutingVersion(String shardId) {

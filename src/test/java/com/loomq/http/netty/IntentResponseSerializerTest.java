@@ -3,9 +3,9 @@ package com.loomq.http.netty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import com.loomq.entity.v5.Intent;
-import com.loomq.entity.v5.IntentStatus;
-import com.loomq.entity.v5.PrecisionTier;
+import com.loomq.domain.intent.Intent;
+import com.loomq.domain.intent.IntentStatus;
+import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.replication.AckLevel;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -17,7 +17,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * IntentResponseSerializer 测试

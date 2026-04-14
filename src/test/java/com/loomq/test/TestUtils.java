@@ -1,7 +1,6 @@
 package com.loomq.test;
 
 import com.loomq.config.WalConfig;
-import com.loomq.entity.EventType;
 
 import java.nio.file.Path;
 import java.util.Random;

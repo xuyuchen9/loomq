@@ -1,6 +1,6 @@
 package com.loomq.store;
 
-import com.loomq.entity.v5.Intent;
+import com.loomq.domain.intent.Intent;
 
 /**
  * 幂等查询结果 (v0.5)

@@ -1,11 +1,10 @@
 package com.loomq.store;
 
-import com.loomq.entity.v5.Intent;
-import com.loomq.entity.v5.IntentStatus;
+import com.loomq.domain.intent.Intent;
+import com.loomq.domain.intent.IntentStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;

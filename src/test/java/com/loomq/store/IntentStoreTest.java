@@ -1,16 +1,19 @@
 package com.loomq.store;
 
-import com.loomq.entity.v5.Callback;
-import com.loomq.entity.v5.Intent;
-import com.loomq.entity.v5.IntentStatus;
+import com.loomq.domain.intent.Callback;
+import com.loomq.domain.intent.Intent;
+import com.loomq.domain.intent.IntentStatus;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Intent 存储测试

@@ -1,14 +1,13 @@
 package com.loomq.http.netty;
 
-import com.loomq.entity.v5.Intent;
-import com.loomq.entity.v5.IntentStatus;
-import com.loomq.entity.v5.PrecisionTier;
+import com.loomq.domain.intent.Intent;
+import com.loomq.domain.intent.IntentStatus;
+import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.replication.AckLevel;
 import io.netty.buffer.ByteBuf;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.time.format.DateTimeFormatter;
 
 /**
  * Intent 响应序列化器（零拷贝优化）

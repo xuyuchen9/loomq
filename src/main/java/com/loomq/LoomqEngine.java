@@ -1,23 +1,31 @@
 package com.loomq;
 
-import com.loomq.cluster.*;
+import com.loomq.application.scheduler.PrecisionScheduler;
+import com.loomq.cluster.CoordinatorLease;
+import com.loomq.cluster.FailoverController;
+import com.loomq.cluster.InMemoryLeaseCoordinator;
+import com.loomq.cluster.ReplicaRole;
 import com.loomq.common.MetricsCollector;
-import com.loomq.config.ServerConfig;
 import com.loomq.config.WalConfig;
-import com.loomq.dispatcher.BatchDispatcher;
-import com.loomq.entity.v5.Intent;
-import com.loomq.http.netty.*;
+import com.loomq.application.dispatcher.BatchDispatcher;
+import com.loomq.domain.intent.Intent;
+import com.loomq.http.netty.IntentHandler;
+import com.loomq.http.netty.NettyHttpServer;
+import com.loomq.http.netty.NettyServerConfig;
+import com.loomq.http.netty.RadixRouter;
+import com.loomq.infrastructure.wal.IntentWal;
 import com.loomq.replication.ReplicationManager;
-import com.loomq.scheduler.v5.PrecisionScheduler;
 import com.loomq.snapshot.SnapshotManager;
 import com.loomq.store.IntentStore;
-import com.loomq.wal.v2.IntentWalV2;
 import org.aeonbits.owner.ConfigFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Map;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * LoomQ v0.6.1 简化引擎 - 第一性原理实现
@@ -57,7 +65,7 @@ public class LoomqEngine implements AutoCloseable {
     private InMemoryLeaseCoordinator leaseCoordinator;
     private FailoverController failoverController;
     private ReplicationManager replicationManager;
-    private IntentWalV2 intentWal;
+    private IntentWal intentWal;
 
     // HTTP 服务
     private NettyHttpServer nettyHttpServer;
@@ -203,7 +211,7 @@ public class LoomqEngine implements AutoCloseable {
 
             WalConfig customWalConfig = createWalConfig(walConfig, walDataDir);
 
-            intentWal = new IntentWalV2(customWalConfig, shardId);
+            intentWal = new IntentWal(customWalConfig, shardId);
             intentWal.start();
 
             logger.info("    WAL initialized (simplified, engine=SimpleWalWriter)");
@@ -466,7 +474,7 @@ public class LoomqEngine implements AutoCloseable {
     public IntentStore getIntentStore() { return intentStore; }
     public PrecisionScheduler getScheduler() { return scheduler; }
     public BatchDispatcher getDispatcher() { return dispatcher; }
-    public IntentWalV2 getIntentWal() { return intentWal; }
+    public IntentWal getIntentWal() { return intentWal; }
 
     // ==================== 内部类 ====================
 

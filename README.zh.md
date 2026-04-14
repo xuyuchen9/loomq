@@ -1,164 +1,53 @@
-# LoomQ
+# LoomQ - 高性能单机延迟任务调度引擎
 
-[![Java 21](https://img.shields.io/badge/Java-21-blue)](https://openjdk.org/projects/jdk/21/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-400%2B%20passed-brightgreen)]()
+[![JDK](https://img.shields.io/badge/JDK-25%2B-green.svg)](https://openjdk.org/)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-0.6.x-blue.svg)](https://central.sonatype.com/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Tests](https://img.shields.io/badge/Tests-367%20passed-brightgreen.svg)]()
 
-> **高性能延迟任务队列引擎**
->
-> 纯 Java 21 实现，基于虚拟线程，支持 WAL 持久化。
-> 无需 Redis。无需 RabbitMQ。只需一个 JAR。
+**基于 Java 21+ 虚拟线程，让未来事件可靠发生。**
 
-[English](README.md)
+LoomQ 是一个高性能单机延迟任务调度引擎。它不是通用消息队列，也不是工作流引擎——它的核心价值是确保未来事件在指定时间可靠触发。
+
+> **注意：** v0.6.x 是单机版的性能里程碑版本，后续版本将转向分布式部署和可嵌入式内核。
 
 ---
 
-## 为什么选择 LoomQ？
+## 核心特性
 
-### 传统方案的问题
-
-| 方案 | 写入 QPS | 内存/任务 | 依赖 |
-|------|----------|-----------|------|
-| Redis ZSET | ~10万 | ~1KB | Redis 集群 |
-| RabbitMQ DLX | ~5万 | ~2KB | MQ 集群 |
-| Quartz (JDBC) | ~1万 | ~1KB | 数据库 |
-
-### LoomQ 的优势
-
-| 指标 | LoomQ | 领先优势 |
-|------|-------|----------|
-| **写入吞吐** | **40万+ QPS** | 比 RabbitMQ 快 8 倍 |
-| **读取吞吐** | **50万+ QPS** | 比 Redis 快 10 倍 |
-| **单任务内存** | **~200 字节** | 比 Redis 省 5 倍 |
-| **外部依赖** | **无** | 无需 Redis/MQ 集群 |
-| **部署方式** | **单 JAR** | 无需多节点集群 |
+| 特性 | 说明 |
+|------|------|
+| **五档精度调度** | ULTRA(10ms)、FAST(50ms)、HIGH(100ms)、STANDARD(500ms)、ECONOMY(1000ms)——根据场景选择合适精度 |
+| **持久化保证** | ASYNC 模式 RPO < 100ms，DURABLE 模式 RPO = 0 |
+| **虚拟线程原生** | 零线程池调优，轻松处理百万级并发延迟任务 |
+| **O(1) 过期复杂度** | 时间轮分桶过期回收，常数时间复杂度 |
+| **Netty HTTP 层** | 高性能 HTTP 服务 + 内存映射零拷贝 WAL |
+| **可观测性** | Prometheus 指标 + HdrHistogram 高精度延迟统计 |
 
 ---
 
 ## 性能基准
 
-### HTTP API 性能 (v0.6.0)
+**测试环境：** JDK 25、NVMe SSD、16 核、localhost
 
-Netty + 手写 JSON 序列化器 + 虚拟线程
+### 写入吞吐量
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    LoomQ v0.6.0 基准测试结果                            │
-├─────────────────────────────────────────────────────────────────────────┤
-│ 测试环境: Windows 11, JDK 21, 22 核, 8GB 堆内存                        │
-├─────────────────┬──────────────┬──────────────┬──────────────┬─────────┤
-│ 接口            │ 峰值 QPS     │ P50 延迟     │ P99 延迟     │ 线程数  │
-├─────────────────┼──────────────┼──────────────┼──────────────┼─────────┤
-│ POST /intents   │   41,786     │    2ms       │    7ms       │   100   │
-│ GET /intents/{id}│   55,585     │    3ms       │    6ms       │   200   │
-│ GET /health     │   61,279     │    1ms       │    3ms       │   100   │
-└─────────────────┴──────────────┴──────────────┴──────────────┴─────────┘
-```
+| 模式 | QPS | 说明 |
+|------|-----|------|
+| ASYNC | **424,077** | 发布后立即返回，RPO < 100ms |
+| DURABLE | **>150,000** | WAL 刷盘后返回，RPO = 0 |
 
-### 核心引擎性能
+### 端到端触发性能（50 并发线程）
 
-| 组件 | 吞吐量 | 描述 |
-|------|--------|------|
-| **RingBuffer** | 1880万 ops/s | 无锁 MPSC 队列，用于 WAL |
-| **IntentStore** | 110万 ops/s | ConcurrentHashMap，无锁竞争 |
-| **JSON 序列化器** | 比 Jackson 快 7 倍 | 手写零拷贝序列化 |
+| 档位 | 窗口 | QPS | 资源效率 | P99 延迟 | 适用场景 |
+|------|------|-----|---------|----------|----------|
+| ULTRA | 10ms | 45,949 | 2.5% | ≤15ms | 分布式锁续期 |
+| FAST | 50ms | 44,718 | 5% | ≤60ms | 消息重试、退避 |
+| HIGH | 100ms | 40,710 | 10% | ≤120ms | 默认档位 |
+| STANDARD | 500ms | 39,974 | 25% | ≤550ms | **推荐**，订单超时 |
+| ECONOMY | 1000ms | 42,295 | 25% | ≤1100ms | 海量长延迟任务 |
 
-### JSON 序列化优化 (v0.6.0)
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│ 序列化性能对比                                               │
-├─────────────────────────┬────────────────┬──────────────────┤
-│ 实现                    │ 延迟 (ns)      │ 提升             │
-├─────────────────────────┼────────────────┼──────────────────┤
-│ Jackson ObjectMapper    │    14,229      │    1.0x          │
-│ 手写序列化器            │     2,309      │    6.2x          │
-└─────────────────────────┴────────────────┴──────────────────┘
-```
-
-**优化手段:**
-- 预定义 JSON 结构字节数组模板
-- 直接写入 `ByteBuf`，零中间 `byte[]` 拷贝
-- 快速路径字符串序列化（大部分情况无需转义）
-
----
-
-## 架构设计
-
-### 设计哲学
-
-```
-传统方案:
-┌─────────────────────────────────────────────────────────────┐
-│ 任务 → 优先队列 → 轮询线程 → 工作线程池 → 执行              │
-│                                                             │
-│ 问题:                                                       │
-│ • 优先队列: O(log n) 插入，锁竞争                           │
-│ • 轮询线程: CPU 空转或休眠延迟                              │
-│ • 线程池: 固定大小，需调优                                  │
-└─────────────────────────────────────────────────────────────┘
-
-LoomQ 方案:
-┌─────────────────────────────────────────────────────────────┐
-│ 任务 → 虚拟线程.sleep(delay) → 执行回调                     │
-│                                                             │
-│ 为什么可行:                                                 │
-│ • 虚拟线程休眠: ~200 字节 (vs 平台线程 1MB)                 │
-│ • 100万休眠虚拟线程 = ~200MB 堆内存                         │
-│ • 载体线程由 JVM 管理                                       │
-│ • 无全局数据结构 → 无锁竞争                                 │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 系统架构
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           API 层                                         │
-│  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │  Netty HTTP 服务器 (4 I/O 线程 + 虚拟线程业务池)                   │ │
-│  │  • 零拷贝 JSON 序列化                                              │ │
-│  │  • RadixTree 路由                                                  │ │
-│  │  • Semaphore 背压控制                                              │ │
-│  └────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        核心引擎                                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐ │
-│  │  RingBuffer  │  │    WAL v2    │  │   Bucket     │  │  Dispatcher │ │
-│  │  64K MPSC    │  │ Group Commit │  │  Scheduler   │  │  Virtual    │ │
-│  │  1880万ops/s │  │  50万 QPS    │  │  5 档位      │  │  Threads    │ │
-│  └──────────────┘  └──────────────┘  └──────────────┘  └─────────────┘ │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### 精度档位
-
-根据业务场景选择合适的精度：
-
-| 档位 | 窗口 | SLO (P99) | 峰值 QPS | 使用场景 |
-|------|------|-----------|----------|----------|
-| `ULTRA` | 10ms | ≤15ms ✅ | **45,949** | 分布式锁续期 |
-| `FAST` | 50ms | ≤60ms ✅ | **44,718** | 消息重试、退避 |
-| `HIGH` | 100ms | ≤120ms ✅ | **40,710** | 默认档位 |
-| `STANDARD` | 500ms | ≤550ms ✅ | **39,974** | **推荐**，订单超时 |
-| `ECONOMY` | 1000ms | ≤1100ms ✅ | **42,295** | 海量长延迟任务 |
-
-**各线程数性能表现:**
-
-```
-┌──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐
-│ 档位         │  50 线程     │ 100 线程     │ 200 线程     │ 400 线程     │
-├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
-│ ULTRA        │     30,622   │     45,949   │     43,911   │     43,267   │
-│ FAST         │     39,544   │     44,718   │     41,140   │     37,379   │
-│ HIGH         │     40,710   │     37,222   │     37,252   │     34,937   │
-│ STANDARD     │     39,974   │     39,945   │     38,994   │     38,823   │
-│ ECONOMY      │     41,220   │     42,295   │     39,641   │     38,903   │
-└──────────────┴──────────────┴──────────────┴──────────────┴──────────────┘
-```
+**关键结论：** ECONOMY 档位的单线程效率是 ULTRA 的 10 倍，适合海量长延迟任务场景。
 
 ---
 
@@ -166,197 +55,185 @@ LoomQ 方案:
 
 ### 环境要求
 
-- Java 21+ (虚拟线程必需)
-- Maven 3.8+
+- JDK 25+（无需 `--enable-preview`）
+- Maven 3.9+
 
-### 构建
+### Maven 依赖
+
+```xml
+<dependency>
+    <groupId>com.loomq</groupId>
+    <artifactId>loomq-core</artifactId>
+    <version>0.6.2</version>
+</dependency>
+```
+
+### 从源码构建
 
 ```bash
+git clone https://github.com/loomq/loomq.git
+cd loomq
 mvn clean package -DskipTests
 ```
 
-### 运行
+### 启动服务
 
 ```bash
-java --enable-preview -jar target/loomq-0.6.0.jar
+java -jar target/loomq-0.6.2.jar
 ```
 
-### 创建 Intent
+服务默认监听 `http://localhost:8080`。
+
+### 创建第一个延迟任务
 
 ```bash
+# 创建 30 秒后触发的延迟任务
 curl -X POST http://localhost:8080/v1/intents \
   -H "Content-Type: application/json" \
   -d '{
-    "executeAt": "2026-04-10T12:30:00Z",
-    "deadline": "2026-04-10T12:35:00Z",
-    "shardKey": "order-12345",
+    "executeAt": "'$(date -u -d "+30 seconds" +%Y-%m-%dT%H:%M:%SZ)'",
     "precisionTier": "STANDARD",
     "callback": {
-      "url": "https://api.example.com/webhook"
+      "url": "http://your-server/callback",
+      "method": "POST"
     }
   }'
 ```
 
-响应:
-```json
-{
-  "intentId": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "SCHEDULED",
-  "executeAt": "2026-04-10T12:30:00Z",
-  "deadline": "2026-04-10T12:35:00Z",
-  "precisionTier": "STANDARD",
-  "ackLevel": "DURABLE"
-}
+### 查询任务状态
+
+```bash
+curl http://localhost:8080/v1/intents/{intentId}
 ```
+
+---
+
+## 精度档位说明
+
+| 档位 | 窗口 | 最大延迟 | 推荐并发 | 批量策略 | 适用场景 |
+|------|------|---------|---------|---------|----------|
+| ULTRA | 10ms | <1分钟 | 10-50 | 单任务 | 分布式锁续期、心跳 |
+| FAST | 50ms | <5分钟 | 50-100 | 小批量 | 消息重试、指数退避 |
+| HIGH | 100ms | <30分钟 | 100-500 | 中批量 | 默认选择，通用场景 |
+| STANDARD | 500ms | <24小时 | 500-2000 | 大批量 | **推荐**，订单超时、定时通知 |
+| ECONOMY | 1000ms | >24小时 | 2000+ | 海量批量 | 长延迟任务、数据保留策略 |
+
+**选型指南：**
+- 分布式锁场景：**ULTRA** 或 **FAST**
+- 订单超时场景：**STANDARD**（最佳平衡）
+- 海量长延迟任务：**ECONOMY**
+
+---
+
+## 架构亮点
+
+LoomQ 基于第一性原理设计，追求极致性能：
+
+### 虚拟线程休眠替代优先级队列
+
+传统调度器使用优先队列（堆），插入复杂度 O(log n)，且需要中心化锁。LoomQ 使用虚拟线程休眠直到执行时间——无锁、无堆操作，纯粹依赖操作系统调度。
+
+```
+传统方案:  insert(heap) → O(log n) + 锁竞争
+LoomQ:    virtualThread.sleep(until) → O(1), 无锁
+```
+
+### MemorySegment + StripedCondition
+
+等待过程零对象分配。使用 `MemorySegment` 直接内存访问，`StripedCondition` 分段条件变量——彻底消除唤醒时的"惊群效应"。
+
+### 批量投递与资源隔离
+
+低精度档位（STANDARD、ECONOMY）自动享受批量收集和投递，单线程效率达到高精度档位的 10 倍。
 
 ---
 
 ## API 参考
 
-### 创建 Intent
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/v1/intents` | 创建延迟任务 |
+| GET | `/v1/intents/{id}` | 查询任务状态 |
+| PATCH | `/v1/intents/{id}` | 更新任务 |
+| POST | `/v1/intents/{id}/cancel` | 取消任务 |
+| POST | `/v1/intents/{id}/fire-now` | 立即触发 |
+| GET | `/health` | 健康检查 |
+| GET | `/metrics` | Prometheus 指标 |
 
-```http
-POST /v1/intents
-Content-Type: application/json
+### 请求体示例
 
+```json
 {
-  "intentId": "可选自定义ID",
-  "executeAt": "2026-04-10T12:30:00Z",
-  "deadline": "2026-04-10T12:35:00Z",
-  "shardKey": "order-12345",
+  "executeAt": "2024-01-15T10:30:00Z",
+  "deadline": "2024-01-15T11:00:00Z",
   "precisionTier": "STANDARD",
   "ackLevel": "DURABLE",
   "callback": {
-    "url": "https://api.example.com/webhook",
+    "url": "http://your-server/callback",
     "method": "POST",
-    "headers": {"X-Source": "loomq"}
-  },
-  "redelivery": {
-    "maxAttempts": 5,
-    "backoff": "exponential",
-    "initialDelayMs": 1000
+    "headers": {"X-Request-Id": "123"},
+    "body": "{\"event\": \"timeout\"}"
   }
 }
 ```
 
-### 查询 Intent
-
-```http
-GET /v1/intents/{intentId}
-```
-
-### 取消 Intent
-
-```http
-POST /v1/intents/{intentId}/cancel
-```
-
-### 立即触发
-
-```http
-POST /v1/intents/{intentId}/fire-now
-```
-
-### 健康检查
-
-```http
-GET /health
-```
-
 ---
 
-## 配置说明
+## 已知限制
 
-```yaml
-# application.yml
-server:
-  port: 8080
+LoomQ v0.6.x 定位为单机版，存在以下限制：
 
-wal:
-  data_dir: "./data/wal"
-  flush_strategy: "batch"
-  batch_flush_interval_ms: 100
-
-scheduler:
-  max_pending_tasks: 1000000
-
-dispatcher:
-  max_concurrent_dispatches: 1000
-```
-
-### ACK 级别
-
-| 级别 | 描述 | RPO | 延迟 |
-|------|------|-----|------|
-| `ASYNC` | 内存队列后返回 | <100ms | <1ms |
-| `DURABLE` | WAL fsync 后返回 | 0 | <20ms |
-| `REPLICATED` | 从节点确认后返回 | 0 | <50ms |
-
----
-
-## 竞品对比
-
-| 方案 | 写入 QPS | 读取 QPS | 内存/任务 | 依赖 |
-|------|----------|----------|-----------|------|
-| **LoomQ** | **40万+** | **50万+** | **~200B** | **无** |
-| Redis ZSET | ~10万 | ~5万 | ~1KB | Redis 集群 |
-| RabbitMQ DLX | ~5万 | ~5万 | ~2KB | MQ 集群 |
-| Quartz (JDBC) | ~1万 | ~5000 | ~1KB | 数据库 |
-
-### 总体拥有成本
-
-| 因素 | LoomQ | Redis | RabbitMQ |
-|------|-------|-------|----------|
-| 基础设施 | 单 JAR | 集群 | 集群 |
-| 运维复杂度 | **低** | 中 | 高 |
-| 学习曲线 | **低** | 中 | 高 |
-| 部署耗时 | **分钟级** | 小时级 | 小时级 |
-
----
-
-## 测试覆盖
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    测试套件概览                              │
-├─────────────────────────┬────────────┬──────────────────────┤
-│ 类别                    │ 数量       │ 状态                 │
-├─────────────────────────┼────────────┼──────────────────────┤
-│ 单元测试                │ 380+       │ ✅ 全部通过          │
-│ 集成测试                │ 15+        │ ✅ 全部通过          │
-│ 基准测试                │ 5+         │ ✅ 全部通过          │
-├─────────────────────────┼────────────┼──────────────────────┤
-│ 总计                    │ 400+       │ ✅ 100% 通过         │
-└─────────────────────────┴────────────┴──────────────────────┘
-```
-
-运行测试:
-```bash
-mvn test                    # 快速反馈
-mvn test -Pfull-tests       # 全量验证
-```
+| 限制 | 说明 |
+|------|------|
+| **无分布式复制** | REPLICATED ack 级别尚未实现。高可用场景可在负载均衡后部署多个独立实例 |
+| **内存容量限制** | 任务容量受堆内存限制。约 1000 万任务需要 8GB 堆 |
+| **无 Web 管理界面** | 通过 REST API 或 CLI 操作 |
+| **单节点** | v0.6.x 不支持集群和故障转移 |
 
 ---
 
 ## 发展路线
 
-| 版本 | 功能 | 状态 |
-|------|------|------|
-| V0.5 | Intent API、精度档位、异步复制 | ✅ 已发布 |
-| **V0.6** | **手写 JSON 序列化器、Netty HTTP** | **✅ 当前版本** |
-| V0.7 | Raft 共识 | 📋 规划中 |
-| V0.8 | 管理后台 | 📋 规划中 |
+### v0.7.0
+- 拆分为 `loomq-core`（嵌入式内核）+ `loomq-server`（独立服务）
+- 插件化存储引擎（支持 RocksDB、LevelDB）
+- REST API v2 + OpenAPI 规范
+
+### v0.8.0
+- **Loomqex**：基于 LoomQ 的分布式锁壳（参考实现）
+- 基于 Raft 的多节点集群
+- Web 管理控制台
+
+### 未来规划
+- 云原生部署（Kubernetes Operator）
+- 多区域复制
+- 回调负载 Schema 注册中心
+
+---
+
+## 贡献指南
+
+欢迎参与贡献！详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+- **问题反馈**：在 [GitHub Issues](https://github.com/loomq/loomq/issues) 提交 Bug 或功能请求
+- **代码贡献**：Fork 后在 feature 分支开发，提交 PR 至 `main` 分支
 
 ---
 
 ## 许可证
 
-Apache License 2.0
+```
+Copyright 2024 LoomQ Authors
 
----
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-## 致谢
+    http://www.apache.org/licenses/LICENSE-2.0
 
-- **Java 21 虚拟线程**: 让百万级并发任务成为可能的范式变革
-- **Netty**: 高性能异步 I/O 框架
-- **JEP 444**: 让虚拟线程成为生产就绪特性
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```

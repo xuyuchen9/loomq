@@ -1,11 +1,12 @@
 package com.loomq.api;
 
-import com.loomq.entity.v5.Intent;
-import com.loomq.entity.v5.IntentStatus;
-import com.loomq.entity.v5.PrecisionTier;
+import com.loomq.domain.intent.Intent;
+import com.loomq.domain.intent.IntentStatus;
+import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.replication.AckLevel;
 import com.loomq.store.IdempotencyResult;
 import com.loomq.store.IntentStore;
+import io.javalin.Javalin;
 import io.javalin.http.Context;
 import io.javalin.http.HttpStatus;
 import org.slf4j.Logger;
@@ -13,8 +14,6 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.Map;
-
-import io.javalin.Javalin;
 
 /**
  * Intent API Controller (v0.5)
@@ -57,33 +56,19 @@ public class IntentController {
             CreateIntentRequest request = ctx.bodyAsClass(CreateIntentRequest.class);
 
             // 验证必填字段
-            if (request.executeAt() == null) {
+            ValidationResult validation = IntentValidator.validateCreate(
+                request.executeAt(), request.deadline(), request.shardKey());
+            if (validation.isInvalid()) {
                 ctx.status(HttpStatus.UNPROCESSABLE_CONTENT)
-                   .json(ErrorResponse.of("42201", "executeAt is required"));
+                   .json(ErrorResponse.of(validation.errorCode(), validation.errorMessage()));
                 return;
             }
 
-            if (request.deadline() == null) {
+            // 验证 executeAt 是否为未来时间
+            ValidationResult futureValidation = IntentValidator.validateExecuteAtFuture(request.executeAt());
+            if (futureValidation.isInvalid()) {
                 ctx.status(HttpStatus.UNPROCESSABLE_CONTENT)
-                   .json(ErrorResponse.of("42202", "deadline is required"));
-                return;
-            }
-
-            if (request.deadline().isBefore(request.executeAt())) {
-                ctx.status(HttpStatus.UNPROCESSABLE_CONTENT)
-                   .json(ErrorResponse.of("42202", "deadline must be after executeAt"));
-                return;
-            }
-
-            if (request.executeAt().isBefore(Instant.now())) {
-                ctx.status(HttpStatus.UNPROCESSABLE_CONTENT)
-                   .json(ErrorResponse.of("42201", "executeAt must be in the future"));
-                return;
-            }
-
-            if (request.shardKey() == null || request.shardKey().isBlank()) {
-                ctx.status(HttpStatus.UNPROCESSABLE_CONTENT)
-                   .json(ErrorResponse.of("42203", "shardKey is required"));
+                   .json(ErrorResponse.of(futureValidation.errorCode(), futureValidation.errorMessage()));
                 return;
             }
 
@@ -194,14 +179,7 @@ public class IntentController {
     public void fireNow(Context ctx) {
         String intentId = ctx.pathParam("intentId");
 
-        // TODO: 检查当前节点是否为 Primary，如果不是返回 307
-        // if (!isPrimary()) {
-        //     String newPrimary = getCurrentPrimary();
-        //     ctx.status(HttpStatus.TEMPORARY_REDIRECT)
-        //        .header("Location", "http://" + newPrimary + "/v1/intents/" + intentId + "/fire-now")
-        //        .json(ErrorResponse.fencingExpired(intentId, newPrimary));
-        //     return;
-        // }
+        // TODO: 集群模式 - 检查当前节点是否为 Primary，如果不是返回 307
 
         Intent intent = intentStore.findById(intentId);
         if (intent == null) {

@@ -3,12 +3,9 @@ package com.loomq.replication;
 import com.loomq.cluster.ShardStateMachine;
 import com.loomq.replication.protocol.CatchUpRequest;
 import com.loomq.replication.protocol.CatchUpResponse;
-import com.loomq.wal.WalReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;

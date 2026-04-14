@@ -3,15 +3,18 @@ package com.loomq.http.netty;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
-import com.loomq.dispatcher.BatchDispatcher;
-import com.loomq.entity.v5.Intent;
-import com.loomq.entity.v5.IntentStatus;
-import com.loomq.entity.v5.PrecisionTier;
+import com.loomq.api.IntentValidator;
+import com.loomq.api.ValidationResult;
+import com.loomq.application.dispatcher.BatchDispatcher;
+import com.loomq.application.scheduler.PrecisionScheduler;
+import com.loomq.common.exception.BackPressureException;
+import com.loomq.domain.intent.Intent;
+import com.loomq.domain.intent.IntentStatus;
+import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.infrastructure.wal.IntentWal;
 import com.loomq.replication.AckLevel;
-import com.loomq.scheduler.v5.PrecisionScheduler;
 import com.loomq.store.IdempotencyResult;
 import com.loomq.store.IntentStore;
-import com.loomq.wal.v2.IntentWalV2;
 import io.netty.handler.codec.http.HttpMethod;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,13 +40,13 @@ public class IntentHandler {
     private static final Logger logger = LoggerFactory.getLogger(IntentHandler.class);
 
     private final IntentStore intentStore;
-    private final IntentWalV2 intentWal;
+    private final IntentWal intentWal;
     private final BatchDispatcher dispatcher;
     private final PrecisionScheduler scheduler;
     private final JsonFactory jsonFactory;
 
     public IntentHandler(IntentStore intentStore,
-                         IntentWalV2 intentWal,
+                         IntentWal intentWal,
                          BatchDispatcher dispatcher,
                          PrecisionScheduler scheduler) {
         this.intentStore = intentStore;
@@ -126,26 +129,20 @@ public class IntentHandler {
         }
 
         // 验证必填字段
-        if (executeAtStr == null) {
-            return errorResponse("42201", "executeAt is required");
+        ValidationResult validation = IntentValidator.validateCreate(executeAtStr, deadlineStr, shardKey);
+        if (validation.isInvalid()) {
+            return errorResponse(validation.errorCode(), validation.errorMessage());
         }
-        if (deadlineStr == null) {
-            return errorResponse("42202", "deadline is required");
-        }
-        if (shardKey == null || shardKey.isBlank()) {
-            return errorResponse("42203", "shardKey is required");
-        }
-        if (callbackUrl == null) {
-            return errorResponse("42204", "callback.url is required");
+
+        // 验证回调 URL
+        ValidationResult callbackValidation = IntentValidator.validateCallbackUrl(callbackUrl);
+        if (callbackValidation.isInvalid()) {
+            return errorResponse(callbackValidation.errorCode(), callbackValidation.errorMessage());
         }
 
         // 解析时间
         Instant executeAt = Instant.parse(executeAtStr);
         Instant deadline = Instant.parse(deadlineStr);
-
-        if (deadline.isBefore(executeAt)) {
-            return errorResponse("42205", "deadline must be after executeAt");
-        }
 
         // 生成或使用提供的 ID
         if (intentId == null || intentId.isBlank()) {
@@ -175,7 +172,7 @@ public class IntentHandler {
         intent.setIdempotencyKey(idempotencyKey);
 
         // 设置回调
-        com.loomq.entity.v5.Callback callback = new com.loomq.entity.v5.Callback(callbackUrl);
+        com.loomq.domain.intent.Callback callback = new com.loomq.domain.intent.Callback(callbackUrl);
         if (callbackMethod != null) {
             callback.setMethod(callbackMethod);
         }
@@ -335,7 +332,7 @@ public class IntentHandler {
         if (dispatcher != null) {
             try {
                 dispatcher.submit(intent);
-            } catch (BatchDispatcher.BackPressureException e) {
+            } catch (BackPressureException e) {
                 return errorResponse(503, "50301", "Dispatcher overloaded");
             }
         }

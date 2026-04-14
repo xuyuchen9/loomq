@@ -2,7 +2,6 @@ package com.loomq.replication.protocol;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 
 /**
  * 心跳消息

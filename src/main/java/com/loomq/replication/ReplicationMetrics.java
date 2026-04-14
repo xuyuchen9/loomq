@@ -3,7 +3,6 @@ package com.loomq.replication;
 import io.prometheus.client.Counter;
 import io.prometheus.client.Gauge;
 import io.prometheus.client.Histogram;
-import io.prometheus.client.Summary;
 
 /**
  * 复制链路指标收集
