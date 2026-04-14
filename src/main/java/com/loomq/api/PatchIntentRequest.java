@@ -1,6 +1,6 @@
 package com.loomq.api;
 
-import com.loomq.entity.v5.RedeliveryPolicy;
+import com.loomq.domain.intent.RedeliveryPolicy;
 
 import java.time.Instant;
 import java.util.Map;
@@ -14,7 +14,7 @@ import java.util.Map;
 public record PatchIntentRequest(
     Instant executeAt,
     Instant deadline,
-    com.loomq.entity.v5.ExpiredAction expiredAction,
+    com.loomq.domain.intent.ExpiredAction expiredAction,
     RedeliveryPolicy redelivery,
     Map<String, String> tags
 ) {}

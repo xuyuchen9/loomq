@@ -2,7 +2,6 @@ package com.loomq.cluster;
 
 import java.net.InetSocketAddress;
 import java.time.Instant;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 分片节点抽象

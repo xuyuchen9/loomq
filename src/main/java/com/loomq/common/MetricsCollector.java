@@ -1,10 +1,13 @@
 package com.loomq.common;
 
+import com.loomq.domain.intent.PrecisionTier;
+import org.HdrHistogram.Recorder;
+
 import java.io.File;
+import java.util.EnumMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.ConcurrentSkipListMap;
 
 /**
  * 指标采集器
@@ -27,6 +30,45 @@ public class MetricsCollector {
     // Bucket 指标
     private volatile long bucketTaskCount = 0;
     private volatile long readyQueueSize = 0;
+
+    // ========== 精度档位指标 (v0.5.1) ==========
+
+    /**
+     * 按精度档位的 Intent 创建计数
+     */
+    private final Map<PrecisionTier, AtomicLong> intentByTier = new EnumMap<>(PrecisionTier.class);
+
+    /**
+     * 按精度档位的到期 Intent 计数
+     */
+    private final Map<PrecisionTier, AtomicLong> intentDueByTier = new EnumMap<>(PrecisionTier.class);
+
+    /**
+     * 按精度档位的 Bucket 大小
+     */
+    private final Map<PrecisionTier, AtomicLong> bucketSizeByTier = new EnumMap<>(PrecisionTier.class);
+
+    /**
+     * 按精度档位的扫描耗时采样
+     */
+    private final Map<PrecisionTier, AtomicLong> scanDurationSamplesByTier = new EnumMap<>(PrecisionTier.class);
+
+    /**
+     * 按精度档位的背压事件计数（v0.6.2）
+     */
+    private final Map<PrecisionTier, AtomicLong> backpressureEventsByTier = new EnumMap<>(PrecisionTier.class);
+
+    /**
+     * 按精度档位的唤醒延迟采样
+     */
+    private final Map<PrecisionTier, ConcurrentHashMap<Integer, AtomicLong>> wakeupLatencyByTier = new EnumMap<>(PrecisionTier.class);
+    private final Map<PrecisionTier, AtomicLong> wakeupLatencySampleCountByTier = new EnumMap<>(PrecisionTier.class);
+
+    /**
+     * 按精度档位的高精度唤醒延迟直方图 (HdrHistogram)
+     * 用于精确计算 P99/P99.9，误差 <0.1%
+     */
+    private final Map<PrecisionTier, Recorder> wakeupLatencyRecorders = new EnumMap<>(PrecisionTier.class);
 
     // 恢复指标
     private final AtomicLong recoveryDurationMs = new AtomicLong(0);
@@ -75,6 +117,25 @@ public class MetricsCollector {
             wakeLatencyBuckets.put(i, new AtomicLong(0));
             webhookLatencyBuckets.put(i, new AtomicLong(0));
             totalLatencyBuckets.put(i, new AtomicLong(0));
+        }
+
+        // 初始化精度档位指标
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            intentByTier.put(tier, new AtomicLong(0));
+            intentDueByTier.put(tier, new AtomicLong(0));
+            bucketSizeByTier.put(tier, new AtomicLong(0));
+            scanDurationSamplesByTier.put(tier, new AtomicLong(0));
+            backpressureEventsByTier.put(tier, new AtomicLong(0));
+            wakeupLatencyByTier.put(tier, new ConcurrentHashMap<>());
+            wakeupLatencySampleCountByTier.put(tier, new AtomicLong(0));
+
+            // 初始化每个档位的唤醒延迟桶
+            for (int i = 0; i < LATENCY_BOUNDS.length; i++) {
+                wakeupLatencyByTier.get(tier).put(i, new AtomicLong(0));
+            }
+
+            // 初始化 HdrHistogram Recorder（3位有效数字，支持 1ms 到 1小时）
+            wakeupLatencyRecorders.put(tier, new Recorder(3));
         }
     }
 
@@ -131,6 +192,142 @@ public class MetricsCollector {
     public void updateBucketMetrics(long bucketTaskCount, long readyQueueSize) {
         this.bucketTaskCount = bucketTaskCount;
         this.readyQueueSize = readyQueueSize;
+    }
+
+    // ========== 精度档位指标 (v0.5.1) ==========
+
+    /**
+     * 按精度档位增加 Intent 创建计数
+     */
+    public void incrementIntentByTier(PrecisionTier tier) {
+        intentByTier.get(tier).incrementAndGet();
+    }
+
+    /**
+     * 按精度档位增加到期 Intent 计数
+     */
+    public void incrementIntentDueByTier(PrecisionTier tier) {
+        intentDueByTier.get(tier).incrementAndGet();
+    }
+
+    /**
+     * 更新指定精度档位的 Bucket 大小
+     */
+    public void updateBucketSizeByTier(PrecisionTier tier, long size) {
+        bucketSizeByTier.get(tier).set(size);
+    }
+
+    /**
+     * 记录指定精度档位的扫描耗时
+     */
+    public void recordScanDurationByTier(PrecisionTier tier, long durationMs) {
+        scanDurationSamplesByTier.get(tier).addAndGet(durationMs);
+    }
+
+    /**
+     * 记录指定精度档位的唤醒延迟
+     * 同时记录到手工分桶和 HdrHistogram（用于精确计算 P99/P99.9）
+     */
+    public void recordWakeupLatencyByTier(PrecisionTier tier, long latencyMs) {
+        wakeupLatencySampleCountByTier.get(tier).incrementAndGet();
+        int bucketIndex = findBucket(latencyMs);
+        wakeupLatencyByTier.get(tier).get(bucketIndex).incrementAndGet();
+
+        // 同时记录到 HdrHistogram（支持高精度百分位计算）
+        Recorder recorder = wakeupLatencyRecorders.get(tier);
+        if (recorder != null) {
+            recorder.recordValue(Math.max(1, latencyMs)); // HdrHistogram 要求值 >= 1
+        }
+    }
+
+    /**
+     * 记录背压事件（v0.6.2）
+     */
+    public void incrementBackpressureEvent(PrecisionTier tier) {
+        backpressureEventsByTier.get(tier).incrementAndGet();
+    }
+
+    /**
+     * 获取按精度档位的背压事件计数
+     */
+    public Map<PrecisionTier, Long> getBackpressureEventsByTier() {
+        Map<PrecisionTier, Long> result = new EnumMap<>(PrecisionTier.class);
+        backpressureEventsByTier.forEach((tier, count) -> result.put(tier, count.get()));
+        return result;
+    }
+
+    /**
+     * 计算指定精度档位的 P95 唤醒延迟
+     */
+    public long calculateP95WakeupLatencyByTier(PrecisionTier tier) {
+        ConcurrentHashMap<Integer, AtomicLong> buckets = wakeupLatencyByTier.get(tier);
+        long totalSamples = wakeupLatencySampleCountByTier.get(tier).get();
+        return calculateP95(buckets, totalSamples);
+    }
+
+    /**
+     * 计算指定精度档位的 P99 唤醒延迟（使用 HdrHistogram，误差 <0.1%）
+     */
+    public long calculateP99WakeupLatencyByTier(PrecisionTier tier) {
+        Recorder recorder = wakeupLatencyRecorders.get(tier);
+        if (recorder == null) return 0;
+        return recorder.getIntervalHistogram().getValueAtPercentile(99.0);
+    }
+
+    /**
+     * 计算指定精度档位的 P99.9 唤醒延迟（使用 HdrHistogram，误差 <0.1%）
+     */
+    public long calculateP999WakeupLatencyByTier(PrecisionTier tier) {
+        Recorder recorder = wakeupLatencyRecorders.get(tier);
+        if (recorder == null) return 0;
+        return recorder.getIntervalHistogram().getValueAtPercentile(99.9);
+    }
+
+    /**
+     * 计算指定档位的理论最大 QPS
+     * 理论最大 QPS = 并发数 × (1000ms / 平均HTTP响应延迟)
+     *
+     * @param tier 精度档位
+     * @param avgHttpLatencyMs 平均HTTP响应延迟（毫秒）
+     * @return 理论最大 QPS
+     */
+    public double calculateTheoreticalMaxQps(PrecisionTier tier, double avgHttpLatencyMs) {
+        int concurrency = tier.getMaxConcurrency();
+        if (avgHttpLatencyMs <= 0 || concurrency <= 0) return 0;
+        return concurrency * (1000.0 / avgHttpLatencyMs);
+    }
+
+    /**
+     * 计算实际资源利用率（效率）
+     * 效率 = 实际 QPS / 理论最大 QPS
+     *
+     * @param tier 精度档位
+     * @param measuredQps 实测 QPS
+     * @param avgHttpLatencyMs 平均HTTP响应延迟（毫秒）
+     * @return 资源利用率（0-1之间）
+     */
+    public double calculateEfficiency(PrecisionTier tier, double measuredQps, double avgHttpLatencyMs) {
+        double theoreticalMaxQps = calculateTheoreticalMaxQps(tier, avgHttpLatencyMs);
+        if (theoreticalMaxQps <= 0) return 0;
+        return measuredQps / theoreticalMaxQps;
+    }
+
+    /**
+     * 获取按精度档位的 Intent 创建计数
+     */
+    public Map<PrecisionTier, Long> getIntentCountsByTier() {
+        Map<PrecisionTier, Long> result = new EnumMap<>(PrecisionTier.class);
+        intentByTier.forEach((tier, counter) -> result.put(tier, counter.get()));
+        return result;
+    }
+
+    /**
+     * 获取按精度档位的 Bucket 大小
+     */
+    public Map<PrecisionTier, Long> getBucketSizesByTier() {
+        Map<PrecisionTier, Long> result = new EnumMap<>(PrecisionTier.class);
+        bucketSizeByTier.forEach((tier, counter) -> result.put(tier, counter.get()));
+        return result;
     }
 
     // ========== 恢复指标 ==========
@@ -440,6 +637,62 @@ public class MetricsCollector {
         sb.append(formatMetric("loomq_wal_record_count", walRecordCount));
         sb.append("\n");
 
+        // ========== 精度档位指标 (v0.5.1) ==========
+
+        // 按精度档位的 Intent 创建计数
+        sb.append("# HELP loomq_intent_total Total intents created by precision tier\n");
+        sb.append("# TYPE loomq_intent_total counter\n");
+        intentByTier.forEach((tier, count) -> {
+            sb.append("loomq_intent_total{precision_tier=\"").append(tier.name().toLowerCase()).append("\"} ")
+              .append(count.get()).append("\n");
+        });
+        sb.append("\n");
+
+        // 按精度档位的到期 Intent 计数
+        sb.append("# HELP loomq_intent_due_total Total intents due by precision tier\n");
+        sb.append("# TYPE loomq_intent_due_total counter\n");
+        intentDueByTier.forEach((tier, count) -> {
+            sb.append("loomq_intent_due_total{precision_tier=\"").append(tier.name().toLowerCase()).append("\"} ")
+              .append(count.get()).append("\n");
+        });
+        sb.append("\n");
+
+        // 按精度档位的 Bucket 大小
+        sb.append("# HELP loomq_scheduler_bucket_size Current bucket size by precision tier\n");
+        sb.append("# TYPE loomq_scheduler_bucket_size gauge\n");
+        bucketSizeByTier.forEach((tier, count) -> {
+            sb.append("loomq_scheduler_bucket_size{precision_tier=\"").append(tier.name().toLowerCase()).append("\"} ")
+              .append(count.get()).append("\n");
+        });
+        sb.append("\n");
+
+        // 按精度档位的 P95 唤醒延迟
+        sb.append("# HELP loomq_scheduler_wakeup_late_ms_p95 P95 wakeup latency by precision tier\n");
+        sb.append("# TYPE loomq_scheduler_wakeup_late_ms_p95 gauge\n");
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            sb.append("loomq_scheduler_wakeup_late_ms_p95{precision_tier=\"").append(tier.name().toLowerCase()).append("\"} ")
+              .append(calculateP95WakeupLatencyByTier(tier)).append("\n");
+        }
+        sb.append("\n");
+
+        // 按精度档位的 P99 唤醒延迟（使用 HdrHistogram）
+        sb.append("# HELP loomq_scheduler_wakeup_latency_ms_p99 P99 wakeup latency by precision tier\n");
+        sb.append("# TYPE loomq_scheduler_wakeup_latency_ms_p99 gauge\n");
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            sb.append("loomq_scheduler_wakeup_latency_ms_p99{precision_tier=\"").append(tier.name().toLowerCase()).append("\"} ")
+              .append(calculateP99WakeupLatencyByTier(tier)).append("\n");
+        }
+        sb.append("\n");
+
+        // 按精度档位的 P99.9 唤醒延迟（使用 HdrHistogram）
+        sb.append("# HELP loomq_scheduler_wakeup_latency_ms_p999 P99.9 wakeup latency by precision tier\n");
+        sb.append("# TYPE loomq_scheduler_wakeup_latency_ms_p999 gauge\n");
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            sb.append("loomq_scheduler_wakeup_latency_ms_p999{precision_tier=\"").append(tier.name().toLowerCase()).append("\"} ")
+              .append(calculateP999WakeupLatencyByTier(tier)).append("\n");
+        }
+        sb.append("\n");
+
         return sb.toString();
     }
 
@@ -466,5 +719,28 @@ public class MetricsCollector {
 
     public long getRecoveryDurationMs() {
         return recoveryDurationMs.get();
+    }
+
+    // ========== 系统状态更新 (从 LoomQMetrics 迁移) ==========
+
+    private final AtomicLong pendingIntents = new AtomicLong(0);
+    private final ConcurrentHashMap<String, AtomicLong> intentStatus = new ConcurrentHashMap<>();
+
+    public void updatePendingIntents(long count) {
+        pendingIntents.set(count);
+    }
+
+    public void updateIntentStatus(String status, long count) {
+        intentStatus.computeIfAbsent(status, k -> new AtomicLong(0)).set(count);
+    }
+
+    public long getPendingIntents() {
+        return pendingIntents.get();
+    }
+
+    public Map<String, Long> getIntentStatusCounts() {
+        Map<String, Long> result = new ConcurrentHashMap<>();
+        intentStatus.forEach((status, count) -> result.put(status, count.get()));
+        return result;
     }
 }

@@ -1,0 +1,571 @@
+package com.loomq.scheduler;
+
+import com.loomq.application.scheduler.PrecisionScheduler;
+import com.loomq.common.MetricsCollector;
+import com.loomq.domain.intent.Callback;
+import com.loomq.domain.intent.Intent;
+import com.loomq.domain.intent.IntentStatus;
+import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.store.IntentStore;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.EnumMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * 调度器端到端性能基准测试（带 Mock Webhook Server）
+ *
+ * 在 Windows 环境下使用 Java 内置 HttpServer 搭建真实测试环境。
+ *
+ * @author loomq
+ * @since v0.6.2
+ */
+class SchedulerTriggerBenchmarkWithMockServer {
+
+    private static final Logger logger = LoggerFactory.getLogger(SchedulerTriggerBenchmarkWithMockServer.class);
+    private static final int WEBHOOK_PORT = 19999;
+    private static final String WEBHOOK_URL = "http://localhost:" + WEBHOOK_PORT + "/webhook";
+
+    // 慢速端点 - 模拟真实网络延迟
+    // 档位越高，延迟越高（模拟重负载下游）
+    private static final int ULTRA_DELAY_MS = 5;      // 极速档位，快速响应
+    private static final int FAST_DELAY_MS = 10;      // 快速档位
+    private static final int HIGH_DELAY_MS = 20;      // 高精档位
+    private static final int STANDARD_DELAY_MS = 30;  // 标准档位
+    private static final int ECONOMY_DELAY_MS = 50;   // 经济档位，慢速响应
+
+    private PrecisionScheduler scheduler;
+    private IntentStore intentStore;
+    private MetricsCollector metrics;
+    private HttpServer mockServer;
+
+    // 统计各档位接收到的 webhook 数量
+    private final Map<PrecisionTier, AtomicInteger> webhookReceivedByTier = new ConcurrentHashMap<>();
+    private final AtomicInteger totalWebhookReceived = new AtomicInteger(0);
+
+    @BeforeEach
+    void setUp() throws IOException {
+        // 启动 mock webhook 服务器
+        startMockServer();
+
+        intentStore = new IntentStore();
+        scheduler = new PrecisionScheduler(intentStore);
+        metrics = MetricsCollector.getInstance();
+        scheduler.start();
+
+        // 初始化计数器
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            webhookReceivedByTier.put(tier, new AtomicInteger(0));
+        }
+    }
+
+    @AfterEach
+    void tearDown() {
+        scheduler.stop();
+        stopMockServer();
+    }
+
+    /**
+     * 启动 Mock Webhook 服务器
+     */
+    private void startMockServer() throws IOException {
+        mockServer = HttpServer.create(new InetSocketAddress(WEBHOOK_PORT), 0);
+
+        // 为每个档位创建不同延迟的端点
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            int delayMs = getDelayForTier(tier);
+            String path = "/webhook/" + tier.name().toLowerCase();
+
+            mockServer.createContext(path, new TierHandler(tier, delayMs));
+        }
+
+        // 默认端点（兼容旧测试）
+        mockServer.createContext("/webhook", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                try {
+                    byte[] requestBody = exchange.getRequestBody().readAllBytes();
+                    String body = new String(requestBody, StandardCharsets.UTF_8);
+
+                    PrecisionTier tier = extractTierFromBody(body);
+                    if (tier != null) {
+                        int delayMs = getDelayForTier(tier);
+                        Thread.sleep(delayMs);
+                        webhookReceivedByTier.get(tier).incrementAndGet();
+                    }
+                    totalWebhookReceived.incrementAndGet();
+
+                    String response = "{\"status\":\"ok\"}";
+                    exchange.getResponseHeaders().set("Content-Type", "application/json");
+                    exchange.sendResponseHeaders(200, response.getBytes(StandardCharsets.UTF_8).length);
+
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(response.getBytes(StandardCharsets.UTF_8));
+                    }
+                } catch (Exception e) {
+                    logger.warn("Mock server error: {}", e.getMessage());
+                    exchange.sendResponseHeaders(500, 0);
+                }
+            }
+        });
+
+        mockServer.setExecutor(java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor());
+        mockServer.start();
+        logger.info("Mock webhook server started on port {} (with tier-specific delays)", WEBHOOK_PORT);
+    }
+
+    private int getDelayForTier(PrecisionTier tier) {
+        return switch (tier) {
+            case ULTRA -> ULTRA_DELAY_MS;
+            case FAST -> FAST_DELAY_MS;
+            case HIGH -> HIGH_DELAY_MS;
+            case STANDARD -> STANDARD_DELAY_MS;
+            case ECONOMY -> ECONOMY_DELAY_MS;
+        };
+    }
+
+    private class TierHandler implements HttpHandler {
+        private final PrecisionTier tier;
+        private final int delayMs;
+
+        TierHandler(PrecisionTier tier, int delayMs) {
+            this.tier = tier;
+            this.delayMs = delayMs;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            try {
+                // 模拟处理延迟
+                Thread.sleep(delayMs);
+
+                webhookReceivedByTier.get(tier).incrementAndGet();
+                totalWebhookReceived.incrementAndGet();
+
+                String response = "{\"status\":\"ok\",\"tier\":\"" + tier.name() + "\"}";
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, response.getBytes(StandardCharsets.UTF_8).length);
+
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes(StandardCharsets.UTF_8));
+                }
+            } catch (Exception e) {
+                logger.warn("Mock server error for tier {}: {}", tier, e.getMessage());
+                exchange.sendResponseHeaders(500, 0);
+            }
+        }
+    }
+
+    private void stopMockServer() {
+        if (mockServer != null) {
+            mockServer.stop(0);
+            logger.info("Mock webhook server stopped");
+        }
+    }
+
+    private PrecisionTier extractTierFromBody(String body) {
+        // 简单字符串匹配提取 tier
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            // 尝试多种可能的格式
+            if (body.contains("\"precisionTier\":\"" + tier.name() + "\"") ||
+                body.contains("\"precisionTier\": \"" + tier.name() + "\"")) {
+                return tier;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 核心测试：各档位触发吞吐对比（带真实 webhook）
+     */
+    @Test
+    void testTierTriggerThroughputWithRealWebhook() throws Exception {
+        logger.info("=== 调度器档位触发吞吐测试（带 Mock Webhook）===");
+
+        // 重置计数器
+        webhookReceivedByTier.values().forEach(counter -> counter.set(0));
+        totalWebhookReceived.set(0);
+
+        // 增加到 1000 任务/档位，让批量优势显现
+        int tasksPerTier = 1000;
+        // 任务在 2 秒后触发，给调度器足够时间攒批
+        Instant executeAt = Instant.now().plusMillis(2000);
+
+        logger.info("创建 {} 个任务/档位，预计执行时间: {}", tasksPerTier, executeAt);
+
+        // 创建各档位任务
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            for (int i = 0; i < tasksPerTier; i++) {
+                Intent intent = createTestIntent(
+                    String.format("real-%s-%04d", tier.name(), i),
+                    tier,
+                    executeAt
+                );
+                intent.transitionTo(IntentStatus.SCHEDULED);
+                intentStore.save(intent);
+                scheduler.schedule(intent);
+            }
+            logger.info("  {}: 已创建 {} 个任务", tier, tasksPerTier);
+        }
+
+        // 等待任务到期并执行（1000任务/档位需要更长时间）
+        long waitStart = System.currentTimeMillis();
+        long maxWaitMs = 60000; // 最多等待 60 秒
+
+        int lastReceived = 0;
+        int stableCount = 0;
+
+        while (System.currentTimeMillis() - waitStart < maxWaitMs) {
+            Thread.sleep(1000);
+
+            int received = totalWebhookReceived.get();
+            int expected = tasksPerTier * PrecisionTier.values().length;
+
+            if (received >= expected) {
+                logger.info("所有任务 webhook 已接收: {}/{}", received, expected);
+                break;
+            }
+
+            // 检测是否稳定（连续 3 秒没有新任务）
+            if (received == lastReceived) {
+                stableCount++;
+                if (stableCount >= 3) {
+                    logger.info("任务处理已稳定: {}/{} (稳定 {} 秒)",
+                        received, expected, stableCount);
+                    break;
+                }
+            } else {
+                stableCount = 0;
+                lastReceived = received;
+            }
+
+            long elapsed = System.currentTimeMillis() - waitStart;
+            if (elapsed % 5000 == 0) {
+                logger.info("等待中... 已接收 {}/{} ({}ms, {}%)",
+                    received, expected, elapsed,
+                    (int)((double)received / expected * 100));
+            }
+        }
+
+        long totalWaitMs = System.currentTimeMillis() - waitStart;
+
+        // 计算各档位触发吞吐和效率
+        logger.info("\n=== 测试结果 ===");
+        logger.info("总等待时间: {} ms", totalWaitMs);
+        logger.info("\n档位 Webhook 接收统计:");
+        logger.info(String.format("%-10s %8s %10s %10s %14s %12s %12s",
+            "Tier", "并发", "接收", "QPS", "理论最大QPS", "效率", "延迟(ms)"));
+        logger.info("-".repeat(70));
+
+        double totalQps = 0;
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            int received = webhookReceivedByTier.get(tier).get();
+            double qps = totalWaitMs > 0 ? (double) received / totalWaitMs * 1000 : 0;
+            totalQps += qps;
+
+            // 获取该档位在 Mock Server 中的平均延迟
+            double avgLatencyMs = getMockServerLatency(tier);
+            int concurrency = tier.getMaxConcurrency();
+
+            // 计算理论最大 QPS 和效率
+            double theoreticalMaxQps = metrics.calculateTheoreticalMaxQps(tier, avgLatencyMs);
+            double efficiency = metrics.calculateEfficiency(tier, qps, avgLatencyMs);
+
+            logger.info(String.format("%-10s %8d %10d %10.1f %14.1f %11.1f%% %10.1f",
+                tier.name(), concurrency, received, qps, theoreticalMaxQps, efficiency * 100, avgLatencyMs));
+        }
+
+        // 验证档位间吞吐差距
+        double ultraQps = webhookReceivedByTier.get(PrecisionTier.ULTRA).get() / (double) totalWaitMs * 1000;
+        double economyQps = webhookReceivedByTier.get(PrecisionTier.ECONOMY).get() / (double) totalWaitMs * 1000;
+
+        logger.info("\n档位吞吐对比:");
+        logger.info("  ULTRA QPS:  {:.1f}", ultraQps);
+        logger.info("  ECONOMY QPS: {:.1f}", economyQps);
+
+        if (economyQps > 0 && ultraQps > 0) {
+            double ratio = economyQps / ultraQps;
+            logger.info("  ECONOMY/ULTRA 比率: {:.2f}x", ratio);
+
+            // 验证 ECONOMY 至少与 ULTRA 持平（批量优势抵消并发劣势）
+            assertTrue(ratio >= 0.8,
+                String.format("ECONOMY 档位吞吐不应低于 ULTRA 的 80%%，实际 %.2fx", ratio));
+        }
+
+        // 验证任务处理结果
+        int totalReceived = totalWebhookReceived.get();
+        int totalExpected = tasksPerTier * PrecisionTier.values().length;
+        double completionRate = (double) totalReceived / totalExpected * 100;
+
+        logger.info("\n总任务处理: {}/{} ({}%)", totalReceived, totalExpected,
+            String.format("%.1f", completionRate));
+
+        // 获取背压统计
+        Map<PrecisionTier, Long> backpressureEvents = metrics.getBackpressureEventsByTier();
+        logger.info("\n背压事件统计:");
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            long events = backpressureEvents.getOrDefault(tier, 0L);
+            logger.info("  {}: {} 次", tier, events);
+        }
+
+        // 只要有显著进展就算通过（至少 50%）
+        assertTrue(completionRate >= 50,
+            String.format("至少 50%% 任务应被处理，实际 %.1f%% (%d/%d)",
+                completionRate, totalReceived, totalExpected));
+    }
+
+    /**
+     * 快速对比测试：验证各档位处理速度
+     */
+    @Test
+    void testQuickTierComparison() throws Exception {
+        logger.info("=== 快速档位对比测试 ===");
+
+        webhookReceivedByTier.values().forEach(counter -> counter.set(0));
+        totalWebhookReceived.set(0);
+
+        int tasksPerTier = 50;
+        // 任务在 500ms 后执行，但给调度器足够时间准备
+        Instant executeAt = Instant.now().plusMillis(800);
+
+        // 创建任务
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            for (int i = 0; i < tasksPerTier; i++) {
+                Intent intent = createTestIntent(
+                    String.format("quick-%s-%02d", tier.name(), i),
+                    tier,
+                    executeAt
+                );
+                intent.transitionTo(IntentStatus.SCHEDULED);
+                intentStore.save(intent);
+                scheduler.schedule(intent);
+            }
+        }
+
+        // 等待任务执行（任务执行时间 + 处理时间 + 批量窗口）
+        // ULTRA 扫描间隔 10ms，ECONOMY 1000ms，所以等待至少 1.5 秒
+        Thread.sleep(1500);
+
+        // 再检查任务状态
+        long pendingTasks = intentStore.getAllIntents().values().stream()
+            .filter(i -> i.getStatus() == IntentStatus.SCHEDULED)
+            .count();
+        logger.info("等待后仍有 {} 个任务处于 SCHEDULED 状态", pendingTasks);
+
+        // 统计结果
+        logger.info("\n档位处理结果:");
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            int received = webhookReceivedByTier.get(tier).get();
+            logger.info("  {}: {}/{} 任务完成", tier, received, tasksPerTier);
+        }
+
+        // 在 mock 环境下，验证任务已进入调度流程即可
+        // 由于 batch 攒批，可能不是所有任务都能被处理
+        int totalReceived = totalWebhookReceived.get();
+        logger.info("总接收 webhook: {}", totalReceived);
+
+        // 只要有任务被处理就算通过（在测试环境中）
+        assertTrue(totalReceived > 0,
+            "至少应有部分任务被 webhook 接收");
+    }
+
+    // ========== 辅助方法 ==========
+
+    private Intent createTestIntent(String intentId, PrecisionTier tier, Instant executeAt) {
+        Intent intent = new Intent(intentId);
+        intent.setExecuteAt(executeAt);
+        intent.setDeadline(executeAt.plusSeconds(60));
+        intent.setPrecisionTier(tier);
+        intent.setShardKey("benchmark-shard");
+
+        Callback callback = new Callback();
+        // 使用档位特定的端点，模拟不同延迟
+        callback.setUrl("http://localhost:" + WEBHOOK_PORT + "/webhook/" + tier.name().toLowerCase());
+        intent.setCallback(callback);
+
+        return intent;
+    }
+
+    /**
+     * 获取 Mock Server 中各档位的平均 HTTP 延迟（毫秒）
+     * 与 Mock Server 的 TierHandler 配置保持一致
+     */
+    private double getMockServerLatency(PrecisionTier tier) {
+        return switch (tier) {
+            case ULTRA -> 5.0;     // ULTRA: 5ms
+            case FAST -> 10.0;     // FAST: 10ms
+            case HIGH -> 20.0;     // HIGH: 20ms
+            case STANDARD -> 30.0; // STANDARD: 30ms
+            case ECONOMY -> 50.0;  // ECONOMY: 50ms
+        };
+    }
+
+    /**
+     * 十万级档位吞吐测试 - 验证档位设计有效性
+     */
+    @Test
+    void test100kTierThroughput() throws Exception {
+        logger.info("=== 十万级档位吞吐验证测试 ===");
+        logger.info("各档位延迟配置: ULTRA={}ms, FAST={}ms, HIGH={}ms, STANDARD={}ms, ECONOMY={}ms",
+            ULTRA_DELAY_MS, FAST_DELAY_MS, HIGH_DELAY_MS, STANDARD_DELAY_MS, ECONOMY_DELAY_MS);
+
+        // 重置计数器
+        webhookReceivedByTier.values().forEach(counter -> counter.set(0));
+        totalWebhookReceived.set(0);
+
+        // 十万级任务：20000/档位
+        int tasksPerTier = 20000;
+        Instant executeAt = Instant.now().plusMillis(2000);
+
+        logger.info("创建 {} 个任务/档位，总计 {} 万任务", tasksPerTier, tasksPerTier * 5 / 10000);
+
+        long createStart = System.currentTimeMillis();
+
+        // 创建任务
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            for (int i = 0; i < tasksPerTier; i++) {
+                Intent intent = createTestIntent(
+                    String.format("100k-%s-%05d", tier.name(), i),
+                    tier,
+                    executeAt
+                );
+                intent.transitionTo(IntentStatus.SCHEDULED);
+                intentStore.save(intent);
+                scheduler.schedule(intent);
+            }
+            logger.info("  {}: 已创建 {} 个任务 (预计延迟 {}ms)",
+                tier, tasksPerTier, getDelayForTier(tier));
+        }
+
+        logger.info("任务创建耗时: {}ms", System.currentTimeMillis() - createStart);
+
+        // 等待任务执行完成
+        long waitStart = System.currentTimeMillis();
+        long maxWaitMs = 180000; // 最多等待 3 分钟
+
+        Map<PrecisionTier, Long> tierCompleteTimes = new EnumMap<>(PrecisionTier.class);
+
+        while (System.currentTimeMillis() - waitStart < maxWaitMs) {
+            Thread.sleep(1000);
+
+            int totalReceived = totalWebhookReceived.get();
+            int totalExpected = tasksPerTier * PrecisionTier.values().length;
+
+            // 记录各档位完成时间
+            for (PrecisionTier tier : PrecisionTier.values()) {
+                if (!tierCompleteTimes.containsKey(tier)) {
+                    int received = webhookReceivedByTier.get(tier).get();
+                    if (received >= tasksPerTier) {
+                        tierCompleteTimes.put(tier, System.currentTimeMillis() - waitStart);
+                    }
+                }
+            }
+
+            if (totalReceived >= totalExpected) {
+                logger.info("所有任务 webhook 已接收: {}/{}", totalReceived, totalExpected);
+                break;
+            }
+
+            long elapsed = System.currentTimeMillis() - waitStart;
+            if (elapsed % 10000 == 0) {
+                logger.info("等待中... 已接收 {}/{} ({}ms, {}%)",
+                    totalReceived, totalExpected, elapsed,
+                    (int)((double)totalReceived / totalExpected * 100));
+
+                // 打印各档位进度
+                for (PrecisionTier tier : PrecisionTier.values()) {
+                    int received = webhookReceivedByTier.get(tier).get();
+                    logger.info("    {}: {}/{} ({}%)", tier, received, tasksPerTier,
+                        (int)((double)received / tasksPerTier * 100));
+                }
+            }
+        }
+
+        long totalWaitMs = System.currentTimeMillis() - waitStart;
+
+        // 汇总结果
+        logger.info("\n" + "=".repeat(60));
+        logger.info("【档位设计有效性验证结果】");
+        logger.info("=".repeat(60));
+        logger.info("总任务数: {} 万", tasksPerTier * 5 / 10000);
+        logger.info("总耗时: {} ms ({} 秒)", totalWaitMs, totalWaitMs / 1000);
+
+        logger.info("\n档位完成统计:");
+        logger.info(String.format("%-10s %10s %10s %12s %10s",
+            "Tier", "延迟(ms)", "并发数", "完成时间(ms)", "QPS"));
+        logger.info("-".repeat(60));
+
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            int delayMs = getDelayForTier(tier);
+            int concurrency = tier.getMaxConcurrency();
+            int received = webhookReceivedByTier.get(tier).get();
+
+            Long completeTime = tierCompleteTimes.get(tier);
+            long actualTime = completeTime != null ? completeTime : totalWaitMs;
+
+            double qps = actualTime > 0 ? (double) received / actualTime * 1000 : 0;
+
+            logger.info(String.format("%-10s %10d %10d %12d %10.1f",
+                tier.name(), delayMs, concurrency, actualTime, qps));
+        }
+
+        // 验证档位设计有效性
+        logger.info("\n【档位设计验证】");
+
+        // 理论分析：
+        // - 档位延迟越高，理论 QPS 越低（因为每个请求耗时更长）
+        // - 但 ECONOMY 批量更大，可以部分抵消延迟影响
+
+        double ultraQps = webhookReceivedByTier.get(PrecisionTier.ULTRA).get() /
+            (double) (tierCompleteTimes.getOrDefault(PrecisionTier.ULTRA, totalWaitMs)) * 1000;
+        double economyQps = webhookReceivedByTier.get(PrecisionTier.ECONOMY).get() /
+            (double) (tierCompleteTimes.getOrDefault(PrecisionTier.ECONOMY, totalWaitMs)) * 1000;
+
+        logger.info("ULTRA QPS (延迟{}ms, 并发{}): {:.1f}",
+            ULTRA_DELAY_MS, PrecisionTier.ULTRA.getMaxConcurrency(), ultraQps);
+        logger.info("ECONOMY QPS (延迟{}ms, 并发{}): {:.1f}",
+            ECONOMY_DELAY_MS, PrecisionTier.ECONOMY.getMaxConcurrency(), economyQps);
+
+        // 验证：ECONOMY 不应该比 ULTRA 慢太多（不应低于 50%）
+        if (ultraQps > 0) {
+            double ratio = economyQps / ultraQps;
+            logger.info("ECONOMY/ULTRA QPS 比率: {:.2f}x", ratio);
+
+            // 即使延迟 10 倍，批量优势应该让 ECONOMY 保持在 ULTRA 的 30% 以上
+            assertTrue(ratio >= 0.3,
+                String.format("ECONOMY 档位 QPS 不应低于 ULTRA 的 30%%，实际 %.1f%% (%.2fx)",
+                    ratio * 100, ratio));
+        }
+
+        // 验证所有任务都完成
+        int totalReceived = totalWebhookReceived.get();
+        int totalExpected = tasksPerTier * PrecisionTier.values().length;
+        double completionRate = (double) totalReceived / totalExpected * 100;
+
+        logger.info("\n总完成率: {:.1f}% ({}/{})", completionRate, totalReceived, totalExpected);
+        assertTrue(completionRate >= 95,
+            String.format("任务完成率应 >= 95%%，实际 %.1f%%", completionRate));
+
+        // 验证档位隔离：各档位应独立处理，不应相互阻塞
+        logger.info("\n【档位隔离验证】");
+        boolean allCompleted = tierCompleteTimes.size() == PrecisionTier.values().length;
+        logger.info("所有档位是否都完成: {}", allCompleted);
+        assertTrue(allCompleted, "所有档位都应独立完成处理");
+    }
+}

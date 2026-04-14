@@ -4,7 +4,7 @@
 FROM eclipse-temurin:21-jdk-alpine
 
 LABEL maintainer="loomq"
-LABEL version="0.4.5"
+LABEL version="0.6.0"
 LABEL description="LoomQ Delayed Task Queue Engine"
 
 # Install necessary tools
@@ -17,7 +17,7 @@ WORKDIR /app
 RUN mkdir -p /app/data/wal
 
 # Copy the shaded JAR
-COPY target/loomq-0.1.0-SNAPSHOT-shaded.jar app.jar
+COPY target/loomq-0.6.0.jar app.jar
 
 # Copy default configuration
 COPY src/main/resources/application.yml config/application.yml

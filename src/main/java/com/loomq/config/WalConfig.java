@@ -27,6 +27,40 @@ public interface WalConfig extends Config {
     @DefaultValue("false")
     boolean syncOnWrite();
 
+    // ==================== Memory Segment WAL (v0.7.0) ====================
+
+    @Key("wal.engine")
+    @DefaultValue("memory_segment")
+    String engine(); // memory_segment | file_channel | async
+
+    @Key("wal.memory_segment.initial_size_mb")
+    @DefaultValue("64")
+    int memorySegmentInitialSizeMb();
+
+    @Key("wal.memory_segment.max_size_mb")
+    @DefaultValue("1024")
+    int memorySegmentMaxSizeMb();
+
+    @Key("wal.memory_segment.flush_threshold_kb")
+    @DefaultValue("64")
+    int memorySegmentFlushThresholdKb();
+
+    @Key("wal.memory_segment.flush_interval_ms")
+    @DefaultValue("10")
+    long memorySegmentFlushIntervalMs();
+
+    @Key("wal.memory_segment.stripe_count")
+    @DefaultValue("16")
+    int memorySegmentStripeCount();
+
+    @Key("wal.memory_segment.min_batch_size")
+    @DefaultValue("100")
+    int memorySegmentMinBatchSize();
+
+    @Key("wal.memory_segment.adaptive_flush_enabled")
+    @DefaultValue("true")
+    boolean memorySegmentAdaptiveFlushEnabled();
+
     // ==================== Replication v0.4.8 ====================
 
     @Key("wal.replication.enabled")

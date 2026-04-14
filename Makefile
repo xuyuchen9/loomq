@@ -1,16 +1,16 @@
 # LoomQ Makefile
-# Version: 0.4.5
+# Version: 0.6.0
 
 .PHONY: help build test clean run docker-build docker-run docker-compose-up docker-compose-down
 
 # Variables
-JAR_FILE := target/loomq-0.1.0-SNAPSHOT-shaded.jar
-DOCKER_IMAGE := loomq:0.4.5
+JAR_FILE := target/loomq-0.6.0.jar
+DOCKER_IMAGE := loomq:0.6.0
 DOCKER_COMPOSE := docker-compose
 
 # Default target
 help:
-	@echo "LoomQ Build System v0.4.5"
+	@echo "LoomQ Build System v0.6.0"
 	@echo ""
 	@echo "Available targets:"
 	@echo "  build                - Build the project (mvn clean package)"

@@ -5,7 +5,12 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.UUID;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * CoordinatorLease 单元测试
@@ -22,10 +27,10 @@ class CoordinatorLeaseTest {
             "shard-0", "node-1", 1L, 10000L, 1L);
 
         assertNotNull(lease.getLeaseId());
-        assertEquals("node-1", lease.getHolderNodeId());
+        assertEquals("node-1", lease.getNodeId());
         assertEquals("shard-0", lease.getShardId());
         assertEquals(1L, lease.getRoutingVersion());
-        assertEquals(0L, lease.getFencingSequence());
+        assertEquals(0L, lease.currentFencingToken());
         assertEquals(1L, lease.getEpoch());
         assertTrue(lease.isValid());
         assertFalse(lease.isExpired());
@@ -90,7 +95,7 @@ class CoordinatorLeaseTest {
         assertEquals(leaseId, lease.getLeaseId());
         assertEquals(acquiredAt, lease.getAcquiredAt());
         assertEquals(1L, lease.getRoutingVersion());
-        assertEquals(200L, lease.getFencingSequence());
+        assertEquals(200L, lease.currentFencingToken());
         assertEquals(5L, lease.getEpoch());
     }
 

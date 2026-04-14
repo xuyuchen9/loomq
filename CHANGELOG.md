@@ -4,6 +4,208 @@ All notable changes to LoomQ are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.6.1] - 2026-04-10
+
+### Added
+
+- **IntentWalV2**: Simplified WAL implementation with binary codec
+  - 8-byte header + binary payload, ~100ns serialization
+  - Zero GC pressure compared to JSON-based V1
+  - Support for REPLICATED ACK via ReplicationManager
+
+- **BatchDispatcher**: Synchronous batch delivery engine
+  - Virtual thread-based synchronous HTTP calls
+  - Batch processing (up to 100 intents, max 10ms wait)
+  - Backpressure via queue capacity limits
+
+- **SimpleWalWriter**: Minimal WAL writer for raw byte operations
+  - Direct file I/O with buffered channels
+  - Group commit support
+  - Checkpoint-based recovery
+
+- **IntentBinaryCodec**: High-performance intent serialization
+  - Binary format vs JSON: ~20x faster
+  - Compact encoding with optional compression
+
+- **AdaptiveFlushStrategy**: Intelligent WAL flush optimization
+  - Dynamic batch sizing based on load
+  - Latency-aware flush timing
+
+### Changed
+
+- `LoomqEngine` now uses `IntentWalV2` and `BatchDispatcher`
+- Removed legacy WAL implementations (AsyncWalWriter, SyncWalWriter, ReplicatingWalWriter)
+- Removed legacy scheduler (IntentScheduler) - replaced by PrecisionScheduler
+- Removed legacy metrics classes (LoomQMetrics, MetricsEndpoint)
+
+### Architecture
+
+```
+v0.6.0: Intent → JSON → WAL → Async Dispatch
+v0.6.1: Intent → Binary → WAL → Batch Sync Dispatch
+```
+
+Code reduction: ~60% less code in core path
+
+## [0.6.0] - 2026-04-10
+
+### Added
+
+- **Hand-written JSON Serializer**: Zero-copy serialization for Intent responses
+  - `IntentResponseSerializer`: Pre-defined byte array templates for JSON structure
+  - Direct `ByteBuf` write, no intermediate `byte[]` copy
+  - Fast-path string serialization (no escape needed for most cases)
+  - **6.2x faster** than Jackson ObjectMapper
+
+- **DirectSerializedResponse Interface**: Marker interface for zero-copy serialization
+  - Enables response types to bypass Jackson entirely
+  - `IntentResponseData` implements this interface
+
+- **Netty HTTP Server**: High-performance HTTP layer
+  - 4 I/O threads + virtual thread business pool
+  - RadixTree routing for O(k) path lookup
+  - Semaphore-based backpressure control
+  - Connection limiting with graceful degradation
+
+- **HTTP Benchmark Tool**: `NettyHttpBenchmark` for performance validation
+  - Tests: Health Check, Create Intent, Get Intent
+  - Multi-threaded virtual thread client
+  - Detailed latency distribution (P50, P90, P99)
+
+### Performance Results
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    LoomQ v0.6.0 HTTP API Benchmark                      │
+├─────────────────┬──────────────┬──────────────┬──────────────┬─────────┤
+│ Endpoint        │ Peak QPS     │ P50 Latency  │ P99 Latency  │ Threads │
+├─────────────────┼──────────────┼──────────────┼──────────────┼─────────┤
+│ POST /intents   │   41,786     │    2ms       │    7ms       │   100   │
+│ GET /intents/{id}│   55,585     │    3ms       │    6ms       │   200   │
+│ GET /health     │   61,279     │    1ms       │    3ms       │   100   │
+└─────────────────┴──────────────┴──────────────┴──────────────┴─────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Precision Tier Benchmark                             │
+├──────────────┬──────────────┬──────────────┬──────────────┬───────────┤
+│ Tier         │ Peak QPS     │ P50 (ms)     │ P99 (ms)     │ SLO       │
+├──────────────┼──────────────┼──────────────┼──────────────┼───────────┤
+│ ULTRA        │       45,949 │            1 │           12 │ ≤15ms ✅  │
+│ FAST         │       44,718 │            1 │            5 │ ≤60ms ✅  │
+│ HIGH         │       40,710 │            1 │            3 │ ≤120ms ✅ │
+│ STANDARD     │       39,974 │            1 │            2 │ ≤550ms ✅ │
+│ ECONOMY      │       42,295 │            1 │            4 │ ≤1100ms ✅│
+└──────────────┴──────────────┴──────────────┴──────────────┴───────────┘
+```
+
+### Changed
+
+- `IntentHandler` now returns `IntentResponseData` instead of `Map`
+- `NettyRequestHandler` detects `DirectSerializedResponse` for zero-copy path
+- Updated README with new performance benchmarks
+
+### Technical Details
+
+**JSON Serialization Optimization:**
+- Before: Jackson `ObjectMapper.writeValueAsBytes()` → `Unpooled.wrappedBuffer()`
+- After: Direct `ByteBuf` allocation → `writeTo(buf)` → HTTP response
+- Eliminates one `byte[]` allocation and copy per response
+
+## [0.5.2] - 2026-04-09
+
+### Added
+- **Virtual Thread HTTP Server**: Eliminate HTTP layer thread model bottleneck
+  - Enable Javalin's built-in `useVirtualThreads` configuration
+  - Leverage Java 21 virtual threads for HTTP request handling
+  - Expected 5-10x throughput improvement (target: >= 150K QPS)
+
+- **HTTP Server Configuration**: New configuration options
+  - `server.virtual_threads`: Enable/disable virtual threads (default: true)
+  - `server.backlog`: OS connection queue size (default: 0 = system default)
+  - `server.max_request_size`: Maximum request body size (default: 10MB)
+
+- **HTTP Performance Metrics**: Observability for HTTP layer
+  - `loomq_http_requests_total`: Total HTTP request count
+  - `loomq_http_request_duration_ms`: Request duration histogram
+  - `loomq_http_active_connections`: Active connection gauge
+  - `loomq_http_2xx_responses`: 2xx response count
+  - `loomq_http_4xx_responses`: 4xx response count
+  - `loomq_http_5xx_responses`: 5xx response count
+  - `loomq_http_json_serialization_duration_ms`: JSON serialization timing
+
+- **HTTP Benchmark Test**: Performance validation tool
+  - `HttpVirtualThreadBenchmark`: Benchmark for virtual thread performance
+  - Target validation: >= 150K QPS, P99 <= 20ms
+
+### Changed
+- Upgraded HTTP server to use virtual threads by default
+- Updated `ServerConfig` with new configuration options
+- Extended `LoomQMetrics` with HTTP performance metrics
+
+## [0.5.1] - 2026-04-09
+
+### Added
+- **SLA Precision Tiers**: Configurable scheduling precision for resource optimization
+  - `PrecisionTier` enum with 5 levels: ULTRA (10ms), FAST (50ms), HIGH (100ms), STANDARD (500ms), ECONOMY (1000ms)
+  - Per-tier bucket groups with independent scan intervals
+  - Dynamic sleep calculation with jitter for load distribution
+  - Short-delay optimization (delay ≤ precisionWindow bypasses sleep)
+
+- **BucketGroup**: Time-bucketed task storage per precision tier
+  - `ConcurrentSkipListMap` for O(log n) operations
+  - No global locks, per-tier isolation
+  - Automatic bucket cleanup after dispatch
+
+- **BucketGroupManager**: Centralized tier management
+  - `Map<PrecisionTier, BucketGroup>` for tier isolation
+  - Unified add/scan interface
+  - Pending count tracking per tier
+
+- **PrecisionScheduler**: Multi-tier scheduling engine
+  - Independent scan threads per precision tier
+  - Virtual thread sleep with jitter-based wake-up
+  - Integrated with `MetricsCollector` for observability
+
+- **Precision Tier Metrics**: Per-tier Prometheus metrics
+  - `loomq_intent_total{precision_tier}`: Intent creation count by tier
+  - `loomq_intent_due_total{precision_tier}`: Due intent count by tier
+  - `loomq_scheduler_bucket_size{precision_tier}`: Bucket size by tier
+  - `loomq_scheduler_wakeup_late_ms_p95{precision_tier}`: Wake-up latency by tier
+
+- **API Enhancement**: Precision tier support in Intent API
+  - `precisionTier` field in `CreateIntentRequest`
+  - `precisionTier` field in `IntentResponse`
+  - Defaults to `STANDARD` when not specified
+  - Jackson `@JsonCreator` for case-insensitive parsing
+
+- **Test Coverage**: Comprehensive precision tier testing
+  - `PrecisionTierTest`: 6 unit tests for tier enum
+  - `BucketGroupTest`: 12 unit tests for bucket operations
+  - `PrecisionTierIntegrationTest`: 10 integration tests for mixed-tier scenarios
+  - `PrecisionTierBenchmark`: Benchmark tool for tier comparison
+
+### Changed
+- Intent model extended with `precisionTier` field (default: STANDARD)
+- `MetricsCollector` enhanced with per-tier metric collection
+- `IntentResponse` includes `precisionTier` field
+- `CreateIntentRequest` accepts optional `precisionTier` parameter
+
+### SLO Commitments
+
+| Tier | Precision Window | SLO (p99 Wake-up Latency) |
+|------|-----------------|---------------------------|
+| ULTRA | 10ms | ≤15ms |
+| FAST | 50ms | ≤60ms |
+| HIGH | 100ms | ≤120ms |
+| STANDARD | 500ms | ≤550ms |
+| ECONOMY | 1000ms | ≤1100ms |
+
+### Architecture Notes
+- Maintains virtual thread per-task sleep architecture (no centralized time wheel)
+- Tier is fixed at Intent creation time (no runtime tier modification)
+- WAL serialization automatically handles `precisionTier` field
+- Backward compatible: missing tier defaults to HIGH for legacy data
+
 ## [0.5.0] - 2026-04-09
 
 ### Added

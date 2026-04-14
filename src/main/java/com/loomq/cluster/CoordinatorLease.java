@@ -116,8 +116,8 @@ public final class CoordinatorLease {
     /**
      * 创建包含当前 fencing token 的 FencingToken 对象
      */
-    public com.loomq.cluster.v5.FencingToken toFencingToken() {
-        return new com.loomq.cluster.v5.FencingToken(epoch, fencingToken.get());
+    public com.loomq.domain.cluster.FencingToken toFencingToken() {
+        return new com.loomq.domain.cluster.FencingToken(epoch, fencingToken.get());
     }
 
     // ==================== 租约操作 ====================
@@ -212,16 +212,6 @@ public final class CoordinatorLease {
 
     public String getNodeId() {
         return nodeId;
-    }
-
-    /** @deprecated 使用 getNodeId() */
-    public String getHolderNodeId() {
-        return nodeId;
-    }
-
-    /** @deprecated 使用 currentFencingToken() */
-    public long getFencingSequence() {
-        return fencingToken.get();
     }
 
     public long getEpoch() {

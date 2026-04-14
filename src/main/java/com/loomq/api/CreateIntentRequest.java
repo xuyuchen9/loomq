@@ -1,7 +1,8 @@
 package com.loomq.api;
 
-import com.loomq.entity.v5.Callback;
-import com.loomq.entity.v5.RedeliveryPolicy;
+import com.loomq.domain.intent.Callback;
+import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.domain.intent.RedeliveryPolicy;
 import com.loomq.replication.AckLevel;
 
 import java.time.Instant;
@@ -17,7 +18,8 @@ public record CreateIntentRequest(
     String intentId,
     Instant executeAt,
     Instant deadline,
-    com.loomq.entity.v5.ExpiredAction expiredAction,
+    com.loomq.domain.intent.ExpiredAction expiredAction,
+    PrecisionTier precisionTier,
     String shardKey,
     AckLevel ackLevel,
     Callback callback,

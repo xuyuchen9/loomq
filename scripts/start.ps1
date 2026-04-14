@@ -1,6 +1,6 @@
 #
 # LoomQ Startup Script (Windows PowerShell)
-# Version: 0.4.5
+# Version: 0.6.1
 #
 
 param(
@@ -15,7 +15,7 @@ param(
 )
 
 # Default values
-$JAR_FILE = "target/loomq-0.1.0-SNAPSHOT-shaded.jar"
+$JAR_FILE = "target/loomq-0.6.0.jar"
 if (-not $JVM_XMS) { $JVM_XMS = "2g" }
 if (-not $JVM_XMX) { $JVM_XMX = "2g" }
 if (-not $JVM_GC) { $JVM_GC = "ZGC" }
@@ -73,8 +73,8 @@ function Test-Java {
         $javaVersion = & java -version 2>&1 | Select-String "version" | ForEach-Object { $_ -match '"(.+)"' | Out-Null; $matches[1] }
         $majorVersion = [int]($javaVersion -split '\.' | Select-Object -First 1)
 
-        if ($majorVersion -lt 21) {
-            Write-Error "Java 21+ is required, found: $javaVersion"
+        if ($majorVersion -lt 25) {
+            Write-Error "Java 25+ is required, found: $javaVersion"
             exit 1
         }
         Write-Info "Java version: $javaVersion"
@@ -129,7 +129,6 @@ function Start-LoomQ {
         "-Xmx${JVM_XMX}"
         "-XX:+Use${JVM_GC}"
         "-XX:MaxGCPauseMillis=${JVM_GC_PAUSE}"
-        "--enable-preview"
     )
 
     # System properties
@@ -165,7 +164,7 @@ $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
 }
 
 # Main execution
-Write-Info "LoomQ Startup Script v0.4.5"
+Write-Info "LoomQ Startup Script v0.6.1"
 
 Test-Java
 Test-Jar

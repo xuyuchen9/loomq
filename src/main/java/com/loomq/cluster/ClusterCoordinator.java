@@ -1,15 +1,22 @@
 package com.loomq.cluster;
 
+import com.loomq.domain.cluster.FencingToken;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 集群协调器 V2 - v0.4.8 租约仲裁版本
@@ -122,19 +129,6 @@ public class ClusterCoordinator implements AutoCloseable {
                                  long heartbeatIntervalMs, long heartbeatTimeoutMs) {
         this(config, localNode, heartbeatIntervalMs, heartbeatTimeoutMs,
             DEFAULT_LEASE_DURATION_MS, DEFAULT_RENEWAL_WINDOW_RATIO);
-    }
-
-    /**
-     * 创建集群协调器（兼容 v0.4.4 配置）
-     *
-     * @deprecated 使用完整配置构造函数
-     */
-    @Deprecated
-    public ClusterCoordinator(ClusterConfig config, LocalShardNode localNode,
-                              long heartbeatIntervalMs, long heartbeatTimeoutMs,
-                              long leaseDurationMs) {
-        this(config, localNode, heartbeatIntervalMs, heartbeatTimeoutMs,
-            leaseDurationMs, DEFAULT_RENEWAL_WINDOW_RATIO);
     }
 
     /**
@@ -756,7 +750,7 @@ public class ClusterCoordinator implements AutoCloseable {
             // 只能由持有者续约
             if (!currentLease.isHeldBy(nodeId)) {
                 logger.warn("Lease for shard {} is held by {}, rejecting request from {}",
-                    shardId, currentLease.getHolderNodeId(), nodeId);
+                    shardId, currentLease.getNodeId(), nodeId);
                 return Optional.empty();
             }
 
@@ -767,7 +761,7 @@ public class ClusterCoordinator implements AutoCloseable {
         // 检查是否有租约但已过期
         if (currentLease != null) {
             logger.info("Lease for shard {} expired (holder={}), revoking and issuing new",
-                shardId, currentLease.getHolderNodeId());
+                shardId, currentLease.getNodeId());
             revokeLeaseInternal(shardId, currentLease.getLeaseId(), "Lease expired");
         }
 
@@ -881,11 +875,11 @@ public class ClusterCoordinator implements AutoCloseable {
 
         // 创建新租约（保持相同的 routingVersion 和 fencingSequence）
         CoordinatorLease newLease = new CoordinatorLease(
-            currentLease.getHolderNodeId(),
+            currentLease.getNodeId(),
             shardId,
             leaseDurationMs,
             currentLease.getRoutingVersion(),
-            currentLease.getFencingSequence()
+            currentLease.currentFencingToken()
         );
 
         // 更新存储
@@ -942,7 +936,7 @@ public class ClusterCoordinator implements AutoCloseable {
             return false;
         }
 
-        return token.isValidFor(currentLease);
+        return token.isValidAgainst(currentLease.toFencingToken());
     }
 
     /**
@@ -950,7 +944,7 @@ public class ClusterCoordinator implements AutoCloseable {
      */
     public long getCurrentFencingSequence(String shardId) {
         CoordinatorLease lease = activeLeases.get(shardId);
-        return lease != null && lease.isValid() ? lease.getFencingSequence() : -1;
+        return lease != null && lease.isValid() ? lease.currentFencingToken() : -1;
     }
 
     // ========== 租约查询 ==========
@@ -978,7 +972,7 @@ public class ClusterCoordinator implements AutoCloseable {
      * 获取当前 primary 节点
      */
     public Optional<String> getCurrentPrimary(String shardId) {
-        return getCurrentLease(shardId).map(CoordinatorLease::getHolderNodeId);
+        return getCurrentLease(shardId).map(CoordinatorLease::getNodeId);
     }
 
     /**

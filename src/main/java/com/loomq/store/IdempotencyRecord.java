@@ -1,7 +1,7 @@
 package com.loomq.store;
 
-import com.loomq.entity.v5.Intent;
-import com.loomq.entity.v5.IntentStatus;
+import com.loomq.domain.intent.Intent;
+import com.loomq.domain.intent.IntentStatus;
 
 import java.time.Duration;
 import java.time.Instant;

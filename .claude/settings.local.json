@@ -52,7 +52,10 @@
       "Bash(python real_test.py create)",
       "Bash(python simple_test.py create)",
       "Bash(java -cp \"target/test-classes;target/classes;$\\(mvn dependency:build-classpath -q -DincludeScope=test -Dmdep.outputFile=/dev/stdout 2>/dev/null\\)\" com.loomq.benchmark.BenchmarkTest create 50 5000)",
-      "Bash(awk '{sum+=$1} END {print \"Total lines:\", sum}')"
+      "Bash(awk '{sum+=$1} END {print \"Total lines:\", sum}')",
+      "WebSearch",
+      "Read(//c/Users/mark/.claude/skills/baidu-ai-search/scripts/**)",
+      "Bash(python search.py \"Claude Code CLI 项目本地 skill 自定义命令\" --json --limit 10)"
     ]
   }
 }

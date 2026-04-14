@@ -5,7 +5,10 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.Objects;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -189,7 +192,7 @@ public class HeartbeatManager implements AutoCloseable {
             currentRole.get(),
             lastAppliedOffset.get(),
             currentLease.get() != null ? currentLease.get().getLeaseId() : null,
-            currentLease.get() != null ? currentLease.get().getFencingSequence() : -1,
+            currentLease.get() != null ? currentLease.get().currentFencingToken() : -1,
             Instant.now()
         );
 
