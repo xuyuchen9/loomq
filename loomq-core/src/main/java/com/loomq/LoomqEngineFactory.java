@@ -1,0 +1,236 @@
+package com.loomq;
+
+import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.spi.CallbackHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Properties;
+import java.util.concurrent.Executor;
+
+/**
+ * LoomQ 引擎工厂
+ *
+ * 提供从配置文件创建 LoomqEngine 的工厂方法。
+ * 支持 YAML 和 Properties 格式。
+ *
+ * @author loomq
+ * @since v0.7.0
+ */
+public final class LoomqEngineFactory {
+
+    private static final Logger logger = LoggerFactory.getLogger(LoomqEngineFactory.class);
+
+    private LoomqEngineFactory() {
+        // 工具类，禁止实例化
+    }
+
+    /**
+     * 从 YAML 文件创建引擎
+     *
+     * YAML 格式示例：
+     * <pre>
+     * loomq:
+     *   nodeId: node-1
+     *   walDir: ./data
+     *   tiers:
+     *     ULTRA:
+     *       maxConcurrency: 100
+     *       batchSize: 1
+     * </pre>
+     *
+     * @param yamlPath YAML 文件路径
+     * @return LoomqEngine 实例
+     * @throws IOException 如果读取失败
+     */
+    public static LoomqEngine createFromYaml(Path yamlPath) throws IOException {
+        logger.info("Creating LoomqEngine from YAML: {}", yamlPath);
+
+        String content = Files.readString(yamlPath);
+        Properties props = parseSimpleYaml(content);
+
+        return createFromProperties(props);
+    }
+
+    /**
+     * 从 Properties 创建引擎
+     *
+     * @param props 配置属性
+     * @return LoomqEngine 实例
+     */
+    public static LoomqEngine createFromProperties(Properties props) {
+        logger.info("Creating LoomqEngine from properties");
+
+        LoomqEngine.Builder builder = LoomqEngine.builder();
+
+        // 基本配置
+        String nodeId = props.getProperty("loomq.nodeId", props.getProperty("loomq.node.id", "default-node"));
+        builder.nodeId(nodeId);
+
+        String walDir = props.getProperty("loomq.walDir", props.getProperty("loomq.wal.dir", "./data"));
+        builder.walDir(Path.of(walDir));
+
+        // 精度档位配置（可选）
+        Map<PrecisionTier, LoomqEngine.TierConfig> tierConfigs = parseTierConfigs(props);
+        if (!tierConfigs.isEmpty()) {
+            builder.tierConfig(tierConfigs);
+        }
+
+        return builder.build();
+    }
+
+    /**
+     * 从 Properties 创建引擎并注册回调处理器
+     *
+     * @param props           配置属性
+     * @param callbackHandler 回调处理器
+     * @return LoomqEngine 实例
+     */
+    public static LoomqEngine createFromProperties(Properties props, CallbackHandler callbackHandler) {
+        LoomqEngine engine = createFromProperties(props);
+        engine.registerCallbackHandler(callbackHandler);
+        return engine;
+    }
+
+    /**
+     * 从 YAML 文件创建引擎并注册回调处理器
+     *
+     * @param yamlPath        YAML 文件路径
+     * @param callbackHandler 回调处理器
+     * @return LoomqEngine 实例
+     * @throws IOException 如果读取失败
+     */
+    public static LoomqEngine createFromYaml(Path yamlPath, CallbackHandler callbackHandler) throws IOException {
+        LoomqEngine engine = createFromYaml(yamlPath);
+        engine.registerCallbackHandler(callbackHandler);
+        return engine;
+    }
+
+    /**
+     * 快速创建引擎（使用默认配置）
+     *
+     * @param walDir 数据目录
+     * @return LoomqEngine 实例
+     */
+    public static LoomqEngine createDefault(Path walDir) {
+        return LoomqEngine.builder()
+            .walDir(walDir)
+            .build();
+    }
+
+    /**
+     * 快速创建引擎并注册回调
+     *
+     * @param walDir          数据目录
+     * @param callbackHandler 回调处理器
+     * @return LoomqEngine 实例
+     */
+    public static LoomqEngine createDefault(Path walDir, CallbackHandler callbackHandler) {
+        LoomqEngine engine = createDefault(walDir);
+        engine.registerCallbackHandler(callbackHandler);
+        return engine;
+    }
+
+    // ========== 内部方法 ==========
+
+    /**
+     * 简单 YAML 解析器（无需外部依赖）
+     * 支持基本的 key: value 和嵌套结构
+     */
+    private static Properties parseSimpleYaml(String content) {
+        Properties props = new Properties();
+        String[] lines = content.split("\n");
+        String currentSection = "";
+
+        for (String line : lines) {
+            // 去除注释
+            int commentIdx = line.indexOf('#');
+            if (commentIdx >= 0) {
+                line = line.substring(0, commentIdx);
+            }
+
+            // 去除尾部空格
+            line = line.stripTrailing();
+            if (line.isEmpty()) {
+                continue;
+            }
+
+            // 计算缩进级别
+            int indent = 0;
+            while (indent < line.length() && line.charAt(indent) == ' ') {
+                indent++;
+            }
+
+            // 解析键值对
+            String trimmed = line.trim();
+            int colonIdx = trimmed.indexOf(':');
+
+            if (colonIdx < 0) {
+                continue;
+            }
+
+            String key = trimmed.substring(0, colonIdx).trim();
+            String value = colonIdx < trimmed.length() - 1
+                ? trimmed.substring(colonIdx + 1).trim()
+                : "";
+
+            // 去除引号
+            if (value.startsWith("\"") && value.endsWith("\"")) {
+                value = value.substring(1, value.length() - 1);
+            } else if (value.startsWith("'") && value.endsWith("'")) {
+                value = value.substring(1, value.length() - 1);
+            }
+
+            if (indent == 0) {
+                currentSection = key;
+                if (!value.isEmpty()) {
+                    props.setProperty(key, value);
+                }
+            } else if (indent == 2) {
+                String fullKey = currentSection + "." + key;
+                if (!value.isEmpty()) {
+                    props.setProperty(fullKey, value);
+                }
+            } else if (indent == 4) {
+                // 三级嵌套（用于 tiers 配置）
+                String[] parts = currentSection.split("\\.");
+                if (parts.length >= 2) {
+                    String fullKey = parts[0] + "." + parts[1] + "." + key;
+                    props.setProperty(fullKey, value);
+                }
+            }
+        }
+
+        return props;
+    }
+
+    private static Map<PrecisionTier, LoomqEngine.TierConfig> parseTierConfigs(Properties props) {
+        Map<PrecisionTier, LoomqEngine.TierConfig> configs = new HashMap<>();
+
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            String prefix = "loomq.tiers." + tier.name().toLowerCase() + ".";
+
+            String maxConcurrencyStr = props.getProperty(prefix + "maxConcurrency", props.getProperty(prefix + "max-concurrency"));
+            String batchSizeStr = props.getProperty(prefix + "batchSize", props.getProperty(prefix + "batch-size"));
+            String batchWindowStr = props.getProperty(prefix + "batchWindowMs", props.getProperty(prefix + "batch-window-ms"));
+            String consumerCountStr = props.getProperty(prefix + "consumerCount", props.getProperty(prefix + "consumer-count"));
+
+            if (maxConcurrencyStr != null || batchSizeStr != null) {
+                int maxConcurrency = maxConcurrencyStr != null ? Integer.parseInt(maxConcurrencyStr) : tier.getMaxConcurrency();
+                int batchSize = batchSizeStr != null ? Integer.parseInt(batchSizeStr) : tier.getBatchSize();
+                long batchWindowMs = batchWindowStr != null ? Long.parseLong(batchWindowStr) : tier.getBatchWindowMs();
+                int consumerCount = consumerCountStr != null ? Integer.parseInt(consumerCountStr) : tier.getConsumerCount();
+
+                configs.put(tier, new LoomqEngine.TierConfig(maxConcurrency, batchSize, batchWindowMs, consumerCount));
+            }
+        }
+
+        return configs;
+    }
+}
