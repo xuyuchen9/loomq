@@ -1,10 +1,10 @@
 # LoomQ - High-Performance Delayed Task Queue
-# Java 21 Virtual Threads based distributed task scheduler
+# Java 25 Virtual Threads based distributed task scheduler
 
 FROM eclipse-temurin:21-jdk-alpine
 
 LABEL maintainer="loomq"
-LABEL version="0.6.0"
+LABEL version="0.7.0-SNAPSHOT"
 LABEL description="LoomQ Delayed Task Queue Engine"
 
 # Install necessary tools
@@ -17,10 +17,10 @@ WORKDIR /app
 RUN mkdir -p /app/data/wal
 
 # Copy the shaded JAR
-COPY target/loomq-0.6.0.jar app.jar
+COPY loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar app.jar
 
 # Copy default configuration
-COPY src/main/resources/application.yml config/application.yml
+COPY loomq-server/src/main/resources/application.yml config/application.yml
 
 # Environment variables with defaults
 ENV LOOMQ_SERVER_HOST=0.0.0.0

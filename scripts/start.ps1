@@ -1,6 +1,6 @@
 #
 # LoomQ Startup Script (Windows PowerShell)
-# Version: 0.6.1
+# Version: 0.7.0
 #
 
 param(
@@ -9,19 +9,19 @@ param(
     [string]$JVM_GC = $env:JVM_GC,
     [int]$JVM_GC_PAUSE = $env:JVM_GC_PAUSE,
     [int]$Port = $env:LOOMQ_PORT,
-    [string]$Host = $env:LOOMQ_HOST,
+    [string]$ListenHost = $env:LOOMQ_HOST,
     [string]$DataDir = $env:LOOMQ_DATA_DIR,
     [switch]$Help
 )
 
 # Default values
-$JAR_FILE = "target/loomq-0.6.0.jar"
+$JAR_FILE = "loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar"
 if (-not $JVM_XMS) { $JVM_XMS = "2g" }
 if (-not $JVM_XMX) { $JVM_XMX = "2g" }
 if (-not $JVM_GC) { $JVM_GC = "ZGC" }
 if (-not $JVM_GC_PAUSE) { $JVM_GC_PAUSE = 10 }
 if (-not $Port) { $Port = 8080 }
-if (-not $Host) { $Host = "0.0.0.0" }
+if (-not $ListenHost) { $ListenHost = "0.0.0.0" }
 if (-not $DataDir) { $DataDir = "./data/wal" }
 
 # Colors
@@ -42,7 +42,7 @@ Parameters:
   -JVM_GC          Garbage collector: ZGC, G1GC, ParallelGC (default: ZGC)
   -JVM_GC_PAUSE    Max GC pause target in ms (default: 10)
   -Port            Server port (default: 8080)
-  -Host            Server host (default: 0.0.0.0)
+  -ListenHost      Server host (default: 0.0.0.0)
   -DataDir         WAL data directory (default: ./data/wal)
   -Help            Show this help message
 
@@ -112,7 +112,7 @@ function Show-Config {
     Write-Host "  JVM Heap:        $JVM_XMS / $JVM_XMX"
     Write-Host "  GC Type:         $JVM_GC"
     Write-Host "  Max GC Pause:    ${JVM_GC_PAUSE}ms"
-    Write-Host "  Server Host:     $Host"
+    Write-Host "  Server Host:     $ListenHost"
     Write-Host "  Server Port:     $Port"
     Write-Host "  Data Directory:  $DataDir"
     Write-Host "==========================================" -ForegroundColor Cyan
@@ -133,7 +133,7 @@ function Start-LoomQ {
 
     # System properties
     $sysProps = @(
-        "-Dloomq.server.host=${Host}"
+        "-Dloomq.server.host=${ListenHost}"
         "-Dloomq.server.port=${Port}"
     )
 
@@ -164,7 +164,7 @@ $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
 }
 
 # Main execution
-Write-Info "LoomQ Startup Script v0.6.1"
+Write-Info "LoomQ Startup Script v0.7.0"
 
 Test-Java
 Test-Jar

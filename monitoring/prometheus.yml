@@ -1,5 +1,5 @@
 # Prometheus configuration for LoomQ monitoring
-# Version: 0.4.5
+# Version: 0.7.0
 
 global:
   scrape_interval: 15s

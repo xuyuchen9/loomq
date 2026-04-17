@@ -19,7 +19,7 @@ function Invoke-Maven {
 function Convert-TestPathToClassName {
     param([string]$Path)
 
-    $relative = $Path -replace '^src/test/java/', ''
+    $relative = $Path -replace '^.*/src/test/java/', ''
     $relative = $relative -replace '\.java$', ''
     return ($relative -replace '/', '.')
 }
@@ -56,8 +56,8 @@ switch ($Mode) {
             exit 0
         }
 
-        $changedTestFiles = @($changedFiles | Where-Object { $_ -like 'src/test/java/*.java' })
-        $changedMainFiles = @($changedFiles | Where-Object { $_ -like 'src/main/java/*.java' })
+        $changedTestFiles = @($changedFiles | Where-Object { $_ -like '*/src/test/java/*.java' })
+        $changedMainFiles = @($changedFiles | Where-Object { $_ -like '*/src/main/java/*.java' })
 
         if ($changedTestFiles.Count -gt 0) {
             $testClasses = @(

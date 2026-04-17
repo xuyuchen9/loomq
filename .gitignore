@@ -10,7 +10,7 @@
 # Mobile Tools for Java (J2ME)
 .mtj.tmp/
 
-# Package Files #
+# Package Files
 *.jar
 *.war
 *.nar
@@ -19,31 +19,32 @@
 *.tar.gz
 *.rar
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+# Virtual machine crash logs
 hs_err_pid*
 replay_pid*
 
 # IDE
-.idea/
+.idea/workspace.xml
 
 # Maven
 target/
 dependency-reduced-pom.xml
 
-# Logs
-logs/
-
 # Runtime data
 data/
+logs/
 
-docs/
-
-AGENTS.md
-
-CLAUDE.md
-
+# Test results
 test-results/
-
 test-data/
 
-benchmark/
+# Benchmark results (keep directory structure)
+benchmark/results/*.csv
+benchmark/results/reports/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Claude local settings
+.claude/settings.local.json
