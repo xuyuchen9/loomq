@@ -14,13 +14,7 @@
     <packaging>jar</packaging>
 
     <name>LoomQ Core</name>
-    <description>Embedded kernel for LoomQ delayed task queue - zero external dependencies</description>
-
-    <properties>
-        <java.version>25</java.version>
-        <maven.compiler.source>25</maven.compiler.source>
-        <maven.compiler.target>25</maven.compiler.target>
-    </properties>
+    <description>Embedded kernel for LoomQ delayed task queue - minimal dependencies (slf4j, owner, snakeyaml, HdrHistogram)</description>
 
     <dependencies>
         <!-- Logging: SLF4J API only, no implementation -->
@@ -70,20 +64,10 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <configuration>
-                    <source>${java.version}</source>
-                    <target>${java.version}</target>
-                    <compilerArgs>
-                        <arg>--enable-preview</arg>
-                    </compilerArgs>
-                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <configuration>
-                    <argLine>--enable-preview</argLine>
-                </configuration>
             </plugin>
         </plugins>
     </build>

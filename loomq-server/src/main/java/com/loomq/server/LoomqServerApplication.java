@@ -4,6 +4,8 @@ import com.loomq.LoomqEngine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Path;
+
 /**
  * LoomQ Server 应用程序入口
  *
@@ -24,20 +26,24 @@ public class LoomqServerApplication {
 
         // 解析配置
         String nodeId = System.getProperty("loomq.node.id", "node-1");
-        String shardId = System.getProperty("loomq.shard.id", "shard-0");
         String dataDir = System.getProperty("loomq.data.dir", "./data");
-        int port = Integer.parseInt(System.getProperty("loomq.port", "8080"));
 
-        logger.info("Configuration: nodeId={}, shardId={}, dataDir={}, port={}",
-            nodeId, shardId, dataDir, port);
+        logger.info("Configuration: nodeId={}, dataDir={}", nodeId, dataDir);
 
-        // 创建引擎
-        LoomqEngine engine = new LoomqEngine(nodeId, shardId, dataDir, port);
+        // 创建引擎（使用 Builder 模式）
+        LoomqEngine engine = LoomqEngine.builder()
+            .nodeId(nodeId)
+            .walDir(Path.of(dataDir))
+            .build();
 
         // 注册关闭钩子
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             logger.info("Shutdown signal received, stopping engine...");
-            engine.stop();
+            try {
+                engine.close();
+            } catch (Exception e) {
+                logger.error("Error during engine shutdown", e);
+            }
         }));
 
         try {

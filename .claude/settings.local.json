@@ -55,7 +55,12 @@
       "Bash(awk '{sum+=$1} END {print \"Total lines:\", sum}')",
       "WebSearch",
       "Read(//c/Users/mark/.claude/skills/baidu-ai-search/scripts/**)",
-      "Bash(python search.py \"Claude Code CLI 项目本地 skill 自定义命令\" --json --limit 10)"
+      "Bash(python search.py \"Claude Code CLI 项目本地 skill 自定义命令\" --json --limit 10)",
+      "Bash(touch .claude/skills/loomq-bench/.gitkeep)",
+      "Bash(touch .claude/skills/loomq-build/.gitkeep)",
+      "Bash(touch .claude/skills/loomq-clean/.gitkeep)",
+      "Bash(touch .claude/skills/loomq-debug/.gitkeep)",
+      "Bash(touch .claude/skills/loomq-health/.gitkeep)"
     ]
   }
 }

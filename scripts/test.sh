@@ -11,7 +11,7 @@ run_maven() {
 
 to_class_name() {
   local path="$1"
-  path="${path#src/test/java/}"
+  path="${path#*/src/test/java/}"
   path="${path%.java}"
   echo "${path//\//.}"
 }
@@ -49,9 +49,9 @@ case "${MODE}" in
     test_files=()
     main_files=()
     for f in "${files[@]}"; do
-      if [[ "$f" == src/test/java/*.java ]]; then
+      if [[ "$f" == */src/test/java/*.java ]]; then
         test_files+=("$f")
-      elif [[ "$f" == src/main/java/*.java ]]; then
+      elif [[ "$f" == */src/main/java/*.java ]]; then
         main_files+=("$f")
       fi
     done

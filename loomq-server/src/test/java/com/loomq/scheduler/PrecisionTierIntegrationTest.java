@@ -35,12 +35,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 精度档位集成测试 (v0.5.1)
+ * 精度档位集成测试 (v0.7.0)
  *
  * 验证混合精度档位场景下的调度正确性和 SLO 满足情况
  *
  * @author loomq
- * @since v0.5.1
+ * @since v0.7.0
  */
 @Tag("integration")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
@@ -70,7 +70,10 @@ public class PrecisionTierIntegrationTest {
         tempDir = Files.createTempDirectory("loomq-precision-test");
         logger.info("Test data directory: {}", tempDir);
 
-        engine = new LoomqEngine("precision-test-node", "precision-test-shard", tempDir.toString(), port);
+        engine = LoomqEngine.builder()
+            .nodeId("precision-test-node")
+            .walDir(tempDir)
+            .build();
         engine.start();
 
         Thread.sleep(1500);
@@ -94,7 +97,7 @@ public class PrecisionTierIntegrationTest {
     static void tearDown() throws Exception {
         logger.info("Stopping engine...");
         if (engine != null) {
-            engine.stop();
+            engine.close();
         }
         if (tempDir != null) {
             deleteDirectory(tempDir.toFile());

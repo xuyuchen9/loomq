@@ -51,9 +51,6 @@
                     <configuration>
                         <source>${java.version}</source>
                         <target>${java.version}</target>
-                        <compilerArgs>
-                            <arg>--enable-preview</arg>
-                        </compilerArgs>
                     </configuration>
                 </plugin>
                 <plugin>
@@ -61,7 +58,6 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>3.2.5</version>
                     <configuration>
-                        <argLine>--enable-preview</argLine>
                         <groups>${test.groups}</groups>
                         <excludedGroups>${test.excludedGroups}</excludedGroups>
                     </configuration>

@@ -1,11 +1,11 @@
 # LoomQ - High-Performance Standalone Delayed Task Scheduler
 
 [![JDK](https://img.shields.io/badge/JDK-25%2B-green.svg)](https://openjdk.org/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-0.6.x-blue.svg)](https://central.sonatype.com/)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-0.7.x-blue.svg)](https://central.sonatype.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Tests](https://img.shields.io/badge/Tests-367%20passed-brightgreen.svg)]()
 
-**Making future events happen reliably, powered by Java 21+ Virtual Threads.**
+**Making future events happen reliably, powered by Java 25 Virtual Threads.**
 
 LoomQ is a high-performance standalone delayed task scheduling engine. It is not a general-purpose message queue or workflow engine—its core value proposition is ensuring that future events occur reliably at the appointed time.
 
@@ -64,7 +64,7 @@ LoomQ is a high-performance standalone delayed task scheduling engine. It is not
 <dependency>
     <groupId>com.loomq</groupId>
     <artifactId>loomq-core</artifactId>
-    <version>0.6.2</version>
+    <version>0.7.0-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -79,7 +79,7 @@ mvn clean package -DskipTests
 ### Start Server
 
 ```bash
-java -jar target/loomq-0.6.2.jar
+java -jar loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar
 ```
 
 Server starts at `http://localhost:8080` by default.
