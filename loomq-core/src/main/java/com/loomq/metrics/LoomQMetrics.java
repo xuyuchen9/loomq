@@ -1,6 +1,8 @@
 package com.loomq.metrics;
 
 import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -206,13 +208,16 @@ public class LoomQMetrics {
     // ==================== 指标查询 ====================
 
     public MetricsSnapshot snapshot() {
+        Map<String, Long> statusSnapshot = new LinkedHashMap<>(intentsByStatus.size());
+        intentsByStatus.forEach((status, count) -> statusSnapshot.put(status, count.get()));
+
         return new MetricsSnapshot(
             intentsCreated.sum(),
             intentsCompleted.sum(),
             intentsCancelled.sum(),
             intentsExpired.sum(),
             intentsDeadLettered.sum(),
-            new ConcurrentHashMap<>(intentsByStatus),
+            Collections.unmodifiableMap(statusSnapshot),
             deliveriesTotal.sum(),
             deliveriesSuccess.sum(),
             deliveriesFailed.sum(),
@@ -258,7 +263,7 @@ public class LoomQMetrics {
         long intentsCancelled,
         long intentsExpired,
         long intentsDeadLettered,
-        Map<String, AtomicLong> intentsByStatus,
+        Map<String, Long> intentsByStatus,
         long deliveriesTotal,
         long deliveriesSuccess,
         long deliveriesFailed,

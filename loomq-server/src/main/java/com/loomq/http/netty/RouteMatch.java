@@ -1,5 +1,6 @@
 package com.loomq.http.netty;
 
+import java.util.Collections;
 import java.util.Map;
 
 /**
@@ -14,7 +15,7 @@ public class RouteMatch {
 
     public RouteMatch(Handler handler, Map<String, String> pathParams) {
         this.handler = handler;
-        this.pathParams = pathParams != null ? pathParams : Map.of();
+        this.pathParams = pathParams != null ? pathParams : Collections.emptyMap();
     }
 
     public Handler handler() {

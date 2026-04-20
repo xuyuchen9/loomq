@@ -4,21 +4,18 @@ import com.loomq.application.scheduler.PrecisionScheduler;
 import com.loomq.common.exception.BackPressureException;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
-import com.loomq.http.HttpCallbackClient;
+import com.loomq.spi.DeliveryHandler;
+import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.spi.DefaultRedeliveryDecider;
-import com.loomq.spi.DeliveryContext;
 import com.loomq.spi.RedeliveryDecider;
 import com.loomq.store.IntentStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -39,11 +36,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * 3. 同步投递消除异步状态机复杂度
  * 4. 背压通过队列满拒绝实现
  *
- * 架构：
- * - 单消费者虚拟线程循环
- * - 批量取出（最多100条，最多等10ms）
- * - 并行同步发送（虚拟线程池）
- * - 整批等待完成（带超时）
+ * v0.7.1: 迁移至 loomq-core，使用 DeliveryHandler SPI 接口投递
  *
  * @author loomq
  * @since v0.6.1
@@ -57,11 +50,10 @@ public class BatchDispatcher implements AutoCloseable {
     private static final int QUEUE_CAPACITY = 10000;
     private static final long POLL_TIMEOUT_MS = 10;
     private static final long BATCH_TIMEOUT_MS = 30000;
-    private static final int DISPATCH_TIMEOUT_SEC = 30;
 
     // ========== 依赖 ==========
     private final IntentStore intentStore;
-    private final HttpClient httpClient;
+    private final DeliveryHandler deliveryHandler;
     private final RedeliveryDecider redeliveryDecider;
     private final PrecisionScheduler scheduler;
 
@@ -93,17 +85,24 @@ public class BatchDispatcher implements AutoCloseable {
         public long getRescheduled() { return rescheduledCount.get(); }
     }
 
+    /**
+     * 创建批量投递器
+     *
+     * @param intentStore Intent 存储
+     * @param scheduler   调度器（用于重投）
+     */
     public BatchDispatcher(IntentStore intentStore, PrecisionScheduler scheduler) {
         this.intentStore = intentStore;
         this.scheduler = scheduler;
         this.dispatchQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
 
-        this.httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
+        // 加载投递处理器
+        ServiceLoader<DeliveryHandler> handlerLoader = ServiceLoader.load(DeliveryHandler.class);
+        this.deliveryHandler = handlerLoader.findFirst().orElse(null);
 
-        ServiceLoader<RedeliveryDecider> loader = ServiceLoader.load(RedeliveryDecider.class);
-        this.redeliveryDecider = loader.findFirst().orElseGet(DefaultRedeliveryDecider::new);
+        // 加载重投决策器
+        ServiceLoader<RedeliveryDecider> deciderLoader = ServiceLoader.load(RedeliveryDecider.class);
+        this.redeliveryDecider = deciderLoader.findFirst().orElseGet(DefaultRedeliveryDecider::new);
 
         this.virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
         this.consumerThread = Thread.ofPlatform()
@@ -112,6 +111,35 @@ public class BatchDispatcher implements AutoCloseable {
             .unstarted(this::dispatchLoop);
 
         logger.info("BatchDispatcher created, batchSize={}, queueCapacity={}", BATCH_SIZE, QUEUE_CAPACITY);
+
+        if (this.deliveryHandler == null) {
+            logger.warn("No DeliveryHandler configured - intents will not be delivered!");
+        }
+    }
+
+    /**
+     * 创建批量投递器（指定投递处理器）
+     *
+     * @param intentStore     Intent 存储
+     * @param scheduler       调度器
+     * @param deliveryHandler 投递处理器
+     */
+    public BatchDispatcher(IntentStore intentStore, PrecisionScheduler scheduler, DeliveryHandler deliveryHandler) {
+        this.intentStore = intentStore;
+        this.scheduler = scheduler;
+        this.deliveryHandler = deliveryHandler;
+        this.dispatchQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
+
+        ServiceLoader<RedeliveryDecider> deciderLoader = ServiceLoader.load(RedeliveryDecider.class);
+        this.redeliveryDecider = deciderLoader.findFirst().orElseGet(DefaultRedeliveryDecider::new);
+
+        this.virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+        this.consumerThread = Thread.ofPlatform()
+            .name("batch-dispatcher")
+            .daemon(true)
+            .unstarted(this::dispatchLoop);
+
+        logger.info("BatchDispatcher created with custom DeliveryHandler");
     }
 
     /**
@@ -135,7 +163,6 @@ public class BatchDispatcher implements AutoCloseable {
             throw new IllegalStateException("Dispatcher not started");
         }
 
-        // 尝试入队，满时立即拒绝（背压）
         if (!dispatchQueue.offer(intent)) {
             throw new BackPressureException("Dispatch queue full (capacity=" + QUEUE_CAPACITY + ")", null, 1000);
         }
@@ -154,12 +181,11 @@ public class BatchDispatcher implements AutoCloseable {
 
         while (running.get()) {
             try {
-                // 批量取出
                 batch.clear();
                 Intent first = dispatchQueue.poll(POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
                 if (first == null) {
-                    continue;  // 超时，继续循环
+                    continue;
                 }
 
                 batch.add(first);
@@ -169,7 +195,6 @@ public class BatchDispatcher implements AutoCloseable {
                     continue;
                 }
 
-                // 处理批量
                 processBatch(batch);
 
             } catch (InterruptedException e) {
@@ -190,7 +215,6 @@ public class BatchDispatcher implements AutoCloseable {
     private void processBatch(List<Intent> batch) {
         logger.debug("Processing batch of {} intents", batch.size());
 
-        // 为每个 Intent 创建投递任务
         List<CompletableFuture<Void>> futures = new ArrayList<>(batch.size());
 
         for (Intent intent : batch) {
@@ -201,13 +225,11 @@ public class BatchDispatcher implements AutoCloseable {
             futures.add(future);
         }
 
-        // 等待整批完成（带超时）
         try {
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                 .orTimeout(BATCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .join();
         } catch (CompletionException e) {
-            // 超时或异常，已在单个任务中处理
             logger.debug("Batch completed with some failures");
         }
     }
@@ -216,10 +238,13 @@ public class BatchDispatcher implements AutoCloseable {
      * 投递单个 Intent
      */
     private void dispatchSingle(Intent intent) {
+        if (deliveryHandler == null) {
+            logger.warn("No DeliveryHandler configured, cannot deliver intent {}", intent.getIntentId());
+            return;
+        }
+
         String deliveryId = generateDeliveryId(intent);
         int attempt = intent.getAttempts() + 1;
-
-        DeliveryContext context = new DeliveryContext(deliveryId, intent.getIntentId(), attempt);
 
         try {
             // 状态转换
@@ -228,79 +253,38 @@ public class BatchDispatcher implements AutoCloseable {
             intent.incrementAttempts();
             intent.setLastDeliveryId(deliveryId);
 
-            // 构建并发送请求
-            HttpRequest request = HttpCallbackClient.buildCallbackRequest(intent, DISPATCH_TIMEOUT_SEC);
-            HttpResponse<String> response = httpClient.send(
-                request,
-                HttpResponse.BodyHandlers.ofString()
-            );
+            // 使用 SPI 接口投递
+            DeliveryResult result = deliveryHandler.deliver(intent);
 
-            // 处理响应
-            context.markSuccess(response.statusCode(), Map.of(), response.body());
+            switch (result) {
+                case SUCCESS:
+                    updateStatus(intent, IntentStatus.DELIVERED);
+                    updateStatus(intent, IntentStatus.ACKED);
+                    stats.recordSuccess();
+                    logger.debug("Intent {} delivered successfully", intent.getIntentId());
+                    break;
 
-            if (redeliveryDecider.shouldRedeliver(context)) {
-                scheduleRedelivery(intent);
-            } else if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                updateStatus(intent, IntentStatus.DELIVERED);
-                updateStatus(intent, IntentStatus.ACKED);
-                stats.recordSuccess();
-                logger.debug("Intent {} delivered successfully", intent.getIntentId());
-            } else {
-                handleFailure(intent, "HTTP " + response.statusCode());
+                case RETRY:
+                    scheduleRedelivery(intent);
+                    break;
+
+                case DEAD_LETTER:
+                    updateStatus(intent, IntentStatus.DEAD_LETTERED);
+                    stats.recordFailure();
+                    logger.warn("Intent {} dead-lettered", intent.getIntentId());
+                    break;
+
+                case EXPIRED:
+                    updateStatus(intent, IntentStatus.EXPIRED);
+                    stats.recordFailure();
+                    logger.info("Intent {} expired", intent.getIntentId());
+                    break;
             }
 
-        } catch (java.net.ConnectException e) {
-            // 连接被拒绝
-            logger.warn("Connection refused for intent {} to {}: {}",
-                intent.getIntentId(), intent.getCallback().getUrl(), e.getMessage());
-            context.markFailure(e);
-            handleDeliveryError(intent, context, "connection_refused");
-
-        } catch (java.net.SocketTimeoutException e) {
-            // Socket 超时
-            logger.warn("Socket timeout for intent {} to {}",
-                intent.getIntentId(), intent.getCallback().getUrl());
-            context.markFailure(e);
-            handleDeliveryError(intent, context, "socket_timeout");
-
-        } catch (java.net.http.HttpTimeoutException e) {
-            // HTTP 超时
-            logger.warn("HTTP timeout for intent {} to {}",
-                intent.getIntentId(), intent.getCallback().getUrl());
-            context.markFailure(e);
-            handleDeliveryError(intent, context, "http_timeout");
-
-        } catch (java.io.IOException e) {
-            // I/O 错误
-            logger.warn("I/O error for intent {} to {}: {}",
-                intent.getIntentId(), intent.getCallback().getUrl(), e.getMessage());
-            context.markFailure(e);
-            handleDeliveryError(intent, context, "io_error");
-
-        } catch (InterruptedException e) {
-            // 线程中断
-            Thread.currentThread().interrupt();
-            logger.warn("Dispatch interrupted for intent {}", intent.getIntentId());
-            context.markFailure(e);
-            handleDeliveryError(intent, context, "interrupted");
-
         } catch (Exception e) {
-            // 其他未预期的异常
             logger.error("Unexpected error dispatching intent {}: {}",
                 intent.getIntentId(), e.getMessage(), e);
-            context.markFailure(e);
-            handleDeliveryError(intent, context, "unexpected");
-        }
-    }
-
-    /**
-     * 处理投递错误
-     */
-    private void handleDeliveryError(Intent intent, DeliveryContext context, String errorType) {
-        if (redeliveryDecider.shouldRedeliver(context)) {
-            scheduleRedelivery(intent);
-        } else {
-            handleFailure(intent, errorType);
+            handleFailure(intent, "unexpected_error");
         }
     }
 
@@ -337,11 +321,9 @@ public class BatchDispatcher implements AutoCloseable {
         logger.info("Scheduling redelivery for intent={}, attempt={}, delay={}ms",
             intent.getIntentId(), intent.getAttempts(), delayMs);
 
-        // 更新执行时间
-        intent.setExecuteAt(java.time.Instant.now().plusMillis(delayMs));
+        intent.setExecuteAt(Instant.now().plusMillis(delayMs));
         updateStatus(intent, IntentStatus.SCHEDULED);
 
-        // 重新调度
         if (scheduler != null) {
             scheduler.schedule(intent);
         }

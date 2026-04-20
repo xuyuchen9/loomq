@@ -1,10 +1,7 @@
 package com.loomq.http.netty;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.ObjectWriter;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -18,11 +15,13 @@ import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.ReferenceCountUtil;
+import com.loomq.http.json.JsonCodec;
+import com.loomq.metrics.LoomQMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -53,18 +52,14 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
     private final RadixRouter router;
     private final ExecutorService businessExecutor;
     private final Semaphore concurrencyLimit;
-    private final ObjectWriter objectWriter;
+    private final JsonCodec jsonCodec;
+    private static final byte[] EMPTY_BODY = new byte[0];
 
     // 预序列化的静态响应 - 避免重复序列化
     private static final byte[] NOT_FOUND_RESPONSE = "{\"error\":\"Not Found\"}".getBytes(StandardCharsets.UTF_8);
     private static final byte[] SERVICE_UNAVAILABLE_RESPONSE = "{\"error\":\"Service Unavailable\"}".getBytes(StandardCharsets.UTF_8);
     private static final byte[] INTERNAL_ERROR_RESPONSE = "{\"error\":\"Internal Server Error\"}".getBytes(StandardCharsets.UTF_8);
     private static final byte[] PAYLOAD_TOO_LARGE_RESPONSE = "{\"error\":\"Payload Too Large\"}".getBytes(StandardCharsets.UTF_8);
-
-    // 预序列化的健康检查响应
-    private static final byte[] HEALTH_UP_RESPONSE = "{\"status\":\"UP\"}".getBytes(StandardCharsets.UTF_8);
-    private static final byte[] HEALTH_LIVE_RESPONSE = "{\"status\":\"UP\"}".getBytes(StandardCharsets.UTF_8);
-    private static final byte[] HEALTH_READY_RESPONSE = "{\"status\":\"UP\"}".getBytes(StandardCharsets.UTF_8);
 
     // 指标
     private final HttpMetrics metrics;
@@ -75,10 +70,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
         this.concurrencyLimit = new Semaphore(maxConcurrentRequests);
         this.metrics = metrics;
 
-        ObjectMapper objectMapper = new ObjectMapper()
-            .registerModule(new JavaTimeModule())
-            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        this.objectWriter = objectMapper.writer();
+        this.jsonCodec = JsonCodec.instance();
     }
 
     @Override
@@ -88,43 +80,39 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
             return;
         }
 
+        boolean permitAcquired = false;
         try {
-            // 1. 在 I/O 线程中安全提取请求体到堆内存
-            byte[] bodyBytes = readRequestBodyToHeap(req);
-
-            // 2. 提取请求头到 Map
-            Map<String, String> headers = extractHeaders(req);
-
-            // 3. 获取方法和 URI
+            // 1. 获取方法和 URI
             HttpMethod method = req.method();
             String uri = req.uri();
 
-            // 查询字符串处理
-            String path = extractPath(uri);
-
-            // 4. 背压控制：信号量限流
+            // 2. 背压控制：信号量限流
             if (!concurrencyLimit.tryAcquire()) {
                 metrics.recordLimitExceeded();
                 writeResponse(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, SERVICE_UNAVAILABLE_RESPONSE);
                 return;
             }
+            permitAcquired = true;
+
+            // 3. 先做路由匹配，404 直接返回，避免无谓的 body/header 拷贝
+            RouteMatch match = router.match(method, uri);
+            if (match == null) {
+                ctx.executor().execute(() -> {
+                    writeResponse(ctx, HttpResponseStatus.NOT_FOUND, NOT_FOUND_RESPONSE);
+                    concurrencyLimit.release();
+                });
+                metrics.recordRequest(0L, 404);
+                return;
+            }
+
+            // 4. 仅在命中路由后，再把请求体和请求头复制到堆内存
+            byte[] bodyBytes = readRequestBodyToHeap(req);
+            Map<String, String> headers = Collections.emptyMap();
 
             // 5. 提交业务逻辑到虚拟线程
             businessExecutor.execute(() -> {
                 long startTime = System.nanoTime();
                 try {
-                    // 匹配路由
-                    RouteMatch match = router.match(method, path);
-
-                    if (match == null) {
-                        ctx.executor().execute(() -> {
-                            writeResponse(ctx, HttpResponseStatus.NOT_FOUND, NOT_FOUND_RESPONSE);
-                            concurrencyLimit.release();
-                        });
-                        metrics.recordRequest(System.nanoTime() - startTime, 404);
-                        return;
-                    }
-
                     // 执行业务处理器
                     Object result = match.handler().handle(method, uri, bodyBytes, headers, match.pathParams());
 
@@ -138,6 +126,11 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                             if (result instanceof IntentHandler.CreatedResponse created) {
                                 responseStatus = HttpResponseStatus.valueOf(created.status());
                                 responseBody = created.body();
+                            } else if (result instanceof HttpErrorResponse errorResp) {
+                                responseStatus = HttpResponseStatus.valueOf(errorResp.status());
+                                responseBody = errorResp;
+                            } else if (result instanceof LoomQMetrics.MetricsSnapshot snapshot) {
+                                responseBody = snapshot;
                             } else if (result instanceof Map) {
                                 @SuppressWarnings("unchecked")
                                 Map<String, Object> map = (Map<String, Object>) result;
@@ -148,8 +141,23 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                                 }
                             }
 
+                            // 原始字节响应可直接写回，避免二次 JSON 编码
+                            if (responseBody instanceof byte[] rawBytes) {
+                                writeResponse(ctx, responseStatus, rawBytes);
+                                metrics.recordRequest(System.nanoTime() - startTime, responseStatus.code());
+                            // /metrics 快路径：直接把 snapshot 写入 ByteBuf
+                            } else if (responseBody instanceof LoomQMetrics.MetricsSnapshot snapshot) {
+                                ByteBuf buf = ctx.alloc().ioBuffer(MetricsResponseSerializer.estimateSize(snapshot));
+                                try {
+                                    MetricsResponseSerializer.write(snapshot, buf);
+                                    writeByteBufResponse(ctx, responseStatus, buf);
+                                    metrics.recordRequest(System.nanoTime() - startTime, responseStatus.code());
+                                } catch (Exception e) {
+                                    buf.release();
+                                    throw e;
+                                }
                             // 零拷贝序列化：DirectSerializedResponse 直接写入 ByteBuf
-                            if (responseBody instanceof DirectSerializedResponse directResp) {
+                            } else if (responseBody instanceof DirectSerializedResponse directResp) {
                                 ByteBuf buf = ctx.alloc().ioBuffer(directResp.estimateSize());
                                 try {
                                     directResp.writeTo(buf);
@@ -161,7 +169,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                                 }
                             } else {
                                 // Jackson 回退
-                                byte[] bytes = objectWriter.writeValueAsBytes(responseBody);
+                                byte[] bytes = jsonCodec.writeBytes(responseBody);
                                 writeResponse(ctx, responseStatus, bytes);
                                 metrics.recordRequest(System.nanoTime() - startTime, responseStatus.code());
                             }
@@ -191,6 +199,9 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
         } catch (Exception e) {
             logger.error("Request handling error", e);
             writeResponse(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, INTERNAL_ERROR_RESPONSE);
+            if (permitAcquired) {
+                concurrencyLimit.release();
+            }
         }
     }
 
@@ -200,33 +211,9 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
     private byte[] readRequestBodyToHeap(FullHttpRequest req) {
         ByteBuf content = req.content();
         if (!content.isReadable()) {
-            return new byte[0];
+            return EMPTY_BODY;
         }
-        byte[] body = new byte[content.readableBytes()];
-        content.getBytes(content.readerIndex(), body);
-        return body;
-    }
-
-    /**
-     * 提取请求头到 Map
-     */
-    private Map<String, String> extractHeaders(FullHttpRequest req) {
-        Map<String, String> headers = new HashMap<>();
-        for (Map.Entry<String, String> entry : req.headers()) {
-            headers.put(entry.getKey(), entry.getValue());
-        }
-        return headers;
-    }
-
-    /**
-     * 提取路径（去除查询字符串）
-     */
-    private String extractPath(String uri) {
-        int queryIndex = uri.indexOf('?');
-        if (queryIndex >= 0) {
-            return uri.substring(0, queryIndex);
-        }
-        return uri;
+        return ByteBufUtil.getBytes(content, content.readerIndex(), content.readableBytes(), false);
     }
 
     /**

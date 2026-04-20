@@ -1,9 +1,8 @@
 package com.loomq.callback;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
+import com.loomq.http.json.JsonCodec;
 import com.loomq.spi.CallbackHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,7 +33,7 @@ public class HttpCallbackHandler implements CallbackHandler {
     private static final Logger logger = LoggerFactory.getLogger(HttpCallbackHandler.class);
 
     /** JSON 序列化器 */
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final JsonCodec jsonCodec = JsonCodec.instance();
 
     /** 默认连接超时（秒） */
     private static final int DEFAULT_CONNECT_TIMEOUT_SECONDS = 5;
@@ -223,39 +222,38 @@ public class HttpCallbackHandler implements CallbackHandler {
      */
     private HttpRequest.BodyPublisher buildRequestBody(Intent intent, EventType type, Throwable error) {
         Callback callback = intent.getCallback();
-        StringBuilder json = new StringBuilder();
-        json.append("{");
-        json.append("\"intentId\":\"").append(escapeJson(intent.getIntentId())).append("\",");
-        json.append("\"eventType\":\"").append(type.name()).append("\",");
-        json.append("\"status\":\"").append(intent.getStatus().name()).append("\",");
-        json.append("\"executeAt\":\"").append(intent.getExecuteAt()).append("\",");
+        StringBuilder body = new StringBuilder();
+        body.append("{");
+        body.append("\"intentId\":\"").append(escapeJson(intent.getIntentId())).append("\",");
+        body.append("\"eventType\":\"").append(type.name()).append("\",");
+        body.append("\"status\":\"").append(intent.getStatus().name()).append("\",");
+        body.append("\"executeAt\":\"").append(intent.getExecuteAt()).append("\",");
 
         if (callback != null && callback.getBody() != null) {
-            json.append("\"payload\":");
+            body.append("\"payload\":");
             try {
-                String payload = objectMapper.writeValueAsString(callback.getBody());
-                json.append(payload);
-            } catch (JsonProcessingException e) {
+                body.append(jsonCodec.writeString(callback.getBody()));
+            } catch (Exception e) {
                 // 降级为 toString()
                 String payload = callback.getBody().toString();
-                json.append("\"").append(escapeJson(payload)).append("\"");
+                body.append("\"").append(escapeJson(payload)).append("\"");
             }
-            json.append(",");
+            body.append(",");
         }
 
         if (error != null) {
-            json.append("\"error\":");
-            json.append("{");
-            json.append("\"message\":\"").append(escapeJson(error.getMessage())).append("\",");
-            json.append("\"type\":\"").append(error.getClass().getSimpleName()).append("\"");
-            json.append("}");
+            body.append("\"error\":");
+            body.append("{");
+            body.append("\"message\":\"").append(escapeJson(error.getMessage())).append("\",");
+            body.append("\"type\":\"").append(error.getClass().getSimpleName()).append("\"");
+            body.append("}");
         } else {
-            json.append("\"error\":null");
+            body.append("\"error\":null");
         }
 
-        json.append("}");
+        body.append("}");
 
-        return HttpRequest.BodyPublishers.ofString(json.toString());
+        return HttpRequest.BodyPublishers.ofString(body.toString());
     }
 
     /**

@@ -84,6 +84,18 @@ class BucketGroupTest {
     }
 
     @Test
+    @DisplayName("按 intentId 删除任务")
+    void testRemoveIntent() {
+        Instant executeAt = Instant.now().plusMillis(1000);
+        Intent intent = createTestIntent(PrecisionTier.STANDARD, executeAt);
+        standardGroup.add(intent, intent.getExecuteAt());
+
+        assertTrue(standardGroup.remove(intent));
+        assertEquals(0, standardGroup.getPendingCount());
+        assertEquals(0, standardGroup.getBucketCount());
+    }
+
+    @Test
     @DisplayName("计算休眠时间 - 长延迟场景")
     void testCalculateSleepMsLongDelay() {
         // 长延迟场景：delay > precisionWindow

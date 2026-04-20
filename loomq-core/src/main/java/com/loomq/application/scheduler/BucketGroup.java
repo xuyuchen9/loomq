@@ -10,9 +10,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.NavigableMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 精度桶组
@@ -40,14 +41,19 @@ public class BucketGroup {
     /**
      * 时间桶存储
      * Key: 执行时间戳按精度窗口向下取整
-     * Value: 该时间窗口内的 Intent 列表
+     * Value: 该时间窗口内的 Intent 索引
      */
-    private final ConcurrentSkipListMap<Long, List<Intent>> buckets;
+    private final ConcurrentSkipListMap<Long, ConcurrentHashMap<String, Intent>> buckets;
 
     /**
-     * 桶操作锁（仅用于 List 操作，Map 本身是线程安全的）
+     * Intent 到桶的反向索引，便于 O(1) 删除和重调度
      */
-    private final ReentrantLock bucketLock;
+    private final ConcurrentHashMap<String, Long> intentIndex;
+
+    /**
+     * 当前待处理任务计数
+     */
+    private final AtomicLong pendingCount;
 
     /**
      * 构造函数
@@ -58,7 +64,8 @@ public class BucketGroup {
         this.tier = tier;
         this.precisionWindowMs = tier.getPrecisionWindowMs();
         this.buckets = new ConcurrentSkipListMap<>();
-        this.bucketLock = new ReentrantLock();
+        this.intentIndex = new ConcurrentHashMap<>();
+        this.pendingCount = new AtomicLong();
     }
 
     /**
@@ -69,22 +76,44 @@ public class BucketGroup {
      */
     public void add(Intent intent, Instant executeAt) {
         long bucketKey = floorToBucket(executeAt.toEpochMilli());
+        String intentId = intent.getIntentId();
 
-        buckets.compute(bucketKey, (key, list) -> {
-            if (list == null) {
-                list = new ArrayList<>();
+        intentIndex.compute(intentId, (id, previousBucketKey) -> {
+            if (previousBucketKey != null && previousBucketKey != bucketKey) {
+                removeFromBucket(previousBucketKey, intentId);
             }
-            // 使用 synchronized 保护 ArrayList 操作
-            synchronized (list) {
-                list.add(intent);
+
+            ConcurrentHashMap<String, Intent> bucket = buckets.computeIfAbsent(bucketKey, key -> new ConcurrentHashMap<>());
+            if (bucket.put(intentId, intent) == null) {
+                pendingCount.incrementAndGet();
             }
-            return list;
+            return bucketKey;
         });
 
         if (logger.isTraceEnabled()) {
             logger.trace("Added intent {} to bucket {} for tier {}",
                 intent.getIntentId(), bucketKey, tier);
         }
+    }
+
+    /**
+     * 从桶中移除 Intent。
+     *
+     * @param intent 待移除的 Intent
+     * @return true 表示已移除
+     */
+    public boolean remove(Intent intent) {
+        String intentId = intent.getIntentId();
+        Long bucketKey = intentIndex.remove(intentId);
+        if (bucketKey != null && removeFromBucket(bucketKey, intentId)) {
+            return true;
+        }
+
+        if (bucketKey != null) {
+            return removeByScan(intentId);
+        }
+
+        return false;
     }
 
     /**
@@ -97,7 +126,7 @@ public class BucketGroup {
         long currentBucketKey = floorToBucket(now.toEpochMilli());
 
         // 获取所有 <= 当前时间桶的条目
-        NavigableMap<Long, List<Intent>> dueBuckets = buckets.headMap(currentBucketKey, true);
+        NavigableMap<Long, ConcurrentHashMap<String, Intent>> dueBuckets = buckets.headMap(currentBucketKey, true);
 
         if (dueBuckets.isEmpty()) {
             return Collections.emptyList();
@@ -107,18 +136,18 @@ public class BucketGroup {
 
         // 遍历到期桶，收集任务
         for (Long bucketKey : new ArrayList<>(dueBuckets.keySet())) {
-            List<Intent> bucketIntents = buckets.remove(bucketKey);
+            ConcurrentHashMap<String, Intent> bucketIntents = buckets.remove(bucketKey);
             if (bucketIntents != null) {
-                // 使用 synchronized 保护列表遍历
-                synchronized (bucketIntents) {
-                    // 过滤真正到期的任务（考虑精度窗口内的实际执行时间）
-                    for (Intent intent : bucketIntents) {
-                        if (!intent.getExecuteAt().isAfter(now)) {
-                            dueIntents.add(intent);
-                        } else {
-                            // 未到期的任务重新入桶
-                            add(intent, intent.getExecuteAt());
-                        }
+                pendingCount.addAndGet(-bucketIntents.size());
+
+                // 过滤真正到期的任务（考虑精度窗口内的实际执行时间）
+                for (Intent intent : bucketIntents.values()) {
+                    intentIndex.remove(intent.getIntentId(), bucketKey);
+                    if (!intent.getExecuteAt().isAfter(now)) {
+                        dueIntents.add(intent);
+                    } else {
+                        // 未到期的任务重新入桶
+                        add(intent, intent.getExecuteAt());
                     }
                 }
             }
@@ -173,9 +202,7 @@ public class BucketGroup {
      * @return 任务总数
      */
     public int getPendingCount() {
-        return buckets.values().stream()
-            .mapToInt(List::size)
-            .sum();
+        return Math.toIntExact(pendingCount.get());
     }
 
     /**
@@ -183,6 +210,8 @@ public class BucketGroup {
      */
     public void clear() {
         buckets.clear();
+        intentIndex.clear();
+        pendingCount.set(0);
     }
 
     /**
@@ -201,5 +230,33 @@ public class BucketGroup {
      */
     public long getPrecisionWindowMs() {
         return precisionWindowMs;
+    }
+
+    private boolean removeFromBucket(long bucketKey, String intentId) {
+        ConcurrentHashMap<String, Intent> bucket = buckets.get(bucketKey);
+        if (bucket == null) {
+            return false;
+        }
+
+        Intent removed = bucket.remove(intentId);
+        if (removed == null) {
+            return false;
+        }
+
+        pendingCount.decrementAndGet();
+        if (bucket.isEmpty()) {
+            buckets.remove(bucketKey, bucket);
+        }
+        return true;
+    }
+
+    private boolean removeByScan(String intentId) {
+        for (Long bucketKey : new ArrayList<>(buckets.keySet())) {
+            if (removeFromBucket(bucketKey, intentId)) {
+                intentIndex.remove(intentId, bucketKey);
+                return true;
+            }
+        }
+        return false;
     }
 }

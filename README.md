@@ -9,7 +9,7 @@
 
 LoomQ is a high-performance standalone delayed task scheduling engine. It is not a general-purpose message queue or workflow engine—its core value proposition is ensuring that future events occur reliably at the appointed time.
 
-> **Note:** v0.6.x is the performance milestone for the standalone version. Future releases will focus on distributed deployment and an embeddable core.
+> **Note:** v0.7.x is the split between the embeddable core and the standalone HTTP service. `loomq-core` contains the engine, while `loomq-server` provides the HTTP shell and delivery integration.
 
 ---
 
@@ -216,7 +216,7 @@ Low-precision tiers (STANDARD, ECONOMY) benefit from automatic batch collection 
 
 ## v0.6.x Standalone Performance Summary
 
-**v0.6.x is the final standalone performance milestone.** This version has reached the physical limits of a single-node system—further optimizations yield diminishing returns.
+**v0.6.x was the last single-module standalone milestone before the v0.7.x split.** It marked the end of the single-node era, after which the project moved to an embeddable core plus a standalone Netty service.
 
 ### Performance Achievements
 
@@ -254,7 +254,7 @@ Low-precision tiers (STANDARD, ECONOMY) benefit from automatic batch collection 
 
 ## Known Limitations
 
-LoomQ v0.6.x is the **final standalone version**. The following limitations are acknowledged as "known constraints"—they do not block the v0.6.x release but inform architectural decisions for v0.7.0+.
+LoomQ v0.6.x was the **last single-module standalone version**. The following limitations are historical notes that informed the v0.7.0 split.
 
 | Limitation | Description | Status |
 |------------|-------------|--------|
@@ -274,7 +274,7 @@ The following checklist defines v0.6.x completion. All items are now **✓ Done*
   - `BucketGroupManager` ✓ Pure Java
   - `PrecisionTier` ⚠️ Has Jackson annotations (to be moved in v0.7.0)
 - [x] Create embedded demo (`EmbeddedDemo.java`)
-- [x] Document v0.6.x as standalone final version
+- [x] Document v0.6.x as the last single-module standalone version
 - [x] Tag `v0.6.3-final` and create `release/v0.6.x` branch
 
 **Next Phase (v0.7.0)**: Split into `loomq-core` (embeddable, HTTP-free) + `loomq-server` (Netty HTTP layer).

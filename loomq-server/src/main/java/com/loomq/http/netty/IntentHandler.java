@@ -1,63 +1,50 @@
 package com.loomq.http.netty;
 
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.JsonToken;
+import com.loomq.LoomqEngine;
+import com.loomq.api.CreateIntentRequest;
+import com.loomq.api.IntentActionResponse;
+import com.loomq.api.ErrorResponse;
+import com.loomq.api.IntentResponse;
 import com.loomq.api.IntentValidator;
+import com.loomq.api.PatchIntentRequest;
 import com.loomq.api.ValidationResult;
-import com.loomq.application.dispatcher.BatchDispatcher;
-import com.loomq.application.scheduler.PrecisionScheduler;
-import com.loomq.common.exception.BackPressureException;
+import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.infrastructure.wal.IntentWal;
+import com.loomq.http.json.JsonCodec;
 import com.loomq.replication.AckLevel;
 import com.loomq.store.IdempotencyResult;
-import com.loomq.store.IntentStore;
 import io.netty.handler.codec.http.HttpMethod;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayInputStream;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Intent API 处理器 V2 - 简化实现
+ * Intent API handler for the Netty stack.
  *
- * 核心简化：
- * 1. 使用 IntentWalV2（二进制序列化，~100ns）
- * 2. 使用 BatchDispatcher（批量同步投递）
- * 3. 流式 JSON 解析保留（高效）
- *
- * @author loomq
- * @since v0.6.1
+ * This is the only request/response adapter used by the standalone server.
+ * JSON payloads are decoded through the shared JsonCodec so Instant/record
+ * fields work the same way across create, patch, and callback payloads.
  */
 public class IntentHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(IntentHandler.class);
 
-    private final IntentStore intentStore;
-    private final IntentWal intentWal;
-    private final BatchDispatcher dispatcher;
-    private final PrecisionScheduler scheduler;
-    private final JsonFactory jsonFactory;
+    private final LoomqEngine engine;
+    private final JsonCodec jsonCodec;
 
-    public IntentHandler(IntentStore intentStore,
-                         IntentWal intentWal,
-                         BatchDispatcher dispatcher,
-                         PrecisionScheduler scheduler) {
-        this.intentStore = intentStore;
-        this.intentWal = intentWal;
-        this.dispatcher = dispatcher;
-        this.scheduler = scheduler;
-        this.jsonFactory = new JsonFactory();
+    public IntentHandler(LoomqEngine engine) {
+        this.engine = engine;
+        this.jsonCodec = JsonCodec.instance();
     }
 
     /**
-     * 注册路由
+     * Register API routes.
      */
     public void register(RadixRouter router) {
         router.add(HttpMethod.POST, "/v1/intents", this::createIntent);
@@ -68,168 +55,85 @@ public class IntentHandler {
     }
 
     /**
-     * POST /v1/intents - 创建 Intent
-     *
-     * 简化持久化逻辑：
-     * - ASYNC: 异步写入 WAL，不等待刷盘
-     * - DURABLE: 同步写入 WAL，等待刷盘完成
+     * POST /v1/intents
      */
     public Object createIntent(HttpMethod method, String uri, byte[] body,
                                Map<String, String> headers,
                                Map<String, String> pathParams) throws Exception {
+        CreateIntentRequest request = jsonCodec.read(body, CreateIntentRequest.class);
 
-        // 流式解析 JSON
-        String intentId = null;
-        String executeAtStr = null;
-        String deadlineStr = null;
-        String shardKey = null;
-        String precisionTier = null;
-        String ackLevelStr = null;
-        String idempotencyKey = null;
-        String callbackUrl = null;
-        String callbackMethod = null;
-
-        try (JsonParser parser = jsonFactory.createParser(new ByteArrayInputStream(body))) {
-            if (parser.nextToken() != JsonToken.START_OBJECT) {
-                return errorResponse("40001", "Invalid JSON");
-            }
-
-            while (parser.nextToken() != JsonToken.END_OBJECT) {
-                String fieldName = parser.getCurrentName();
-                if (fieldName == null) continue;
-
-                JsonToken token = parser.nextToken();
-                switch (fieldName) {
-                    case "intentId" -> intentId = parser.getValueAsString();
-                    case "executeAt" -> executeAtStr = parser.getValueAsString();
-                    case "deadline" -> deadlineStr = parser.getValueAsString();
-                    case "shardKey" -> shardKey = parser.getValueAsString();
-                    case "precisionTier" -> precisionTier = parser.getValueAsString();
-                    case "ackLevel" -> ackLevelStr = parser.getValueAsString();
-                    case "idempotencyKey" -> idempotencyKey = parser.getValueAsString();
-                    case "callback" -> {
-                        // 简单解析 callback URL
-                        while (parser.nextToken() != JsonToken.END_OBJECT) {
-                            String cbField = parser.getCurrentName();
-                            parser.nextToken();
-                            if ("url".equals(cbField)) {
-                                callbackUrl = parser.getValueAsString();
-                            } else if ("method".equals(cbField)) {
-                                callbackMethod = parser.getValueAsString();
-                            }
-                        }
-                    }
-                    default -> {
-                        if (token == JsonToken.START_OBJECT || token == JsonToken.START_ARRAY) {
-                            parser.skipChildren();
-                        }
-                    }
-                }
-            }
-        }
-
-        // 验证必填字段
-        ValidationResult validation = IntentValidator.validateCreate(executeAtStr, deadlineStr, shardKey);
+        ValidationResult validation = IntentValidator.validateCreate(
+            request.executeAt(), request.deadline(), request.shardKey());
         if (validation.isInvalid()) {
-            return errorResponse(validation.errorCode(), validation.errorMessage());
+            return errorResponse(422, validation.errorCode(), validation.errorMessage());
         }
 
-        // 验证回调 URL
-        ValidationResult callbackValidation = IntentValidator.validateCallbackUrl(callbackUrl);
-        if (callbackValidation.isInvalid()) {
-            return errorResponse(callbackValidation.errorCode(), callbackValidation.errorMessage());
+        ValidationResult futureValidation = IntentValidator.validateExecuteAtFuture(request.executeAt());
+        if (futureValidation.isInvalid()) {
+            return errorResponse(422, futureValidation.errorCode(), futureValidation.errorMessage());
         }
 
-        // 解析时间
-        Instant executeAt = Instant.parse(executeAtStr);
-        Instant deadline = Instant.parse(deadlineStr);
+        String callbackUrl = callbackUrl(request);
+        if (callbackUrl != null && !callbackUrl.isBlank()) {
+            ValidationResult callbackValidation = IntentValidator.validateCallbackUrl(callbackUrl);
+            if (callbackValidation.isInvalid()) {
+                return errorResponse(422, callbackValidation.errorCode(), callbackValidation.errorMessage());
+            }
+        }
 
-        // 生成或使用提供的 ID
+        String intentId = request.intentId();
         if (intentId == null || intentId.isBlank()) {
             intentId = UUID.randomUUID().toString();
         }
 
-        AckLevel ackLevel = parseAckLevel(ackLevelStr);
-
-        // 幂等性检查
-        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-            IdempotencyResult result = intentStore.checkIdempotency(idempotencyKey);
-            if (result.isDuplicateActive()) {
-                return intentResponse(result.getIntent());
+        if (request.idempotencyKey() != null && !request.idempotencyKey().isBlank()) {
+            IdempotencyResult idemResult = engine.checkIdempotency(request.idempotencyKey());
+            if (idemResult.isDuplicateActive()) {
+                logger.info("Duplicate active intent found for key={}, returning existing intent={}",
+                    request.idempotencyKey(), idemResult.getIntent().getIntentId());
+                return IntentResponse.from(idemResult.getIntent());
             }
-            if (result.isDuplicateTerminal()) {
-                return conflictResponse(result.getIntent().getIntentId());
+            if (idemResult.isDuplicateTerminal()) {
+                logger.warn("Duplicate terminal intent for key={}, reject with 409", request.idempotencyKey());
+                return conflictResponse(idemResult.getIntent().getIntentId());
             }
         }
 
-        // 创建 Intent
         Intent intent = new Intent(intentId);
-        intent.setExecuteAt(executeAt);
-        intent.setDeadline(deadline);
-        intent.setShardKey(shardKey);
-        intent.setPrecisionTier(parsePrecisionTier(precisionTier));
-        intent.setAckLevel(ackLevel);
-        intent.setIdempotencyKey(idempotencyKey);
+        intent.setExecuteAt(request.executeAt());
+        intent.setDeadline(request.deadline());
+        intent.setExpiredAction(request.expiredAction());
+        intent.setPrecisionTier(request.precisionTier() != null ? request.precisionTier() : PrecisionTier.STANDARD);
+        intent.setShardKey(request.shardKey());
+        intent.setAckLevel(request.ackLevel() != null ? request.ackLevel() : AckLevel.DURABLE);
+        intent.setCallback(request.callback());
+        intent.setRedelivery(request.redelivery());
+        intent.setIdempotencyKey(request.idempotencyKey());
+        intent.setTags(request.tags());
 
-        // 设置回调
-        com.loomq.domain.intent.Callback callback = new com.loomq.domain.intent.Callback(callbackUrl);
-        if (callbackMethod != null) {
-            callback.setMethod(callbackMethod);
-        }
-        intent.setCallback(callback);
+        AckMode ackMode = toAckMode(intent.getAckLevel());
+        engine.createIntent(intent, ackMode).join();
 
-        intent.transitionTo(IntentStatus.SCHEDULED);
+        logger.info("Intent created: id={}, executeAt={}, ackLevel={}",
+            intent.getIntentId(), intent.getExecuteAt(), intent.getAckLevel());
 
-        // ========== 持久化逻辑 ==========
-        if (intentWal != null) {
-            switch (ackLevel) {
-                case ASYNC -> {
-                    // 异步：写入存储 + 异步 WAL
-                    intentStore.save(intent);
-                    intentWal.appendCreateAsync(intent)
-                        .exceptionally(e -> {
-                            logger.warn("ASYNC WAL failed for {}: {}",
-                                intent.getIntentId(), e.getMessage());
-                            return null;
-                        });
-                }
-                case DURABLE -> {
-                    // 持久化：写入存储 + 同步 WAL
-                    intentStore.save(intent);
-                    intentWal.appendCreateDurable(intent).join();
-                }
-                case REPLICATED -> {
-                    // 复制确认：写入存储 + 同步 WAL + Replica ACK
-                    intentStore.save(intent);
-                    intentWal.appendCreateReplicated(intent).join();
-                }
-            }
-        } else {
-            intentStore.save(intent);
-        }
-
-        // 调度任务
-        if (scheduler != null) {
-            scheduler.schedule(intent);
-        }
-
-        return new IntentHandler.CreatedResponse(201, intentResponse(intent));
+        return new IntentHandler.CreatedResponse(201, IntentResponse.from(intent));
     }
 
     /**
      * GET /v1/intents/{intentId}
      */
     public Object getIntent(HttpMethod method, String uri, byte[] body,
-                           Map<String, String> headers,
-                           Map<String, String> pathParams) {
+                            Map<String, String> headers,
+                            Map<String, String> pathParams) {
         String intentId = pathParams.get("intentId");
 
-        Intent intent = intentStore.findById(intentId);
-        if (intent == null) {
+        Optional<Intent> intent = engine.getIntent(intentId);
+        if (intent.isEmpty()) {
             return errorResponse(404, "40401", "Intent not found: " + intentId);
         }
 
-        return intentResponse(intent);
+        return IntentResponse.from(intent.get());
     }
 
     /**
@@ -239,152 +143,119 @@ public class IntentHandler {
                              Map<String, String> headers,
                              Map<String, String> pathParams) throws Exception {
         String intentId = pathParams.get("intentId");
+        PatchIntentRequest request = jsonCodec.read(body, PatchIntentRequest.class);
 
-        Intent intent = intentStore.findById(intentId);
-        if (intent == null) {
+        Optional<Intent> current = engine.getIntent(intentId);
+        if (current.isEmpty()) {
             return errorResponse(404, "40401", "Intent not found: " + intentId);
         }
 
-        if (!intent.getStatus().isModifiable()) {
-            return errorResponse(422, "42206", "Intent cannot be modified");
+        if (!current.get().getStatus().isModifiable()) {
+            return errorResponse(422, "42205", "Intent cannot be modified in state: " + current.get().getStatus());
         }
 
-        String executeAtStr = null;
-        String deadlineStr = null;
-
-        try (JsonParser parser = jsonFactory.createParser(new ByteArrayInputStream(body))) {
-            while (parser.nextToken() != JsonToken.END_OBJECT) {
-                String fieldName = parser.getCurrentName();
-                if (fieldName == null) continue;
-
-                parser.nextToken();
-                switch (fieldName) {
-                    case "executeAt" -> executeAtStr = parser.getValueAsString();
-                    case "deadline" -> deadlineStr = parser.getValueAsString();
-                    default -> parser.skipChildren();
-                }
+        if (request.executeAt() != null) {
+            ValidationResult futureValidation = IntentValidator.validateExecuteAtFuture(request.executeAt());
+            if (futureValidation.isInvalid()) {
+                return errorResponse(422, futureValidation.errorCode(), futureValidation.errorMessage());
             }
         }
 
-        if (executeAtStr != null) {
-            intent.setExecuteAt(Instant.parse(executeAtStr));
-        }
-        if (deadlineStr != null) {
-            intent.setDeadline(Instant.parse(deadlineStr));
+        Optional<Intent> updated = engine.updateIntent(intentId, intent -> {
+            if (request.deadline() != null) {
+                intent.setDeadline(request.deadline());
+            }
+            if (request.expiredAction() != null) {
+                intent.setExpiredAction(request.expiredAction());
+            }
+            if (request.redelivery() != null) {
+                intent.setRedelivery(request.redelivery());
+            }
+            if (request.tags() != null) {
+                intent.setTags(request.tags());
+            }
+        }, request.executeAt());
+
+        if (updated.isEmpty()) {
+            return errorResponse(404, "40401", "Intent not found: " + intentId);
         }
 
-        intentStore.update(intent);
-
-        // 更新 WAL
-        if (intentWal != null) {
-            intentWal.appendStatusUpdate(intentId, intent.getStatus(), intent.getStatus());
-        }
-
-        return intentResponse(intent);
+        return IntentResponse.from(updated.get());
     }
 
     /**
      * POST /v1/intents/{intentId}/cancel
      */
     public Object cancelIntent(HttpMethod method, String uri, byte[] body,
-                              Map<String, String> headers,
-                              Map<String, String> pathParams) {
+                               Map<String, String> headers,
+                               Map<String, String> pathParams) {
         String intentId = pathParams.get("intentId");
 
-        Intent intent = intentStore.findById(intentId);
-        if (intent == null) {
+        Optional<Intent> current = engine.getIntent(intentId);
+        if (current.isEmpty()) {
             return errorResponse(404, "40401", "Intent not found: " + intentId);
         }
 
+        Intent intent = current.get();
         if (!intent.getStatus().isCancellable()) {
-            return errorResponse(422, "42207", "Intent cannot be cancelled");
+            return errorResponse(422, "42204", "Intent cannot be cancelled in state: " + intent.getStatus());
         }
 
-        IntentStatus oldStatus = intent.getStatus();
-        intent.transitionTo(IntentStatus.CANCELED);
-        intentStore.update(intent);
-
-        if (intentWal != null) {
-            intentWal.appendStatusUpdate(intentId, oldStatus, IntentStatus.CANCELED);
+        if (!engine.cancelIntent(intentId)) {
+            return errorResponse(500, "50002", "Failed to cancel intent");
         }
 
-        return intentResponse(intent);
+        return IntentResponse.from(intent);
     }
 
     /**
      * POST /v1/intents/{intentId}/fire-now
      */
     public Object fireNow(HttpMethod method, String uri, byte[] body,
-                         Map<String, String> headers,
-                         Map<String, String> pathParams) {
+                          Map<String, String> headers,
+                          Map<String, String> pathParams) {
         String intentId = pathParams.get("intentId");
 
-        Intent intent = intentStore.findById(intentId);
-        if (intent == null) {
+        Optional<Intent> current = engine.getIntent(intentId);
+        if (current.isEmpty()) {
             return errorResponse(404, "40401", "Intent not found: " + intentId);
         }
 
-        intent.setExecuteAt(Instant.now());
-        intent.transitionTo(IntentStatus.DUE);
-        intentStore.update(intent);
-
-        // 立即投递
-        if (dispatcher != null) {
-            try {
-                dispatcher.submit(intent);
-            } catch (BackPressureException e) {
-                return errorResponse(503, "50301", "Dispatcher overloaded");
-            }
+        if (!engine.fireNow(intentId)) {
+            return errorResponse(500, "50003", "Failed to trigger intent immediately");
         }
 
-        return Map.of("intentId", intentId, "status", IntentStatus.DISPATCHING.name());
+        return new IntentActionResponse(intentId, IntentStatus.DISPATCHING.name());
     }
 
-    // ==================== 辅助方法 ====================
-
-    private PrecisionTier parsePrecisionTier(String value) {
-        if (value == null) return PrecisionTier.STANDARD;
-        try {
-            return PrecisionTier.valueOf(value);
-        } catch (IllegalArgumentException e) {
-            return PrecisionTier.STANDARD;
+    private AckMode toAckMode(AckLevel ackLevel) {
+        if (ackLevel == null) {
+            return AckMode.DURABLE;
         }
+        return AckMode.valueOf(ackLevel.name());
     }
 
-    private AckLevel parseAckLevel(String value) {
-        if (value == null) return AckLevel.DURABLE;
-        try {
-            return AckLevel.valueOf(value);
-        } catch (IllegalArgumentException e) {
-            return AckLevel.DURABLE;
+    private String callbackUrl(CreateIntentRequest request) {
+        if (request.callback() == null) {
+            return null;
         }
+        return request.callback().getUrl();
     }
 
-    private IntentResponseData intentResponse(Intent intent) {
-        return new IntentResponseData(intent);
+    private Object errorResponse(int status, String code, String message) {
+        return new HttpErrorResponse(status, ErrorResponse.of(code, message));
     }
 
-    private Map<String, Object> errorResponse(String code, String message) {
-        return Map.of("error", Map.of("code", code, "message", message));
-    }
-
-    private Map<String, Object> errorResponse(int status, String code, String message) {
-        return Map.of("status", status, "error", Map.of("code", code, "message", message));
-    }
-
-    private Map<String, Object> conflictResponse(String intentId) {
-        return Map.of(
-            "status", 409,
-            "error", Map.of(
-                "code", "40901",
-                "message", "Idempotency key conflict",
-                "intentId", intentId
-            )
-        );
+    private Object conflictResponse(String intentId) {
+        return new HttpErrorResponse(409, ErrorResponse.of(
+            "40901",
+            "Idempotency key conflict",
+            Map.of("intentId", intentId)
+        ));
     }
 
     /**
-     * 创建成功响应，携带 HTTP 状态码
+     * Created response wrapper carrying an explicit HTTP status code.
      */
     public record CreatedResponse(int status, Object body) {}
 }

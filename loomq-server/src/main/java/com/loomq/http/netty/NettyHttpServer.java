@@ -1,6 +1,8 @@
 package com.loomq.http.netty;
 
+import com.loomq.config.ServerConfig;
 import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
@@ -42,7 +44,7 @@ public class NettyHttpServer {
 
     private static final Logger logger = LoggerFactory.getLogger(NettyHttpServer.class);
 
-    private final NettyServerConfig config;
+    private final ServerConfig config;
     private final RadixRouter router;
 
     private EventLoopGroup bossGroup;
@@ -51,7 +53,7 @@ public class NettyHttpServer {
     private NettyRequestHandler requestHandler;
     private final AtomicInteger connectionCounter = new AtomicInteger(0);
 
-    public NettyHttpServer(NettyServerConfig config, RadixRouter router) {
+    public NettyHttpServer(ServerConfig config, RadixRouter router) {
         this.config = config;
         this.router = router;
     }
@@ -93,7 +95,8 @@ public class NettyHttpServer {
             .option(ChannelOption.SO_REUSEADDR, true)
             .childOption(ChannelOption.TCP_NODELAY, config.tcpNoDelay())
             .childOption(ChannelOption.SO_KEEPALIVE, true)
-            .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+            .childOption(ChannelOption.ALLOCATOR,
+                config.pooledAllocator() ? PooledByteBufAllocator.DEFAULT : ByteBufAllocator.DEFAULT)
             .childOption(ChannelOption.WRITE_BUFFER_HIGH_WATER_MARK, config.writeBufferHighWaterMark())
             .childOption(ChannelOption.WRITE_BUFFER_LOW_WATER_MARK, config.writeBufferLowWaterMark())
             .childHandler(new ChannelInitializer<>() {

@@ -1,7 +1,8 @@
 package com.loomq;
 
-import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.spi.CallbackHandler;
+import com.loomq.spi.DeliveryHandler;
+import com.loomq.spi.RedeliveryDecider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -9,8 +10,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Executor;
 
@@ -19,6 +18,8 @@ import java.util.concurrent.Executor;
  *
  * 提供从配置文件创建 LoomqEngine 的工厂方法。
  * 支持 YAML 和 Properties 格式。
+ *
+ * v0.7.1: 支持 DeliveryHandler 配置
  *
  * @author loomq
  * @since v0.7.0
@@ -39,10 +40,6 @@ public final class LoomqEngineFactory {
      * loomq:
      *   nodeId: node-1
      *   walDir: ./data
-     *   tiers:
-     *     ULTRA:
-     *       maxConcurrency: 100
-     *       batchSize: 1
      * </pre>
      *
      * @param yamlPath YAML 文件路径
@@ -67,22 +64,7 @@ public final class LoomqEngineFactory {
     public static LoomqEngine createFromProperties(Properties props) {
         logger.info("Creating LoomqEngine from properties");
 
-        LoomqEngine.Builder builder = LoomqEngine.builder();
-
-        // 基本配置
-        String nodeId = props.getProperty("loomq.nodeId", props.getProperty("loomq.node.id", "default-node"));
-        builder.nodeId(nodeId);
-
-        String walDir = props.getProperty("loomq.walDir", props.getProperty("loomq.wal.dir", "./data"));
-        builder.walDir(Path.of(walDir));
-
-        // 精度档位配置（可选）
-        Map<PrecisionTier, LoomqEngine.TierConfig> tierConfigs = parseTierConfigs(props);
-        if (!tierConfigs.isEmpty()) {
-            builder.tierConfig(tierConfigs);
-        }
-
-        return builder.build();
+        return baseBuilder(props).build();
     }
 
     /**
@@ -113,6 +95,55 @@ public final class LoomqEngineFactory {
     }
 
     /**
+     * 从 YAML 文件创建引擎并配置投递处理器
+     *
+     * @param yamlPath        YAML 文件路径
+     * @param deliveryHandler 投递处理器
+     * @return LoomqEngine 实例
+     * @throws IOException 如果读取失败
+     */
+    public static LoomqEngine createFromYaml(Path yamlPath, DeliveryHandler deliveryHandler) throws IOException {
+        logger.info("Creating LoomqEngine from YAML: {}", yamlPath);
+
+        String content = Files.readString(yamlPath);
+        Properties props = parseSimpleYaml(content);
+
+        return createFromProperties(props, deliveryHandler);
+    }
+
+    /**
+     * 从 Properties 创建引擎并配置投递处理器
+     *
+     * @param props           配置属性
+     * @param deliveryHandler 投递处理器
+     * @return LoomqEngine 实例
+     */
+    public static LoomqEngine createFromProperties(Properties props, DeliveryHandler deliveryHandler) {
+        logger.info("Creating LoomqEngine from properties with DeliveryHandler");
+
+        return baseBuilder(props)
+            .deliveryHandler(deliveryHandler)
+            .build();
+    }
+
+    /**
+     * 从 Properties 创建引擎（完整配置）
+     *
+     * @param props             配置属性
+     * @param deliveryHandler   投递处理器
+     * @param redeliveryDecider 重投决策器
+     * @return LoomqEngine 实例
+     */
+    public static LoomqEngine createFromProperties(Properties props, DeliveryHandler deliveryHandler, RedeliveryDecider redeliveryDecider) {
+        logger.info("Creating LoomqEngine from properties with DeliveryHandler and RedeliveryDecider");
+
+        return baseBuilder(props)
+            .deliveryHandler(deliveryHandler)
+            .redeliveryDecider(redeliveryDecider)
+            .build();
+    }
+
+    /**
      * 快速创建引擎（使用默认配置）
      *
      * @param walDir 数据目录
@@ -135,6 +166,20 @@ public final class LoomqEngineFactory {
         LoomqEngine engine = createDefault(walDir);
         engine.registerCallbackHandler(callbackHandler);
         return engine;
+    }
+
+    /**
+     * 快速创建引擎并配置投递处理器
+     *
+     * @param walDir          数据目录
+     * @param deliveryHandler 投递处理器
+     * @return LoomqEngine 实例
+     */
+    public static LoomqEngine createDefault(Path walDir, DeliveryHandler deliveryHandler) {
+        return LoomqEngine.builder()
+            .walDir(walDir)
+            .deliveryHandler(deliveryHandler)
+            .build();
     }
 
     // ========== 内部方法 ==========
@@ -198,7 +243,7 @@ public final class LoomqEngineFactory {
                     props.setProperty(fullKey, value);
                 }
             } else if (indent == 4) {
-                // 三级嵌套（用于 tiers 配置）
+                // 三级嵌套
                 String[] parts = currentSection.split("\\.");
                 if (parts.length >= 2) {
                     String fullKey = parts[0] + "." + parts[1] + "." + key;
@@ -210,27 +255,15 @@ public final class LoomqEngineFactory {
         return props;
     }
 
-    private static Map<PrecisionTier, LoomqEngine.TierConfig> parseTierConfigs(Properties props) {
-        Map<PrecisionTier, LoomqEngine.TierConfig> configs = new HashMap<>();
+    private static LoomqEngine.Builder baseBuilder(Properties props) {
+        LoomqEngine.Builder builder = LoomqEngine.builder();
 
-        for (PrecisionTier tier : PrecisionTier.values()) {
-            String prefix = "loomq.tiers." + tier.name().toLowerCase() + ".";
+        String nodeId = props.getProperty("loomq.nodeId", props.getProperty("loomq.node.id", "default-node"));
+        builder.nodeId(nodeId);
 
-            String maxConcurrencyStr = props.getProperty(prefix + "maxConcurrency", props.getProperty(prefix + "max-concurrency"));
-            String batchSizeStr = props.getProperty(prefix + "batchSize", props.getProperty(prefix + "batch-size"));
-            String batchWindowStr = props.getProperty(prefix + "batchWindowMs", props.getProperty(prefix + "batch-window-ms"));
-            String consumerCountStr = props.getProperty(prefix + "consumerCount", props.getProperty(prefix + "consumer-count"));
+        String walDir = props.getProperty("loomq.walDir", props.getProperty("loomq.wal.dir", "./data"));
+        builder.walDir(Path.of(walDir));
 
-            if (maxConcurrencyStr != null || batchSizeStr != null) {
-                int maxConcurrency = maxConcurrencyStr != null ? Integer.parseInt(maxConcurrencyStr) : tier.getMaxConcurrency();
-                int batchSize = batchSizeStr != null ? Integer.parseInt(batchSizeStr) : tier.getBatchSize();
-                long batchWindowMs = batchWindowStr != null ? Long.parseLong(batchWindowStr) : tier.getBatchWindowMs();
-                int consumerCount = consumerCountStr != null ? Integer.parseInt(consumerCountStr) : tier.getConsumerCount();
-
-                configs.put(tier, new LoomqEngine.TierConfig(maxConcurrency, batchSize, batchWindowMs, consumerCount));
-            }
-        }
-
-        return configs;
+        return builder;
     }
 }

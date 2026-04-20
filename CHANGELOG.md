@@ -4,6 +4,72 @@ All notable changes to LoomQ are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.1] - 2026-04-17
+
+### Added
+
+- **DeliveryHandler SPI Interface**: Abstraction for intent delivery
+  - `DeliveryHandler` interface in `com.loomq.spi` package
+  - `DeliveryResult` enum for delivery outcomes (SUCCESS, RETRY, DEAD_LETTER, EXPIRED)
+  - Enables custom delivery implementations (HTTP, message queue, local callback)
+
+- **HttpDeliveryHandler**: HTTP webhook delivery implementation
+  - Implements `DeliveryHandler` interface
+  - Encapsulates HTTP client logic from `HttpCallbackClient`
+  - Located in `loomq-server` module
+
+### Changed
+
+- **PrecisionScheduler**: Migrated from `loomq-server` to `loomq-core`
+  - Now uses `DeliveryHandler` SPI instead of direct HTTP calls
+  - Supports custom delivery handlers via constructor
+  - Falls back to ServiceLoader for handler discovery
+
+- **BatchDispatcher**: Migrated from `loomq-server` to `loomq-core`
+  - Now uses `DeliveryHandler` SPI instead of direct HTTP calls
+  - Supports custom delivery handlers via constructor
+
+- **LoomqEngine**: Integrated PrecisionScheduler
+  - Added `PrecisionScheduler` as core component
+  - Added `deliveryHandler()` and `redeliveryDecider()` builder methods
+  - Added `getScheduler()` method for advanced usage
+  - Removed internal scheduling logic in favor of PrecisionScheduler
+
+- **LoomqEngineFactory**: Added DeliveryHandler support
+  - Added factory methods with `DeliveryHandler` parameter
+  - Simplified tier configuration (removed internal config)
+
+### Architecture
+
+```
+v0.7.0: loomq-core (storage + WAL) | loomq-server (scheduler + HTTP)
+v0.7.1: loomq-core (storage + WAL + scheduler) | loomq-server (HTTP delivery only)
+```
+
+Module dependency reduction:
+- Shells can now use `loomq-core` for complete scheduling capability
+- `loomq-server` provides HTTP delivery implementation only
+
+### Migration Guide
+
+For existing users of `loomq-server`:
+
+1. No API changes - all existing code continues to work
+2. If using `PrecisionScheduler` directly, provide a `DeliveryHandler`:
+   ```java
+   PrecisionScheduler scheduler = new PrecisionScheduler(intentStore, new HttpDeliveryHandler());
+   ```
+
+For embedded usage:
+
+1. Use `LoomqEngine` with a custom `DeliveryHandler`:
+   ```java
+   LoomqEngine engine = LoomqEngine.builder()
+       .walDir(Path.of("./data"))
+       .deliveryHandler(intent -> DeliveryResult.SUCCESS)
+       .build();
+   ```
+
 ## [0.6.1] - 2026-04-10
 
 ### Added

@@ -143,6 +143,83 @@ public class Intent {
         this.attempts = 0;
     }
 
+    private Intent(String intentId,
+                   IntentStatus status,
+                   Instant createdAt,
+                   Instant updatedAt,
+                   Instant executeAt,
+                   Instant deadline,
+                   ExpiredAction expiredAction,
+                   PrecisionTier precisionTier,
+                   String shardKey,
+                   String shardId,
+                   AckLevel ackLevel,
+                   Callback callback,
+                   RedeliveryPolicy redelivery,
+                   String idempotencyKey,
+                   Map<String, String> tags,
+                   int attempts,
+                   String lastDeliveryId) {
+        this.intentId = Objects.requireNonNullElse(intentId, generateIntentId());
+        this.status = status != null ? status : IntentStatus.CREATED;
+        this.createdAt = createdAt != null ? createdAt : Instant.now();
+        this.updatedAt = updatedAt != null ? updatedAt : this.createdAt;
+        this.executeAt = executeAt;
+        this.deadline = deadline;
+        this.expiredAction = expiredAction != null ? expiredAction : ExpiredAction.DISCARD;
+        this.precisionTier = precisionTier != null ? precisionTier : PrecisionTier.STANDARD;
+        this.shardKey = shardKey;
+        this.shardId = shardId;
+        this.ackLevel = ackLevel != null ? ackLevel : AckLevel.DURABLE;
+        this.callback = callback;
+        this.redelivery = redelivery;
+        this.idempotencyKey = idempotencyKey;
+        this.tags = tags != null && !tags.isEmpty() ? Map.copyOf(tags) : null;
+        this.attempts = attempts;
+        this.lastDeliveryId = lastDeliveryId;
+    }
+
+    /**
+     * 从持久化状态恢复 Intent。
+     */
+    public static Intent restore(String intentId,
+                                 IntentStatus status,
+                                 Instant createdAt,
+                                 Instant updatedAt,
+                                 Instant executeAt,
+                                 Instant deadline,
+                                 ExpiredAction expiredAction,
+                                 PrecisionTier precisionTier,
+                                 String shardKey,
+                                 String shardId,
+                                 AckLevel ackLevel,
+                                 Callback callback,
+                                 RedeliveryPolicy redelivery,
+                                 String idempotencyKey,
+                                 Map<String, String> tags,
+                                 int attempts,
+                                 String lastDeliveryId) {
+        return new Intent(
+            intentId,
+            status,
+            createdAt,
+            updatedAt,
+            executeAt,
+            deadline,
+            expiredAction,
+            precisionTier,
+            shardKey,
+            shardId,
+            ackLevel,
+            callback,
+            redelivery,
+            idempotencyKey,
+            tags,
+            attempts,
+            lastDeliveryId
+        );
+    }
+
     // ========== 业务方法 ==========
 
     /**
@@ -175,7 +252,7 @@ public class Intent {
         boolean valid = switch (from) {
             case CREATED -> to == IntentStatus.SCHEDULED;
             case SCHEDULED -> to == IntentStatus.DUE || to == IntentStatus.CANCELED;
-            case DUE -> to == IntentStatus.DISPATCHING;
+            case DUE -> to == IntentStatus.DISPATCHING || to == IntentStatus.CANCELED;
             case DISPATCHING -> to == IntentStatus.DELIVERED || to == IntentStatus.DEAD_LETTERED;
             case DELIVERED -> to == IntentStatus.ACKED || to == IntentStatus.EXPIRED;
             default -> false;

@@ -168,14 +168,18 @@ class ReplicationRecordTest {
 
     @Test
     void testEqualsAndHashCode() {
+        Instant fixedTime = Instant.parse("2026-04-20T00:00:00Z");
+
         ReplicationRecord record1 = ReplicationRecord.builder()
             .offset(100L)
+            .timestamp(fixedTime)
             .type(ReplicationRecordType.TASK_CREATE)
             .payload("data".getBytes())
             .build();
 
         ReplicationRecord record2 = ReplicationRecord.builder()
             .offset(100L)
+            .timestamp(fixedTime)
             .type(ReplicationRecordType.TASK_CREATE)
             .payload("data".getBytes())
             .build();

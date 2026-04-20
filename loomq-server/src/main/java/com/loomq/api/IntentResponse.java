@@ -3,7 +3,10 @@ package com.loomq.api;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.http.netty.DirectSerializedResponse;
+import com.loomq.http.netty.IntentResponseSerializer;
 import com.loomq.replication.AckLevel;
+import io.netty.buffer.ByteBuf;
 
 import java.time.Instant;
 
@@ -25,7 +28,7 @@ public record IntentResponse(
     String lastDeliveryId,
     Instant createdAt,
     Instant updatedAt
-) {
+    ) implements DirectSerializedResponse {
 
     public static IntentResponse from(Intent intent) {
         return new IntentResponse(
@@ -41,5 +44,15 @@ public record IntentResponse(
             intent.getCreatedAt(),
             intent.getUpdatedAt()
         );
+    }
+
+    @Override
+    public void writeTo(ByteBuf buf) {
+        IntentResponseSerializer.writeIntentResponse(this, buf);
+    }
+
+    @Override
+    public int estimateSize() {
+        return IntentResponseSerializer.estimateSize(this);
     }
 }

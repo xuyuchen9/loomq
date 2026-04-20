@@ -61,6 +61,9 @@ class IntentStoreTest {
 
         Intent found = store.findById("test-2");
         assertEquals(IntentStatus.DUE, found.getStatus());
+        assertEquals(0, store.countByStatus(IntentStatus.SCHEDULED));
+        assertEquals(1, store.countByStatus(IntentStatus.DUE));
+        assertEquals(1, store.getPendingCount());
     }
 
     @Test
@@ -71,6 +74,8 @@ class IntentStoreTest {
         store.delete("test-3");
 
         assertNull(store.findById("test-3"));
+        assertEquals(0, store.getPendingCount());
+        assertEquals(0, store.countByStatus(IntentStatus.SCHEDULED));
     }
 
     @Test

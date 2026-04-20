@@ -189,7 +189,23 @@ public class IntentBinaryCodec {
      */
     public static Intent decode(byte[] data) {
         ByteBuffer buffer = ByteBuffer.wrap(data);
-        Intent intent = new Intent();
+        String intentId = null;
+        IntentStatus status = null;
+        Instant createdAt = null;
+        Instant updatedAt = null;
+        Instant executeAt = null;
+        Instant deadline = null;
+        ExpiredAction expiredAction = null;
+        PrecisionTier precisionTier = null;
+        String shardKey = null;
+        String shardId = null;
+        AckLevel ackLevel = null;
+        Callback callback = null;
+        RedeliveryPolicy redelivery = null;
+        String idempotencyKey = null;
+        Map<String, String> tags = null;
+        int attempts = 0;
+        String lastDeliveryId = null;
 
         byte fieldCount = buffer.get();
 
@@ -199,49 +215,61 @@ public class IntentBinaryCodec {
 
             switch (fieldType) {
                 case FIELD_INTENT_ID -> {
-                    // Intent 构造时已生成 ID，这里需要特殊处理
-                    String id = readString(buffer, fieldLen);
-                    // 注意：Intent 的 intentId 是 final，无法修改
+                    intentId = readString(buffer, fieldLen);
                 }
-                case FIELD_STATUS -> intent.transitionTo(IntentStatus.values()[buffer.get()]);
-                case FIELD_CREATED_AT -> buffer.getLong(); // Intent 构造时已设置，跳过
-                case FIELD_UPDATED_AT -> buffer.getLong(); // 跳过
-                case FIELD_EXECUTE_AT -> intent.setExecuteAt(Instant.ofEpochMilli(buffer.getLong()));
-                case FIELD_DEADLINE -> intent.setDeadline(Instant.ofEpochMilli(buffer.getLong()));
-                case FIELD_EXPIRED_ACTION -> intent.setExpiredAction(ExpiredAction.values()[buffer.get()]);
-                case FIELD_PRECISION_TIER -> intent.setPrecisionTier(PrecisionTier.values()[buffer.get()]);
-                case FIELD_SHARD_KEY -> intent.setShardKey(readString(buffer, fieldLen));
-                case FIELD_SHARD_ID -> intent.setShardId(readString(buffer, fieldLen));
-                case FIELD_ACK_LEVEL -> intent.setAckLevel(AckLevel.values()[buffer.get()]);
+                case FIELD_STATUS -> status = IntentStatus.values()[buffer.get()];
+                case FIELD_CREATED_AT -> createdAt = Instant.ofEpochMilli(buffer.getLong());
+                case FIELD_UPDATED_AT -> updatedAt = Instant.ofEpochMilli(buffer.getLong());
+                case FIELD_EXECUTE_AT -> executeAt = Instant.ofEpochMilli(buffer.getLong());
+                case FIELD_DEADLINE -> deadline = Instant.ofEpochMilli(buffer.getLong());
+                case FIELD_EXPIRED_ACTION -> expiredAction = ExpiredAction.values()[buffer.get()];
+                case FIELD_PRECISION_TIER -> precisionTier = PrecisionTier.values()[buffer.get()];
+                case FIELD_SHARD_KEY -> shardKey = readString(buffer, fieldLen);
+                case FIELD_SHARD_ID -> shardId = readString(buffer, fieldLen);
+                case FIELD_ACK_LEVEL -> ackLevel = AckLevel.values()[buffer.get()];
                 case FIELD_CALLBACK -> {
                     byte[] callbackBytes = new byte[fieldLen];
                     buffer.get(callbackBytes);
-                    intent.setCallback(decodeCallback(callbackBytes));
+                    callback = decodeCallback(callbackBytes);
                 }
                 case FIELD_REDELIVERY -> {
                     byte[] redeliveryBytes = new byte[fieldLen];
                     buffer.get(redeliveryBytes);
-                    intent.setRedelivery(decodeRedelivery(redeliveryBytes));
+                    redelivery = decodeRedelivery(redeliveryBytes);
                 }
-                case FIELD_IDEMPOTENCY_KEY -> intent.setIdempotencyKey(readString(buffer, fieldLen));
+                case FIELD_IDEMPOTENCY_KEY -> idempotencyKey = readString(buffer, fieldLen);
                 case FIELD_TAGS -> {
                     byte[] tagsBytes = new byte[fieldLen];
                     buffer.get(tagsBytes);
-                    intent.setTags(decodeTags(tagsBytes));
+                    tags = decodeTags(tagsBytes);
                 }
                 case FIELD_ATTEMPTS -> {
-                    // attempts 是 final 的，需要通过反射或重新设计
-                    int attempts = buffer.getInt();
-                    for (int j = 0; j < attempts; j++) {
-                        intent.incrementAttempts();
-                    }
+                    attempts = buffer.getInt();
                 }
-                case FIELD_LAST_DELIVERY_ID -> intent.setLastDeliveryId(readString(buffer, fieldLen));
+                case FIELD_LAST_DELIVERY_ID -> lastDeliveryId = readString(buffer, fieldLen);
                 default -> buffer.position(buffer.position() + fieldLen); // 跳过未知字段
             }
         }
 
-        return intent;
+        return Intent.restore(
+            intentId,
+            status,
+            createdAt,
+            updatedAt,
+            executeAt,
+            deadline,
+            expiredAction,
+            precisionTier,
+            shardKey,
+            shardId,
+            ackLevel,
+            callback,
+            redelivery,
+            idempotencyKey,
+            tags,
+            attempts,
+            lastDeliveryId
+        );
     }
 
     // ========== 辅助编码方法 ==========

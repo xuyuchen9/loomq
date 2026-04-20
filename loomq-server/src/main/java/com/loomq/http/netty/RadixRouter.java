@@ -35,27 +35,69 @@ public class RadixRouter {
      * 匹配路由
      *
      * @param method HTTP 方法
-     * @param path 请求路径
+     * @param uri 请求 URI
      * @return 匹配结果，包含处理器和路径参数
      */
-    public RouteMatch match(HttpMethod method, String path) {
-        String[] segments = splitPath(path);
-        Map<String, String> params = new HashMap<>();
-
-        Handler handler = root.match(segments, 0, method.name(), params);
-        if (handler != null) {
-            return new RouteMatch(handler, params);
+    public RouteMatch match(HttpMethod method, String uri) {
+        if (uri == null || uri.isEmpty()) {
+            return root.match(uri, 0, 0, method.name(), null, new SegmentKey());
         }
-        return null;
+
+        int queryIndex = uri.indexOf('?');
+        int start = 0;
+        int end = queryIndex >= 0 ? queryIndex : uri.length();
+
+        while (start < end && uri.charAt(start) == '/') {
+            start++;
+        }
+        while (end > start && uri.charAt(end - 1) == '/') {
+            end--;
+        }
+
+        if (start >= end) {
+            return root.match(uri, 0, 0, method.name(), null, new SegmentKey());
+        }
+
+        return root.match(uri, start, end, method.name(), null, new SegmentKey());
     }
 
     private String[] splitPath(String path) {
         if (path == null || path.isEmpty()) {
             return new String[0];
         }
-        path = path.startsWith("/") ? path.substring(1) : path;
-        path = path.endsWith("/") && path.length() > 1 ? path.substring(0, path.length() - 1) : path;
-        return path.isEmpty() ? new String[0] : path.split("/");
+
+        int start = 0;
+        int end = path.length();
+
+        while (start < end && path.charAt(start) == '/') {
+            start++;
+        }
+        while (end > start && path.charAt(end - 1) == '/') {
+            end--;
+        }
+
+        if (start >= end) {
+            return new String[0];
+        }
+
+        int segmentCount = 1;
+        for (int i = start; i < end; i++) {
+            if (path.charAt(i) == '/') {
+                segmentCount++;
+            }
+        }
+
+        String[] segments = new String[segmentCount];
+        int segmentIndex = 0;
+        int segmentStart = start;
+        for (int i = start; i < end; i++) {
+            if (path.charAt(i) == '/') {
+                segments[segmentIndex++] = path.substring(segmentStart, i);
+                segmentStart = i + 1;
+            }
+        }
+        segments[segmentIndex] = path.substring(segmentStart, end);
+        return segments;
     }
 
     /**
@@ -96,18 +138,27 @@ public class RadixRouter {
             }
         }
 
-        Handler match(String[] segments, int index, String method, Map<String, String> params) {
-            if (index >= segments.length) {
+        RouteMatch match(String path, int index, int end, String method, Map<String, String> params, SegmentKey segmentKey) {
+            if (index >= end) {
                 // 到达终点，检查方法是否匹配
-                return handlers.get(method);
+                Handler handler = handlers.get(method);
+                if (handler == null) {
+                    return null;
+                }
+                return new RouteMatch(handler, params);
             }
 
-            String segment = segments[index];
+            int segmentEnd = index;
+            while (segmentEnd < end && path.charAt(segmentEnd) != '/') {
+                segmentEnd++;
+            }
 
             // 优先匹配静态路径
-            RouteNode staticChild = staticChildren.get(segment);
+            segmentKey.reset(path, index, segmentEnd);
+            RouteNode staticChild = staticChildren.get(segmentKey);
             if (staticChild != null) {
-                Handler result = staticChild.match(segments, index + 1, method, params);
+                int nextIndex = segmentEnd < end ? segmentEnd + 1 : end;
+                RouteMatch result = staticChild.match(path, nextIndex, end, method, params, segmentKey);
                 if (result != null) {
                     return result;
                 }
@@ -115,15 +166,84 @@ public class RadixRouter {
 
             // 尝试参数匹配
             if (paramChild != null) {
-                params.put(paramName, segment);
-                Handler result = paramChild.match(segments, index + 1, method, params);
+                if (params == null) {
+                    params = new HashMap<>();
+                }
+                params.put(paramName, path.substring(index, segmentEnd));
+                int nextIndex = segmentEnd < end ? segmentEnd + 1 : end;
+                RouteMatch result = paramChild.match(path, nextIndex, end, method, params, segmentKey);
                 if (result != null) {
                     return result;
                 }
                 params.remove(paramName);
+                if (params.isEmpty()) {
+                    params = null;
+                }
             }
 
             return null;
+        }
+    }
+
+    private static final class SegmentKey implements CharSequence {
+        private String path;
+        private int start;
+        private int end;
+        private int hash;
+
+        void reset(String path, int start, int end) {
+            this.path = path;
+            this.start = start;
+            this.end = end;
+            this.hash = 0;
+        }
+
+        @Override
+        public int length() {
+            return end - start;
+        }
+
+        @Override
+        public char charAt(int index) {
+            return path.charAt(start + index);
+        }
+
+        @Override
+        public CharSequence subSequence(int start, int end) {
+            return path.subSequence(this.start + start, this.start + end);
+        }
+
+        @Override
+        public int hashCode() {
+            int h = hash;
+            if (h == 0) {
+                for (int i = start; i < end; i++) {
+                    h = 31 * h + path.charAt(i);
+                }
+                hash = h != 0 ? h : 1;
+                return hash;
+            }
+            return h;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) {
+                return true;
+            }
+            int len = end - start;
+            if (obj instanceof CharSequence other) {
+                if (other.length() != len) {
+                    return false;
+                }
+                for (int i = 0; i < len; i++) {
+                    if (path.charAt(start + i) != other.charAt(i)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            return false;
         }
     }
 }

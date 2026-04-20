@@ -1,20 +1,22 @@
 package com.loomq.snapshot;
 
 import com.loomq.domain.intent.Intent;
+import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.store.IntentStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.io.OutputStream;
-import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -22,20 +24,15 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * Snapshot 管理器 (v0.5)
+ * Snapshot 管理器。
  *
- * 负责 Intent 存储的模糊快照（Fuzzy Snapshot）创建和恢复
- * 配合 WAL 实现快速启动和故障恢复
- *
- * @author loomq
- * @since v0.5.0
+ * 负责 Intent 存储的快照创建和恢复，快照采用轻量二进制格式：
+ * magic + version + createdAt + walOffset + recordCount + [intentLength + intentBytes]*
  */
 public class SnapshotManager {
 
@@ -43,88 +40,32 @@ public class SnapshotManager {
     private static final String SNAPSHOT_PREFIX = "snapshot-";
     private static final String SNAPSHOT_SUFFIX = ".snap.gz";
     private static final int MAX_SNAPSHOTS_TO_KEEP = 3;
+    private static final int SNAPSHOT_MAGIC = 0x534E4150; // SNAP
+    private static final int SNAPSHOT_VERSION = 1;
+    private static final DateTimeFormatter SNAPSHOT_TIMESTAMP_FORMAT =
+        DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS").withZone(ZoneOffset.UTC);
 
     private final Path snapshotDir;
-    private final ScheduledExecutorService snapshotExecutor;
-    private volatile boolean running = false;
 
     public SnapshotManager(String dataDir) {
         this.snapshotDir = Paths.get(dataDir, "snapshots");
-        this.snapshotExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "snapshot-manager");
-            t.setDaemon(true);
-            return t;
-        });
     }
 
     /**
-     * 启动快照管理器
+     * 创建快照（同步）。
      */
-    public void start() {
-        if (running) return;
-        running = true;
+    public SnapshotInfo createSnapshot(IntentStore store, long walOffset) {
+        ensureSnapshotDir();
 
-        try {
-            Files.createDirectories(snapshotDir);
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to create snapshot directory: " + snapshotDir, e);
-        }
-
-        // 每 5 分钟执行一次快照
-        snapshotExecutor.scheduleAtFixedRate(
-            this::createSnapshotAsync, 5, 5, TimeUnit.MINUTES);
-
-        logger.info("SnapshotManager started, directory: {}", snapshotDir);
-    }
-
-    /**
-     * 停止快照管理器
-     */
-    public void stop() {
-        running = false;
-        snapshotExecutor.shutdown();
-        try {
-            if (!snapshotExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
-                snapshotExecutor.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            snapshotExecutor.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
-        logger.info("SnapshotManager stopped");
-    }
-
-    /**
-     * 创建快照（异步）
-     */
-    public CompletableFuture<SnapshotInfo> createSnapshotAsync() {
-        return CompletableFuture.supplyAsync(this::createSnapshot,
-            snapshotExecutor);
-    }
-
-    /**
-     * 创建快照（同步）
-     *
-     * @return 快照信息
-     */
-    public SnapshotInfo createSnapshot() {
-        String timestamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now());
+        String timestamp = SNAPSHOT_TIMESTAMP_FORMAT.format(Instant.now());
         String filename = SNAPSHOT_PREFIX + timestamp + SNAPSHOT_SUFFIX;
         Path snapshotPath = snapshotDir.resolve(filename);
 
         logger.info("Creating snapshot: {}", filename);
 
         try {
-            // 注意：这里创建的是"模糊快照"，不锁定 IntentStore
-            // 实际数据在恢复时通过 WAL replay 补齐
-            SnapshotData data = captureSnapshotData();
-
-            try (OutputStream fos = Files.newOutputStream(snapshotPath);
-                 GZIPOutputStream gzos = new GZIPOutputStream(fos);
-                 ObjectOutputStream oos = new ObjectOutputStream(gzos)) {
-
-                oos.writeObject(data);
-            }
+            SnapshotData data = captureSnapshotData(store, walOffset);
+            writeSnapshotData(snapshotPath, data);
 
             long size = Files.size(snapshotPath);
             SnapshotInfo info = new SnapshotInfo(filename, data.walOffset, size, timestamp);
@@ -132,9 +73,7 @@ public class SnapshotManager {
             logger.info("Snapshot created: {}, size={}, intents={}, offset={}",
                 filename, size, data.intentCount, data.walOffset);
 
-            // 清理旧快照
             cleanupOldSnapshots();
-
             return info;
 
         } catch (IOException e) {
@@ -144,9 +83,14 @@ public class SnapshotManager {
     }
 
     /**
-     * 从快照恢复
-     *
-     * @return 恢复的快照数据和 WAL offset
+     * 创建快照（异步）。
+     */
+    public CompletableFuture<SnapshotInfo> createSnapshotAsync(IntentStore store, long walOffset) {
+        return CompletableFuture.supplyAsync(() -> createSnapshot(store, walOffset));
+    }
+
+    /**
+     * 从快照恢复。
      */
     public SnapshotResult restoreFromSnapshot() {
         Optional<Path> latestSnapshot = findLatestSnapshot();
@@ -159,63 +103,179 @@ public class SnapshotManager {
         Path snapshotPath = latestSnapshot.get();
         logger.info("Restoring from snapshot: {}", snapshotPath.getFileName());
 
-        try (InputStream fis = Files.newInputStream(snapshotPath);
-             GZIPInputStream gzis = new GZIPInputStream(fis);
-             ObjectInputStream ois = new ObjectInputStream(gzis)) {
-
-            SnapshotData data = (SnapshotData) ois.readObject();
+        try {
+            SnapshotData data = readSnapshotData(snapshotPath);
+            List<Intent> intents = new ArrayList<>(data.encodedIntents.size());
+            for (byte[] encodedIntent : data.encodedIntents) {
+                intents.add(IntentBinaryCodec.decode(encodedIntent));
+            }
 
             logger.info("Snapshot restored: intents={}, offset={}",
                 data.intentCount, data.walOffset);
 
-            return new SnapshotResult(data.intents, data.walOffset);
+            return new SnapshotResult(intents, data.walOffset);
 
-        } catch (IOException | ClassNotFoundException e) {
+        } catch (IOException e) {
             logger.error("Failed to restore from snapshot: {}", snapshotPath, e);
             throw new RuntimeException("Snapshot restore failed", e);
         }
     }
 
     /**
-     * 获取最新的快照信息
+     * 流式从快照恢复。
+     *
+     * @param consumer 每条 intent 的应用回调
+     * @return 恢复摘要
+     */
+    public SnapshotRestoreResult restoreFromSnapshot(Consumer<Intent> consumer) {
+        Optional<Path> latestSnapshot = findLatestSnapshot();
+
+        if (latestSnapshot.isEmpty()) {
+            logger.info("No snapshot found, starting fresh");
+            return SnapshotRestoreResult.empty();
+        }
+
+        Path snapshotPath = latestSnapshot.get();
+        logger.info("Restoring from snapshot: {}", snapshotPath.getFileName());
+
+        try {
+            SnapshotHeader header = readSnapshotHeaderAndApply(snapshotPath, consumer);
+
+            logger.info("Snapshot restored: intents={}, offset={}",
+                header.intentCount(), header.walOffset());
+
+            return new SnapshotRestoreResult(header.intentCount(), header.walOffset());
+        } catch (IOException e) {
+            logger.error("Failed to restore from snapshot: {}", snapshotPath, e);
+            throw new RuntimeException("Snapshot restore failed", e);
+        }
+    }
+
+    /**
+     * 获取最新的快照信息。
      */
     public Optional<SnapshotInfo> getLatestSnapshotInfo() {
-        return findLatestSnapshot()
-            .map(this::readSnapshotInfo)
-            .flatMap(Optional::ofNullable);
+        return findLatestSnapshot().map(this::readSnapshotInfo);
     }
 
-    /**
-     * 捕获快照数据
-     */
-    private SnapshotData captureSnapshotData() {
-        // 获取当前 WAL offset（这里简化处理，实际需要与 WAL 集成）
-        long currentWalOffset = System.currentTimeMillis();
+    private SnapshotData captureSnapshotData(IntentStore store, long walOffset) {
+        List<byte[]> encodedIntents = new ArrayList<>();
+        for (Intent intent : store.getAllIntents().values()) {
+            encodedIntents.add(IntentBinaryCodec.encode(intent));
+        }
 
-        return new SnapshotData(
-            Collections.emptyList(),  // 模糊快照不保存实际数据
-            0,
-            currentWalOffset,
-            Instant.now()
-        );
+        return new SnapshotData(encodedIntents, encodedIntents.size(), walOffset, Instant.now());
     }
 
-    /**
-     * 从 IntentStore 捕获快照（如果需要完整快照）
-     */
-    public SnapshotData captureFromStore(IntentStore store) {
-        List<Intent> intents = new ArrayList<>(store.getAllIntents().values());
-        long currentWalOffset = System.currentTimeMillis();
+    private void writeSnapshotData(Path snapshotPath, SnapshotData data) throws IOException {
+        try (OutputStream fos = Files.newOutputStream(snapshotPath);
+             GZIPOutputStream gzos = new GZIPOutputStream(fos);
+             DataOutputStream dos = new DataOutputStream(gzos)) {
 
-        return new SnapshotData(intents, intents.size(), currentWalOffset, Instant.now());
+            dos.writeInt(SNAPSHOT_MAGIC);
+            dos.writeInt(SNAPSHOT_VERSION);
+            dos.writeLong(data.createdAt.toEpochMilli());
+            dos.writeLong(data.walOffset);
+            dos.writeInt(data.intentCount);
+
+            for (byte[] encodedIntent : data.encodedIntents) {
+                dos.writeInt(encodedIntent.length);
+                dos.write(encodedIntent);
+            }
+        }
     }
 
-    /**
-     * 查找最新的快照文件
-     */
+    private SnapshotData readSnapshotData(Path path) throws IOException {
+        try (InputStream fis = Files.newInputStream(path);
+             GZIPInputStream gzis = new GZIPInputStream(fis);
+             DataInputStream dis = new DataInputStream(gzis)) {
+
+            SnapshotHeader header = readSnapshotHeader(dis);
+            List<byte[]> encodedIntents = new ArrayList<>(header.intentCount());
+
+            for (int i = 0; i < header.intentCount(); i++) {
+                int length = dis.readInt();
+                if (length <= 0) {
+                    throw new IOException("Invalid snapshot record length: " + length);
+                }
+
+                byte[] encodedIntent = new byte[length];
+                dis.readFully(encodedIntent);
+                encodedIntents.add(encodedIntent);
+            }
+
+            return new SnapshotData(
+                encodedIntents,
+                header.intentCount(),
+                header.walOffset(),
+                Instant.ofEpochMilli(header.createdAtMillis())
+            );
+        }
+    }
+
+    private SnapshotHeader readSnapshotHeaderAndApply(Path path, Consumer<Intent> consumer) throws IOException {
+        try (InputStream fis = Files.newInputStream(path);
+             GZIPInputStream gzis = new GZIPInputStream(fis);
+             DataInputStream dis = new DataInputStream(gzis)) {
+
+            SnapshotHeader header = readSnapshotHeader(dis);
+
+            for (int i = 0; i < header.intentCount(); i++) {
+                int length = dis.readInt();
+                if (length <= 0) {
+                    throw new IOException("Invalid snapshot record length: " + length);
+                }
+
+                byte[] encodedIntent = new byte[length];
+                dis.readFully(encodedIntent);
+                consumer.accept(IntentBinaryCodec.decode(encodedIntent));
+            }
+
+            return header;
+        }
+    }
+
+    private SnapshotInfo readSnapshotInfo(Path path) {
+        try (InputStream fis = Files.newInputStream(path);
+             GZIPInputStream gzis = new GZIPInputStream(fis);
+             DataInputStream dis = new DataInputStream(gzis)) {
+
+            SnapshotHeader header = readSnapshotHeader(dis);
+            long size = Files.size(path);
+            String filename = path.getFileName().toString();
+            String timestamp = filename
+                .replace(SNAPSHOT_PREFIX, "")
+                .replace(SNAPSHOT_SUFFIX, "");
+            return new SnapshotInfo(filename, header.walOffset(), size, timestamp);
+        } catch (IOException e) {
+            logger.error("Failed to read snapshot info: {}", path, e);
+            return null;
+        }
+    }
+
+    private SnapshotHeader readSnapshotHeader(DataInputStream dis) throws IOException {
+        int magic = dis.readInt();
+        if (magic != SNAPSHOT_MAGIC) {
+            throw new IOException("Invalid snapshot magic: " + Integer.toHexString(magic));
+        }
+
+        int version = dis.readInt();
+        if (version != SNAPSHOT_VERSION) {
+            throw new IOException("Unsupported snapshot version: " + version);
+        }
+
+        long createdAtMillis = dis.readLong();
+        long walOffset = dis.readLong();
+        int intentCount = dis.readInt();
+
+        return new SnapshotHeader(createdAtMillis, walOffset, intentCount);
+    }
+
     private Optional<Path> findLatestSnapshot() {
-        try {
-            return Files.list(snapshotDir)
+        ensureSnapshotDir();
+
+        try (var stream = Files.list(snapshotDir)) {
+            return stream
                 .filter(p -> p.getFileName().toString().startsWith(SNAPSHOT_PREFIX))
                 .filter(p -> p.getFileName().toString().endsWith(SNAPSHOT_SUFFIX))
                 .max(Comparator.comparing(this::getLastModifiedTime));
@@ -233,60 +293,44 @@ public class SnapshotManager {
         }
     }
 
-    /**
-     * 读取快照信息（不读取完整数据）
-     */
-    private SnapshotInfo readSnapshotInfo(Path path) {
-        try {
-            long size = Files.size(path);
-            String filename = path.getFileName().toString();
-            String timestamp = filename
-                .replace(SNAPSHOT_PREFIX, "")
-                .replace(SNAPSHOT_SUFFIX, "");
-            return new SnapshotInfo(filename, 0, size, timestamp);
-        } catch (IOException e) {
-            logger.error("Failed to read snapshot info: {}", path, e);
-            return null;
-        }
-    }
-
-    /**
-     * 清理旧快照，只保留最新的几个
-     */
     private void cleanupOldSnapshots() {
-        try {
-            List<Path> snapshots = Files.list(snapshotDir)
+        ensureSnapshotDir();
+
+        try (var stream = Files.list(snapshotDir)) {
+            List<Path> snapshots = stream
                 .filter(p -> p.getFileName().toString().startsWith(SNAPSHOT_PREFIX))
+                .filter(p -> p.getFileName().toString().endsWith(SNAPSHOT_SUFFIX))
                 .sorted(Comparator.comparing(this::getLastModifiedTime).reversed())
                 .toList();
 
-            if (snapshots.size() > MAX_SNAPSHOTS_TO_KEEP) {
-                for (int i = MAX_SNAPSHOTS_TO_KEEP; i < snapshots.size(); i++) {
-                    Files.deleteIfExists(snapshots.get(i));
-                    logger.debug("Deleted old snapshot: {}", snapshots.get(i).getFileName());
-                }
+            for (int i = MAX_SNAPSHOTS_TO_KEEP; i < snapshots.size(); i++) {
+                Files.deleteIfExists(snapshots.get(i));
+                logger.debug("Deleted old snapshot: {}", snapshots.get(i).getFileName());
             }
         } catch (IOException e) {
             logger.warn("Failed to cleanup old snapshots", e);
         }
     }
 
-    // ==================== 数据类 ====================
+    private void ensureSnapshotDir() {
+        try {
+            Files.createDirectories(snapshotDir);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to create snapshot directory: " + snapshotDir, e);
+        }
+    }
 
     /**
-     * 快照数据（可序列化）
+     * 快照数据。
      */
-    public static class SnapshotData implements Serializable {
-        private static final long serialVersionUID = 1L;
-
-        public final List<Intent> intents;
+    public static class SnapshotData {
+        public final List<byte[]> encodedIntents;
         public final int intentCount;
         public final long walOffset;
         public final Instant createdAt;
 
-        public SnapshotData(List<Intent> intents, int intentCount,
-                           long walOffset, Instant createdAt) {
-            this.intents = intents;
+        public SnapshotData(List<byte[]> encodedIntents, int intentCount, long walOffset, Instant createdAt) {
+            this.encodedIntents = encodedIntents;
             this.intentCount = intentCount;
             this.walOffset = walOffset;
             this.createdAt = createdAt;
@@ -294,7 +338,7 @@ public class SnapshotManager {
     }
 
     /**
-     * 快照信息
+     * 快照信息。
      */
     public static class SnapshotInfo {
         public final String filename;
@@ -317,7 +361,7 @@ public class SnapshotManager {
     }
 
     /**
-     * 快照恢复结果
+     * 快照恢复结果。
      */
     public static class SnapshotResult {
         public final List<Intent> intents;
@@ -336,4 +380,15 @@ public class SnapshotManager {
             return intents.isEmpty();
         }
     }
+
+    /**
+     * 流式恢复摘要。
+     */
+    public record SnapshotRestoreResult(int restoredCount, long walOffset) {
+        public static SnapshotRestoreResult empty() {
+            return new SnapshotRestoreResult(0, 0);
+        }
+    }
+
+    private record SnapshotHeader(long createdAtMillis, long walOffset, int intentCount) {}
 }

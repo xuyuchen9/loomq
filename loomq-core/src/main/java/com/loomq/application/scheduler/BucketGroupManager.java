@@ -59,6 +59,23 @@ public class BucketGroupManager {
     }
 
     /**
+     * 从对应精度档位的桶中移除 Intent。
+     *
+     * @param intent Intent 实例
+     * @return true 表示已移除
+     */
+    public boolean remove(Intent intent) {
+        PrecisionTier tier = intent.getPrecisionTier();
+        BucketGroup group = bucketGroups.get(tier);
+
+        if (group == null) {
+            return false;
+        }
+
+        return group.remove(intent);
+    }
+
+    /**
      * 扫描指定精度档位的到期任务
      *
      * @param tier 精度档位

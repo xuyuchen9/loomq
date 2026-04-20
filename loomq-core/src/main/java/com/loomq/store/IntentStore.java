@@ -6,11 +6,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.Objects;
+import java.util.EnumMap;
 
 /**
  * Intent 存储
@@ -24,8 +28,10 @@ public class IntentStore {
 
     private static final Logger logger = LoggerFactory.getLogger(IntentStore.class);
 
-    private final Map<String, Intent> intents = new ConcurrentHashMap<>();
+    private final Map<String, StoredIntent> intents = new ConcurrentHashMap<>();
     private final Map<String, IdempotencyRecord> idempotencyRecords = new ConcurrentHashMap<>();
+    private final Map<IntentStatus, AtomicLong> statusCounts = new EnumMap<>(IntentStatus.class);
+    private final AtomicLong pendingCount = new AtomicLong();
 
     private final ScheduledExecutorService cleanupExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "idempotency-cleanup");
@@ -34,6 +40,10 @@ public class IntentStore {
     });
 
     public IntentStore() {
+        for (IntentStatus status : IntentStatus.values()) {
+            statusCounts.put(status, new AtomicLong());
+        }
+
         // 每小时清理过期幂等记录
         cleanupExecutor.scheduleAtFixedRate(this::cleanupExpiredRecords, 1, 1, TimeUnit.HOURS);
     }
@@ -42,13 +52,7 @@ public class IntentStore {
      * 保存 Intent
      */
     public void save(Intent intent) {
-        intents.put(intent.getIntentId(), intent);
-
-        // 保存幂等记录
-        if (intent.getIdempotencyKey() != null) {
-            IdempotencyRecord record = IdempotencyRecord.fromIntent(intent);
-            idempotencyRecords.put(intent.getIdempotencyKey(), record);
-        }
+        upsert(intent);
 
         logger.debug("Intent saved: id={}, status={}", intent.getIntentId(), intent.getStatus());
     }
@@ -57,15 +61,7 @@ public class IntentStore {
      * 更新 Intent
      */
     public void update(Intent intent) {
-        intents.put(intent.getIntentId(), intent);
-
-        // 更新幂等记录状态
-        if (intent.getIdempotencyKey() != null) {
-            IdempotencyRecord record = idempotencyRecords.get(intent.getIdempotencyKey());
-            if (record != null) {
-                record.updateStatus(intent.getStatus());
-            }
-        }
+        upsert(intent);
 
         logger.debug("Intent updated: id={}, status={}", intent.getIntentId(), intent.getStatus());
     }
@@ -74,7 +70,8 @@ public class IntentStore {
      * 根据 ID 查找 Intent
      */
     public Intent findById(String intentId) {
-        return intents.get(intentId);
+        StoredIntent stored = intents.get(intentId);
+        return stored != null ? stored.intent() : null;
     }
 
     /**
@@ -98,13 +95,14 @@ public class IntentStore {
         }
 
         // 窗口期内，根据状态判断
-        Intent intent = intents.get(record.getIntentId());
-        if (intent == null) {
+        StoredIntent stored = intents.get(record.getIntentId());
+        if (stored == null) {
             // Intent 已删除，清理幂等记录
             idempotencyRecords.remove(idempotencyKey);
             return IdempotencyResult.newRequest();
         }
 
+        Intent intent = stored.intent();
         if (intent.getStatus().isTerminal()) {
             // 终态，返回 409
             return IdempotencyResult.duplicateTerminal(intent);
@@ -118,9 +116,13 @@ public class IntentStore {
      * 删除 Intent
      */
     public void delete(String intentId) {
-        Intent intent = intents.remove(intentId);
-        if (intent != null && intent.getIdempotencyKey() != null) {
-            idempotencyRecords.remove(intent.getIdempotencyKey());
+        StoredIntent removed = intents.remove(intentId);
+        if (removed != null) {
+            decrementStatus(removed.status());
+            String idempotencyKey = removed.intent().getIdempotencyKey();
+            if (idempotencyKey != null) {
+                idempotencyRecords.remove(idempotencyKey);
+            }
         }
     }
 
@@ -128,45 +130,41 @@ public class IntentStore {
      * 获取所有 Intent（调试用）
      */
     public Map<String, Intent> getAllIntents() {
-        return Map.copyOf(intents);
+        Map<String, Intent> snapshot = new HashMap<>(intents.size());
+        intents.forEach((id, stored) -> snapshot.put(id, stored.intent()));
+        return Map.copyOf(snapshot);
     }
 
     /**
      * 获取指定状态的 Intent 数量
      */
     public long countByStatus(IntentStatus status) {
-        return intents.values().stream()
-            .filter(i -> i.getStatus() == status)
-            .count();
+        AtomicLong counter = statusCounts.get(status);
+        return counter != null ? counter.get() : 0L;
     }
 
     /**
      * 获取待处理 Intent 数量
      */
     public long getPendingCount() {
-        return intents.values().stream()
-            .filter(i -> !i.getStatus().isTerminal())
-            .count();
+        return pendingCount.get();
     }
 
     /**
      * 清理过期幂等记录
      */
     private void cleanupExpiredRecords() {
-        Instant now = Instant.now();
-        int cleaned = 0;
-
-        var iterator = idempotencyRecords.entrySet().iterator();
-        while (iterator.hasNext()) {
-            var entry = iterator.next();
+        AtomicLong cleaned = new AtomicLong();
+        idempotencyRecords.entrySet().removeIf(entry -> {
             if (entry.getValue().isExpired()) {
-                iterator.remove();
-                cleaned++;
+                cleaned.incrementAndGet();
+                return true;
             }
-        }
+            return false;
+        });
 
-        if (cleaned > 0) {
-            logger.info("Cleaned {} expired idempotency records", cleaned);
+        if (cleaned.get() > 0) {
+            logger.info("Cleaned {} expired idempotency records", cleaned.get());
         }
     }
 
@@ -182,6 +180,62 @@ public class IntentStore {
         } catch (InterruptedException e) {
             cleanupExecutor.shutdownNow();
             Thread.currentThread().interrupt();
+        }
+    }
+
+    private void upsert(Intent intent) {
+        intents.compute(intent.getIntentId(), (id, existing) -> {
+            IntentStatus previousStatus = existing != null ? existing.status() : null;
+            String previousIdempotencyKey = existing != null ? existing.intent().getIdempotencyKey() : null;
+
+            if (existing != null) {
+                decrementStatus(previousStatus);
+                if (previousIdempotencyKey != null && !Objects.equals(previousIdempotencyKey, intent.getIdempotencyKey())) {
+                    idempotencyRecords.remove(previousIdempotencyKey);
+                }
+            }
+
+            StoredIntent stored = new StoredIntent(intent);
+            incrementStatus(stored.status());
+
+            String idempotencyKey = intent.getIdempotencyKey();
+            if (idempotencyKey != null) {
+                idempotencyRecords.put(idempotencyKey, IdempotencyRecord.fromIntent(intent));
+            }
+
+            return stored;
+        });
+    }
+
+    private void incrementStatus(IntentStatus status) {
+        if (status == null) {
+            return;
+        }
+        AtomicLong counter = statusCounts.get(status);
+        if (counter != null) {
+            counter.incrementAndGet();
+        }
+        if (!status.isTerminal()) {
+            pendingCount.incrementAndGet();
+        }
+    }
+
+    private void decrementStatus(IntentStatus status) {
+        if (status == null) {
+            return;
+        }
+        AtomicLong counter = statusCounts.get(status);
+        if (counter != null) {
+            counter.decrementAndGet();
+        }
+        if (!status.isTerminal()) {
+            pendingCount.decrementAndGet();
+        }
+    }
+
+    private record StoredIntent(Intent intent, IntentStatus status) {
+        private StoredIntent(Intent intent) {
+            this(intent, intent.getStatus());
         }
     }
 }

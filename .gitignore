@@ -46,5 +46,6 @@ benchmark/results/reports/
 .DS_Store
 Thumbs.db
 
-# Claude local settings
-.claude/settings.local.json
+# Claude
+.claude/
+.idea/

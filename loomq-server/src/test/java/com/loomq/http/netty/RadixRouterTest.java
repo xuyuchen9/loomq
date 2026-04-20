@@ -27,6 +27,26 @@ class RadixRouterTest {
     }
 
     @Test
+    void testTrimmedPathVariants() {
+        RadixRouter router = new RadixRouter();
+
+        router.add(HttpMethod.GET, "/health/", (method, uri, body, headers, pathParams) -> Map.of("status", "UP"));
+
+        assertNotNull(router.match(HttpMethod.GET, "/health"));
+        assertNotNull(router.match(HttpMethod.GET, "/health/"));
+        assertNotNull(router.match(HttpMethod.GET, "//health//"));
+    }
+
+    @Test
+    void testQueryStringIgnored() {
+        RadixRouter router = new RadixRouter();
+
+        router.add(HttpMethod.GET, "/health", (method, uri, body, headers, pathParams) -> Map.of("status", "UP"));
+
+        assertNotNull(router.match(HttpMethod.GET, "/health?debug=true"));
+    }
+
+    @Test
     void testPathWithParam() {
         RadixRouter router = new RadixRouter();
 

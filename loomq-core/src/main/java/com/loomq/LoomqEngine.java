@@ -1,15 +1,20 @@
 package com.loomq;
 
+import com.loomq.application.command.IntentCommandService;
 import com.loomq.application.scheduler.BucketGroupManager;
+import com.loomq.application.scheduler.PrecisionScheduler;
 import com.loomq.common.MetricsCollector;
 import com.loomq.config.WalConfig;
 import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Intent;
-import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.infrastructure.wal.SimpleWalWriter;
+import com.loomq.recovery.RecoveryPipeline;
+import com.loomq.snapshot.SnapshotManager.SnapshotInfo;
 import com.loomq.spi.CallbackHandler;
+import com.loomq.spi.DeliveryHandler;
+import com.loomq.spi.RedeliveryDecider;
+import com.loomq.store.IdempotencyResult;
 import com.loomq.store.IntentStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,22 +29,19 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /**
- * LoomQ v0.7.0 核心引擎 - 嵌入式内核
+ * LoomQ v0.7.1 核心引擎 - 嵌入式内核
  *
  * 纯 Java 实现，零外部依赖（仅 SLF4J API）。
- * 提供延迟任务队列的核心能力，通过 CallbackHandler 回调宿主应用。
+ * 提供延迟任务队列的核心能力，通过 DeliveryHandler 投递任务。
  *
- * 特性：
- * 1. 基于 BucketGroup 的时间桶调度
- * 2. 基于 WAL 的持久化（SimpleWalWriter）
- * 3. 虚拟线程执行回调
- * 4. Builder 模式配置
+ * v0.7.1 变更：
+ * - 集成 PrecisionScheduler 调度器
+ * - 使用 DeliveryHandler SPI 接口投递
  *
  * @author loomq
  * @since v0.7.0
@@ -50,17 +52,15 @@ public class LoomqEngine implements AutoCloseable {
 
     // ========== 核心组件 ==========
     private final IntentStore intentStore;
-    private final BucketGroupManager bucketGroupManager;
     private final SimpleWalWriter walWriter;
     private final MetricsCollector metricsCollector;
+    private final PrecisionScheduler scheduler;
+    private final RecoveryPipeline recoveryPipeline;
+    private final IntentCommandService commandService;
 
     // ========== 回调机制 ==========
-    private volatile CallbackHandler callbackHandler;
     private final Executor callbackExecutor;
-
-    // ========== 调度 ==========
-    private final ScheduledExecutorService schedulerExecutor;
-    private final Map<PrecisionTier, TierConfig> tierConfigs;
+    private final java.util.concurrent.ExecutorService operationExecutor;
 
     // ========== 状态 ==========
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -74,10 +74,10 @@ public class LoomqEngine implements AutoCloseable {
     private LoomqEngine(Builder builder) {
         this.nodeId = builder.nodeId != null ? builder.nodeId : "default-node";
         this.walDir = builder.walDir != null ? builder.walDir : Path.of("./data");
-        this.tierConfigs = builder.tierConfigs != null ? builder.tierConfigs : Map.of();
         this.callbackExecutor = builder.callbackExecutor != null
             ? builder.callbackExecutor
             : Executors.newVirtualThreadPerTaskExecutor();
+        this.operationExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
         try {
             // 确保数据目录存在
@@ -85,17 +85,27 @@ public class LoomqEngine implements AutoCloseable {
 
             // 初始化组件
             this.intentStore = new IntentStore();
-            this.bucketGroupManager = new BucketGroupManager();
             this.walWriter = new SimpleWalWriter(createWalConfig(), "shard-0");
             this.metricsCollector = MetricsCollector.getInstance();
-            this.callbackHandler = builder.callbackHandler;
+            this.recoveryPipeline = new RecoveryPipeline(walDir);
 
-            // 调度器线程
-            this.schedulerExecutor = Executors.newScheduledThreadPool(2, r -> {
-                Thread t = new Thread(r, "loomq-scheduler-" + nodeId);
-                t.setDaemon(true);
-                return t;
-            });
+            // 初始化调度器
+            this.scheduler = new PrecisionScheduler(
+                intentStore,
+                builder.deliveryHandler,
+                builder.redeliveryDecider
+            );
+
+            this.commandService = new IntentCommandService(
+                intentStore,
+                scheduler,
+                walWriter,
+                metricsCollector,
+                callbackExecutor,
+                running,
+                sequenceNumber,
+                builder.callbackHandler
+            );
 
             logger.info("LoomqEngine created: nodeId={}, walDir={}", nodeId, walDir);
 
@@ -113,23 +123,27 @@ public class LoomqEngine implements AutoCloseable {
         }
 
         logger.info("╔════════════════════════════════════════════════════════╗");
-        logger.info("║       LoomQ v0.7.0 Core Engine Starting...             ║");
+        logger.info("║       LoomQ v0.7.1 Core Engine Starting...             ║");
         logger.info("║       Mode: Embedded (Zero HTTP dependencies)          ║");
         logger.info("╚════════════════════════════════════════════════════════╝");
+
+        // 先恢复快照和 WAL 增量，再启动运行时
+        RecoveryPipeline.RecoveryReport recoveryReport = recoveryPipeline.recover(intentStore, scheduler);
+        if (recoveryReport.restoredTotal() > 0) {
+            logger.info("Recovered {} intents from snapshot/WAL (snapshot={}, wal={})",
+                recoveryReport.restoredTotal(),
+                recoveryReport.restoredFromSnapshot(),
+                recoveryReport.restoredFromWal());
+        }
 
         // 启动 WAL
         walWriter.start();
 
-        // 启动各精度档位的调度器
-        for (PrecisionTier tier : PrecisionTier.values()) {
-            long intervalMs = tier.getPrecisionWindowMs();
-            schedulerExecutor.scheduleAtFixedRate(
-                () -> scanAndDispatch(tier),
-                intervalMs,
-                intervalMs,
-                TimeUnit.MILLISECONDS
-            );
-        }
+        // 启动调度器
+        scheduler.start();
+
+        // 启动定期快照
+        recoveryPipeline.startSnapshots(intentStore, walWriter::getWritePosition);
 
         logger.info("Engine started successfully");
     }
@@ -146,9 +160,14 @@ public class LoomqEngine implements AutoCloseable {
         running.set(false);
         logger.info("Shutting down LoomqEngine...");
 
-        // 停止接受新任务
-        schedulerExecutor.shutdown();
-        schedulerExecutor.awaitTermination(5, TimeUnit.SECONDS);
+        // 停止恢复/快照管线
+        recoveryPipeline.close();
+
+        // 停止调度器
+        scheduler.stop();
+
+        // 停止存储后台清理线程
+        intentStore.shutdown();
 
         // 关闭 WAL
         walWriter.close();
@@ -157,6 +176,9 @@ public class LoomqEngine implements AutoCloseable {
         if (callbackExecutor instanceof AutoCloseable) {
             ((AutoCloseable) callbackExecutor).close();
         }
+
+        // 关闭操作执行器
+        operationExecutor.close();
 
         logger.info("Engine shutdown complete");
     }
@@ -169,45 +191,7 @@ public class LoomqEngine implements AutoCloseable {
      * @return CompletableFuture<Long> WAL 序列号
      */
     public CompletableFuture<Long> createIntent(Intent intent, AckMode ackMode) {
-        ensureRunning();
-
-        long seq = sequenceNumber.incrementAndGet();
-
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                // WAL 写入
-                byte[] data = IntentBinaryCodec.encode(intent);
-
-                CompletableFuture<Long> walFuture = switch (ackMode) {
-                    case ASYNC -> walWriter.writeAsync(data);
-                    case DURABLE -> walWriter.writeDurable(data);
-                    case REPLICATED -> {
-                        // 当前版本不支持副本复制，降级为 DURABLE
-                        logger.warn("REPLICATED mode not supported in standalone, downgrading to DURABLE");
-                        yield walWriter.writeDurable(data);
-                    }
-                };
-
-                // 等待 WAL 确认
-                walFuture.get();
-
-                // 更新状态并存储
-                intent.transitionTo(IntentStatus.SCHEDULED);
-                intentStore.save(intent);
-                bucketGroupManager.add(intent);
-
-                metricsCollector.incrementTasksCreated();
-
-                logger.debug("Intent created: id={}, ackMode={}, seq={}",
-                    intent.getIntentId(), ackMode, seq);
-
-                return seq;
-
-            } catch (Exception e) {
-                logger.error("Failed to create intent: id={}", intent.getIntentId(), e);
-                throw new RuntimeException("Failed to create intent", e);
-            }
-        });
+        return CompletableFuture.supplyAsync(() -> commandService.createIntent(intent, ackMode), operationExecutor);
     }
 
     /**
@@ -218,11 +202,7 @@ public class LoomqEngine implements AutoCloseable {
      * @return CompletableFuture<List<Long>> WAL 序列号列表
      */
     public CompletableFuture<List<Long>> createIntents(List<Intent> intents, AckMode ackMode) {
-        return CompletableFuture.supplyAsync(() -> {
-            return intents.stream()
-                .map(intent -> createIntent(intent, ackMode).join())
-                .toList();
-        });
+        return CompletableFuture.supplyAsync(() -> commandService.createIntents(intents, ackMode), operationExecutor);
     }
 
     /**
@@ -242,35 +222,7 @@ public class LoomqEngine implements AutoCloseable {
      * @return true 如果成功取消
      */
     public boolean cancelIntent(String intentId) {
-        Intent intent = intentStore.findById(intentId);
-        if (intent == null) {
-            return false;
-        }
-
-        try {
-            intent.transitionTo(IntentStatus.CANCELED);
-            intentStore.update(intent);
-
-            // 触发回调
-            CallbackHandler handler = callbackHandler;
-            if (handler != null) {
-                callbackExecutor.execute(() -> {
-                    try {
-                        handler.onIntentEvent(intent, CallbackHandler.EventType.CANCELLED, null);
-                    } catch (Exception e) {
-                        logger.error("Callback handler error for cancelled intent: {}", intentId, e);
-                    }
-                });
-            }
-
-            metricsCollector.incrementTasksCancelled();
-            logger.info("Intent cancelled: id={}", intentId);
-            return true;
-
-        } catch (IllegalStateException e) {
-            logger.warn("Cannot cancel intent {}: {}", intentId, e.getMessage());
-            return false;
-        }
+        return commandService.cancelIntent(intentId);
     }
 
     /**
@@ -280,24 +232,32 @@ public class LoomqEngine implements AutoCloseable {
      * @return true 如果成功触发
      */
     public boolean fireNow(String intentId) {
-        Intent intent = intentStore.findById(intentId);
-        if (intent == null) {
-            return false;
-        }
+        return commandService.fireNow(intentId);
+    }
 
-        try {
-            intent.setExecuteAt(Instant.now());
-            intentStore.update(intent);
-            // 重新添加到调度桶（会立即被扫描到）
-            bucketGroupManager.add(intent);
+    /**
+     * 更新 Intent 并持久化。
+     *
+     * 适合 PATCH 场景：调用方只负责修改对象内容，核心负责落库。
+     *
+     * @param intentId Intent ID
+     * @param updater  修改函数
+     * @return 更新后的 Intent；不存在时返回 empty
+     */
+    public Optional<Intent> updateIntent(String intentId, Consumer<Intent> updater) {
+        return commandService.updateIntent(intentId, updater, null);
+    }
 
-            logger.info("Intent fired immediately: id={}", intentId);
-            return true;
-
-        } catch (Exception e) {
-            logger.error("Failed to fire intent: id={}", intentId, e);
-            return false;
-        }
+    /**
+     * 更新 Intent 并可选重调度。
+     *
+     * @param intentId Intent ID
+     * @param updater 修改函数
+     * @param newExecuteAt 新的执行时间，传 null 表示不调整调度
+     * @return 更新后的 Intent；不存在时返回 empty
+     */
+    public Optional<Intent> updateIntent(String intentId, Consumer<Intent> updater, Instant newExecuteAt) {
+        return commandService.updateIntent(intentId, updater, newExecuteAt);
     }
 
     /**
@@ -306,8 +266,32 @@ public class LoomqEngine implements AutoCloseable {
      * @param handler CallbackHandler
      */
     public void registerCallbackHandler(CallbackHandler handler) {
-        this.callbackHandler = handler;
-        logger.info("Callback handler registered: {}", handler.getClass().getSimpleName());
+        commandService.registerCallbackHandler(handler);
+    }
+
+    /**
+     * 检查幂等性。
+     */
+    public IdempotencyResult checkIdempotency(String idempotencyKey) {
+        return commandService.checkIdempotency(idempotencyKey);
+    }
+
+    /**
+     * 获取调度器（高级使用）
+     *
+     * @return PrecisionScheduler
+     */
+    public PrecisionScheduler getScheduler() {
+        return scheduler;
+    }
+
+    /**
+     * 获取桶组管理器（高级使用）
+     *
+     * @return BucketGroupManager
+     */
+    public BucketGroupManager getBucketGroupManager() {
+        return scheduler.getBucketGroupManager();
     }
 
     /**
@@ -328,63 +312,15 @@ public class LoomqEngine implements AutoCloseable {
         );
     }
 
+    /**
+     * 立即生成一次快照。
+     */
+    public SnapshotInfo createSnapshot() {
+        ensureRunning();
+        return recoveryPipeline.checkpoint(intentStore, walWriter::getWritePosition);
+    }
+
     // ========== 内部方法 ==========
-
-    private void scanAndDispatch(PrecisionTier tier) {
-        if (!running.get()) {
-            return;
-        }
-
-        try {
-            List<Intent> dueIntents = bucketGroupManager.scanDue(tier, Instant.now());
-
-            for (Intent intent : dueIntents) {
-                dispatchIntent(intent);
-            }
-
-            if (!dueIntents.isEmpty()) {
-                logger.debug("Dispatched {} intents for tier {}", dueIntents.size(), tier);
-            }
-
-        } catch (Exception e) {
-            logger.error("Error scanning tier: {}", tier, e);
-        }
-    }
-
-    private void dispatchIntent(Intent intent) {
-        try {
-            // 状态转换
-            intent.transitionTo(IntentStatus.DUE);
-            intent.transitionTo(IntentStatus.DISPATCHING);
-            intentStore.update(intent);
-
-            // 触发回调
-            CallbackHandler handler = callbackHandler;
-            if (handler != null) {
-                callbackExecutor.execute(() -> {
-                    try {
-                        handler.onIntentEvent(intent, CallbackHandler.EventType.DUE, null);
-                        intent.transitionTo(IntentStatus.DELIVERED);
-                        intentStore.update(intent);
-                        metricsCollector.incrementTasksAckSuccess();
-                    } catch (Exception e) {
-                        logger.error("Callback handler error for intent: {}", intent.getIntentId(), e);
-                        handler.onIntentEvent(intent, CallbackHandler.EventType.FAILED, e);
-                        intent.transitionTo(IntentStatus.DEAD_LETTERED);
-                        intentStore.update(intent);
-                        metricsCollector.incrementTasksFailedTerminal();
-                    }
-                });
-            } else {
-                logger.warn("No callback handler registered, intent {} will not be delivered", intent.getIntentId());
-                intent.transitionTo(IntentStatus.DEAD_LETTERED);
-                intentStore.update(intent);
-            }
-
-        } catch (Exception e) {
-            logger.error("Failed to dispatch intent: {}", intent.getIntentId(), e);
-        }
-    }
 
     private void ensureRunning() {
         if (!running.get()) {
@@ -495,9 +431,10 @@ public class LoomqEngine implements AutoCloseable {
     public static class Builder {
         private Path walDir;
         private String nodeId;
-        private Map<PrecisionTier, TierConfig> tierConfigs;
         private Executor callbackExecutor;
         private CallbackHandler callbackHandler;
+        private DeliveryHandler deliveryHandler;
+        private RedeliveryDecider redeliveryDecider;
 
         public Builder walDir(Path walDir) {
             this.walDir = walDir;
@@ -506,11 +443,6 @@ public class LoomqEngine implements AutoCloseable {
 
         public Builder nodeId(String nodeId) {
             this.nodeId = nodeId;
-            return this;
-        }
-
-        public Builder tierConfig(Map<PrecisionTier, TierConfig> config) {
-            this.tierConfigs = config;
             return this;
         }
 
@@ -524,19 +456,20 @@ public class LoomqEngine implements AutoCloseable {
             return this;
         }
 
+        public Builder deliveryHandler(DeliveryHandler handler) {
+            this.deliveryHandler = handler;
+            return this;
+        }
+
+        public Builder redeliveryDecider(RedeliveryDecider decider) {
+            this.redeliveryDecider = decider;
+            return this;
+        }
+
         public LoomqEngine build() {
             return new LoomqEngine(this);
         }
     }
-
-    // ========== 配置类 ==========
-
-    public record TierConfig(
-        int maxConcurrency,
-        int batchSize,
-        long batchWindowMs,
-        int consumerCount
-    ) {}
 
     // ========== 统计类 ==========
 

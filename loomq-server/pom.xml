@@ -23,12 +23,6 @@
             <artifactId>loomq-core</artifactId>
         </dependency>
 
-        <!-- Web Framework -->
-        <dependency>
-            <groupId>io.javalin</groupId>
-            <artifactId>javalin</artifactId>
-        </dependency>
-
         <!-- JSON Serialization -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
