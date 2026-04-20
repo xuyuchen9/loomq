@@ -1,13 +1,13 @@
-# LoomQ v0.6.0 Dockerfile
-FROM openjdk:21-jdk-slim
+# LoomQ v0.7.0 Benchmark Dockerfile
+FROM eclipse-temurin:21-jdk-alpine
 
 # 安装 wrk 压测工具和依赖
-RUN apt-get update && apt-get install -y wrk curl && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache wrk curl
 
 WORKDIR /app
 
 # 复制 jar 文件
-COPY target/loomq-0.6.0.jar /app/loomq.jar
+COPY loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar /app/loomq.jar
 
 # 暴露端口
 EXPOSE 8080

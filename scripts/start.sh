@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # LoomQ Startup Script (Linux/macOS)
-# Version: 0.6.1
+# Version: 0.7.0
 #
 
 set -e
@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Default configuration
-JAR_FILE="target/loomq-0.6.0.jar"
+JAR_FILE="loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar"
 JVM_XMS="${JVM_XMS:-2g}"
 JVM_XMX="${JVM_XMX:-2g}"
 JVM_GC="${JVM_GC:-ZGC}"
@@ -119,7 +119,7 @@ trap cleanup SIGTERM SIGINT
 
 # Main execution
 main() {
-    print_info "LoomQ Startup Script v0.6.1"
+    print_info "LoomQ Startup Script v0.7.0"
 
     check_java
     check_jar
