@@ -52,7 +52,7 @@ class ResultTest {
         assertTrue(result.isError());
         assertFalse(result.isSuccess());
         assertEquals(100, result.getCode());
-        assertEquals("task not found", result.getMessage());
+        assertEquals("intent not found", result.getMessage());
     }
 
     @Test

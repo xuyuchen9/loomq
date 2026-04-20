@@ -72,7 +72,7 @@ class ErrorCodeTest {
 
     @Test
     void testGetMessage() {
-        assertEquals("task not found", ErrorCode.TASK_NOT_FOUND.getMessage());
+        assertEquals("intent not found", ErrorCode.TASK_NOT_FOUND.getMessage());
         assertEquals("WAL write error", ErrorCode.WAL_WRITE_ERROR.getMessage());
     }
 
