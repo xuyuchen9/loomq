@@ -78,10 +78,10 @@ public class PrecisionTierBenchmark {
         System.out.println("                                            duration: 测试时长秒 (默认 30)");
         System.out.println();
         System.out.println("  latency <tier> <count>                    延迟分布测试");
-        System.out.println("                                            count: 任务数量 (默认 1000)");
+        System.out.println("                                            count: Intent 数量 (默认 1000)");
         System.out.println();
         System.out.println("  compare <count>                           跨档位对比测试");
-        System.out.println("                                            count: 每档任务数 (默认 1000)");
+        System.out.println("                                            count: 每档 Intent 数 (默认 1000)");
         System.out.println();
         System.out.println("  slo                                       SLO 验证测试");
         System.out.println();
@@ -195,7 +195,7 @@ public class PrecisionTierBenchmark {
 
         System.out.println("=== 延迟分布测试 ===");
         System.out.println("精度档位: " + tier);
-        System.out.println("任务数量: " + count);
+        System.out.println("Intent 数量: " + count);
         System.out.println("精度窗口: " + tier.getPrecisionWindowMs() + " ms");
         System.out.println("SLO (p99): " + SLO_BOUNDS.get(tier) + " ms");
         System.out.println();
@@ -208,7 +208,7 @@ public class PrecisionTierBenchmark {
         List<Long> latencies = Collections.synchronizedList(new ArrayList<>());
         AtomicInteger successCount = new AtomicInteger(0);
 
-        System.out.println("创建任务中...");
+        System.out.println("创建 Intent 中...");
         long startTime = System.currentTimeMillis();
 
         // 使用虚拟线程并发创建
@@ -227,7 +227,7 @@ public class PrecisionTierBenchmark {
                     latencies.add(future.get());
                     successCount.incrementAndGet();
                     if (successCount.get() % 1000 == 0) {
-                        System.out.println("已创建: " + successCount.get() + " 任务");
+                        System.out.println("已创建: " + successCount.get() + " Intent");
                     }
                 } catch (Exception e) {
                     // ignore
@@ -245,7 +245,7 @@ public class PrecisionTierBenchmark {
         System.out.println("=== 结果 ===");
         System.out.println("创建耗时: " + duration + " ms");
         System.out.println("成功创建: " + successCount.get());
-        System.out.println("创建速率: " + String.format("%.2f", qps) + " tasks/s");
+        System.out.println("创建速率: " + String.format("%.2f", qps) + " intents/s");
         System.out.println();
 
         if (!latencies.isEmpty()) {
@@ -261,7 +261,7 @@ public class PrecisionTierBenchmark {
         int countPerTier = args.length > 1 ? Integer.parseInt(args[1]) : 1000;
 
         System.out.println("=== 跨档位对比测试 ===");
-        System.out.println("每档任务数: " + countPerTier);
+        System.out.println("每档 Intent 数: " + countPerTier);
         System.out.println();
 
         if (!healthCheck()) {

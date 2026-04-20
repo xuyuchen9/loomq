@@ -132,15 +132,15 @@ public class ExtremeBenchmark {
         System.out.println("测试 6: 内存占用估算");
         System.out.println("══════════════════════════════════════════════════════════════");
         long memBefore = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
-        int taskCount = 10000;
-        createTasksForMemoryTest(taskCount);
+        int intentCount = 10000;
+        createTasksForMemoryTest(intentCount);
         System.gc();
         Thread.sleep(500);
         long memAfter = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
-        long memPerTask = (memAfter - memBefore) / taskCount;
-        System.out.printf("创建任务数: %d%n", taskCount);
+        long memPerTask = (memAfter - memBefore) / intentCount;
+        System.out.printf("创建 Intent 数: %d%n", intentCount);
         System.out.printf("内存增量: %.2f MB%n", (memAfter - memBefore) / 1024.0 / 1024.0);
-        System.out.printf("每任务内存: ~%d bytes%n", memPerTask);
+        System.out.printf("每 Intent 内存: ~%d bytes%n", memPerTask);
         results.put("mem_per_task", memPerTask);
         System.out.println();
 

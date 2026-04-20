@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 验证目标:
  * 1. 创建接口 P95 ≤ 10ms
  * 2. 恢复 RTO ≤ 60s
- * 3. 单机 100 万挂起任务
+ * 3. 单机 100 万挂起 Intent
  */
 public class BenchmarkTest {
 
@@ -55,8 +55,8 @@ public class BenchmarkTest {
         System.out.println("  create <threads> <requests>  创建接口压测");
         System.out.println("                               threads: 并发线程数 (默认 10)");
         System.out.println("                               requests: 总请求数 (默认 1000)");
-        System.out.println("  million <count>              百万任务压测");
-        System.out.println("                               count: 任务数量 (默认 100000)");
+        System.out.println("  million <count>              百万 Intent 压测");
+        System.out.println("                               count: Intent 数量 (默认 100000)");
         System.out.println("  recovery                     恢复时间测试 (需先停止服务，再启动)");
         System.out.println();
         System.out.println("示例:");
@@ -160,8 +160,8 @@ public class BenchmarkTest {
     private static void runMillionTasksBenchmark(String[] args) throws Exception {
         int count = args.length > 1 ? Integer.parseInt(args[1]) : 100000;
 
-        System.out.println("=== 百万任务压测 ===");
-        System.out.println("任务数量: " + count);
+        System.out.println("=== 百万 Intent 压测 ===");
+        System.out.println("Intent 数量: " + count);
         System.out.println();
 
         // 健康检查
@@ -170,8 +170,8 @@ public class BenchmarkTest {
             return;
         }
 
-        // 开始创建任务
-        System.out.println("开始创建任务...");
+        // 开始创建 Intent
+        System.out.println("开始创建 Intent...");
         int batchSize = 100;
         int threads = 20;
         ExecutorService executor = Executors.newFixedThreadPool(threads);
@@ -187,11 +187,11 @@ public class BenchmarkTest {
                         createTask(3600000); // 1 小时后执行
                         int current = created.incrementAndGet();
                         if (current % 10000 == 0) {
-                            System.out.println("已创建: " + current + " 任务");
+                            System.out.println("已创建: " + current + " Intent");
                         }
                     }
                 } catch (Exception e) {
-                    System.err.println("创建任务失败: " + e.getMessage());
+                    System.err.println("创建 Intent 失败: " + e.getMessage());
                 } finally {
                     latch.countDown();
                 }
@@ -206,9 +206,9 @@ public class BenchmarkTest {
 
         System.out.println();
         System.out.println("=== 结果 ===");
-        System.out.println("创建任务: " + created.get());
+        System.out.println("创建 Intent: " + created.get());
         System.out.println("总耗时: " + duration + " ms");
-        System.out.println("创建速率: " + String.format("%.2f", rate) + " tasks/s");
+        System.out.println("创建速率: " + String.format("%.2f", rate) + " intents/s");
 
         // 查询调度器状态
         System.out.println();

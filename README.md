@@ -1,4 +1,4 @@
-# LoomQ - High-Performance Standalone Delayed Task Scheduler
+# LoomQ - Durable Time Kernel for Future Events
 
 [![JDK](https://img.shields.io/badge/JDK-25%2B-green.svg)](https://openjdk.org/)
 [![Maven Central](https://img.shields.io/badge/Maven%20Central-0.7.x-blue.svg)](https://central.sonatype.com/)
@@ -7,9 +7,31 @@
 
 **Making future events happen reliably, powered by Java 25 Virtual Threads.**
 
-LoomQ is a high-performance standalone delayed task scheduling engine. It is not a general-purpose message queue or workflow engine—its core value proposition is ensuring that future events occur reliably at the appointed time.
+LoomQ is a durable time kernel for distributed systems. It focuses on scheduling, rescheduling, expiry, recovery, retry orchestration, and deadline handling.
 
-> **Note:** v0.7.x is the split between the embeddable core and the standalone HTTP service. `loomq-core` contains the engine, while `loomq-server` provides the HTTP shell and delivery integration.
+> **Note:** `Intent` is the public model. Some historical docs still use `task` terminology, but new material should prefer `Intent`.
+
+## What LoomQ Is / Isn't
+
+**LoomQ is:**
+
+- a durable scheduling kernel for future events
+- a recovery-friendly time layer for embedded or standalone use
+- a shell-friendly core with SPI hooks for delivery and callbacks
+
+**LoomQ is not:**
+
+- a general-purpose message queue
+- a workflow engine
+- a lock or lease product baked into the core
+
+## Capability Maturity
+
+| Category | Examples |
+|----------|----------|
+| **Stable** | durable delayed execution, persistence + recovery, scheduling, retry orchestration, metrics baseline |
+| **Beta** | cluster plumbing, storage plugin surface, replication-related experiments |
+| **Not yet committed** | distributed coordination primitives, lock / lease semantics, leader election |
 
 ---
 
@@ -19,7 +41,7 @@ LoomQ is a high-performance standalone delayed task scheduling engine. It is not
 |---------|-------------|
 | **Five Precision Tiers** | ULTRA (10ms), FAST (50ms), HIGH (100ms), STANDARD (500ms), ECONOMY (1000ms) — choose the right precision for your use case |
 | **Durable Persistence** | ASYNC mode for <100ms RPO, DURABLE mode for zero data loss |
-| **Virtual Threads Native** | Zero thread pool tuning, handle millions of concurrent delayed tasks effortlessly |
+| **Virtual Threads Native** | Zero thread pool tuning, handle millions of concurrent intents effortlessly |
 | **O(1) Expiration** | Time-wheel bucket expiration with constant time complexity |
 | **Netty HTTP Layer** | High-performance HTTP server with memory-mapped zero-copy WAL |
 | **Observability** | Prometheus metrics + HdrHistogram high-precision latency statistics |
@@ -41,13 +63,13 @@ LoomQ is a high-performance standalone delayed task scheduling engine. It is not
 
 | Tier | Window | QPS | Efficiency | P99 Latency | Use Case |
 |------|--------|-----|------------|-------------|----------|
-| ULTRA | 10ms | 45,949 | 2.5% | ≤15ms | Distributed lock renewal |
+| ULTRA | 10ms | 45,949 | 2.5% | ≤15ms | High-frequency heartbeats / short deadlines |
 | FAST | 50ms | 44,718 | 5% | ≤60ms | Message retry, backoff |
 | HIGH | 100ms | 40,710 | 10% | ≤120ms | Default tier |
 | STANDARD | 500ms | 39,974 | 25% | ≤550ms | **Recommended**, order timeout |
-| ECONOMY | 1000ms | 42,295 | 25% | ≤1100ms | Massive long-delay tasks |
+| ECONOMY | 1000ms | 42,295 | 25% | ≤1100ms | Massive long-delay intents |
 
-**Key Insight:** ECONOMY tier achieves 10x per-thread efficiency compared to ULTRA, making it ideal for massive long-delay tasks.
+**Key Insight:** ECONOMY tier achieves 10x per-thread efficiency compared to ULTRA, making it ideal for massive long-delay intents.
 
 ---
 
@@ -84,7 +106,7 @@ java -jar loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar
 
 Server starts at `http://localhost:8080` by default.
 
-### Create Your First Delayed Task
+### Create Your First Intent
 
 ```bash
 # Create an intent that triggers in 30 seconds
@@ -100,7 +122,7 @@ curl -X POST http://localhost:8080/v1/intents \
   }'
 ```
 
-### Check Task Status
+### Check Intent Status
 
 ```bash
 curl http://localhost:8080/v1/intents/{intentId}
@@ -122,9 +144,9 @@ public class MyApp {
         EmbeddedDemo loomq = new EmbeddedDemo();
         loomq.start();
 
-        // Create a delayed task with local callback
+        // Create an intent with local callback
         loomq.createIntent(5000, PrecisionTier.STANDARD, intent -> {
-            System.out.println("Task triggered: " + intent.getIntentId());
+            System.out.println("Intent triggered: " + intent.getIntentId());
             // Your business logic here
         });
 
@@ -136,7 +158,7 @@ public class MyApp {
 See `src/test/java/com/loomq/embedded/EmbeddedDemo.java` for the full example.
 
 **Use Cases for Embedded Mode:**
-- Single-node applications with delayed task needs
+- Single-node applications with delayed event needs
 - Integration tests without external dependencies
 - Resource-constrained environments (no HTTP server overhead)
 - Building custom shells on top of LoomQ core
@@ -147,16 +169,16 @@ See `src/test/java/com/loomq/embedded/EmbeddedDemo.java` for the full example.
 
 | Tier | Window | Max Delay | Recommended Concurrency | Batch Strategy | Use Case |
 |------|--------|-----------|------------------------|----------------|----------|
-| ULTRA | 10ms | <1min | 10-50 | Single task | Distributed lock renewal, heartbeat |
+| ULTRA | 10ms | <1min | 10-50 | Single intent | Heartbeat, short deadline |
 | FAST | 50ms | <5min | 50-100 | Small batch | Message retry, exponential backoff |
 | HIGH | 100ms | <30min | 100-500 | Medium batch | Default choice, general purpose |
 | STANDARD | 500ms | <24h | 500-2000 | Large batch | **Recommended**, order timeout, scheduled notifications |
-| ECONOMY | 1000ms | >24h | 2000+ | Massive batch | Long-delay tasks, data retention policies |
+| ECONOMY | 1000ms | >24h | 2000+ | Massive batch | Long-delay intents, data retention policies |
 
 **Selection Guide:**
-- For distributed locks: **ULTRA** or **FAST**
+- For high-frequency deadlines or heartbeats: **ULTRA** or **FAST**
 - For order timeouts: **STANDARD** (best balance)
-- For massive long-delay tasks: **ECONOMY**
+- For massive long-delay intents: **ECONOMY**
 
 ---
 
@@ -187,10 +209,10 @@ Low-precision tiers (STANDARD, ECONOMY) benefit from automatic batch collection 
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/v1/intents` | Create a delayed task |
-| GET | `/v1/intents/{id}` | Get task status |
-| PATCH | `/v1/intents/{id}` | Update task |
-| POST | `/v1/intents/{id}/cancel` | Cancel task |
+| POST | `/v1/intents` | Create an intent |
+| GET | `/v1/intents/{id}` | Get intent status |
+| PATCH | `/v1/intents/{id}` | Update intent |
+| POST | `/v1/intents/{id}/cancel` | Cancel intent |
 | POST | `/v1/intents/{id}/fire-now` | Trigger immediately |
 | GET | `/health` | Health check |
 | GET | `/metrics` | Prometheus metrics |
@@ -224,7 +246,7 @@ Low-precision tiers (STANDARD, ECONOMY) benefit from automatic batch collection 
 |--------|-------|-------|
 | **ASYNC QPS** | 424,077 | Network + memory bandwidth bound |
 | **DURABLE QPS** | >150,000 | NVMe SSD fsync bound |
-| **Max Concurrent Tasks** | 10M+ | 8GB heap memory |
+| **Max Concurrent Intents** | 10M+ | 8GB heap memory |
 | **P99 Latency (ULTRA)** | ≤15ms | 10ms precision window |
 | **P99 Latency (STANDARD)** | ≤550ms | 500ms precision window, **recommended** |
 
@@ -246,9 +268,9 @@ Low-precision tiers (STANDARD, ECONOMY) benefit from automatic batch collection 
 | FAST | 5% | 2x | Message retry, backoff |
 | HIGH | 10% | 4x | Default precision |
 | **STANDARD** | **15%** | **6x** | **Recommended for production** |
-| ECONOMY | 25% | 10x | Massive long-delay tasks |
+| ECONOMY | 25% | 10x | Massive long-delay intents |
 
-**Key Insight**: ECONOMY tier achieves 10x the resource efficiency of ULTRA. For tasks with delays >1 hour, ECONOMY is strongly recommended.
+**Key Insight**: ECONOMY tier achieves 10x the resource efficiency of ULTRA. For intents with delays >1 hour, ECONOMY is strongly recommended.
 
 ---
 
@@ -260,7 +282,7 @@ LoomQ v0.6.x was the **last single-module standalone version**. The following li
 |------------|-------------|--------|
 | **REPLICATED ACK Not Implemented** | Distributed replication requires consensus protocol (Raft). REPLICATED mode currently falls back to DURABLE. | Planned for v0.7.0 |
 | **WAL in JSON Format** | WAL uses human-readable JSON instead of binary. Binary encoding would yield marginal gains (327ns/record already achieved). | Intentional trade-off |
-| **Memory-Bound Capacity** | IntentStore is in-memory only. ~10M tasks require ~8GB heap. Plugin storage engine planned for v0.8.0. | Documented constraint |
+| **Memory-Bound Capacity** | IntentStore is in-memory only. ~10M intents require ~8GB heap. Plugin storage engine planned for v0.8.0. | Documented constraint |
 | **No Grafana Dashboard** | Observability limited to Prometheus metrics endpoint. Grafana templates are community-contributable. | Non-blocking |
 | **Single-Node Only** | No clustering, failover, or partition tolerance in v0.6.x. Multi-node support is the primary v0.7.0 goal. | Architectural boundary |
 
@@ -289,7 +311,7 @@ The following checklist defines v0.6.x completion. All items are now **✓ Done*
 - REST API v2 with OpenAPI spec
 
 ### v0.8.0
-- **Loomqex**: Distributed lock shell built on LoomQ (reference implementation)
+- **Loomqex**: A future shell built on top of LoomQ for lease / lock semantics, once the kernel boundary is fully validated
 - Multi-node clustering with Raft consensus
 - Web-based management console
 
@@ -299,6 +321,17 @@ The following checklist defines v0.6.x completion. All items are now **✓ Done*
 - Schema registry for callback payloads
 
 ---
+
+## Development & Release
+
+The current engineering baseline lives in the docs:
+
+- [Release checklist](docs/engineering/release-checklist.md)
+- [Benchmark checklist](docs/engineering/benchmark-checklist.md)
+- [Configuration reference](docs/operations/CONFIGURATION.md)
+- [Core model](docs/architecture/core-model.md)
+
+These documents are the source of truth for how we describe the current kernel and how we publish it.
 
 ## Contributing
 

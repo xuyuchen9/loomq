@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 调度器端到端性能基准测试
  *
- * 测量各档位从任务到期到实际投递的触发吞吐。
+ * 测量各档位从 Intent 到期到实际投递的触发吞吐。
  *
  * @author loomq
  * @since v0.6.2
@@ -60,10 +60,10 @@ class SchedulerTriggerBenchmark {
 
         // 测试参数
         int tasksPerTier = 1000;
-        // 任务在 2 秒后触发（给调度器准备时间）
+        // Intent 在 2 秒后触发（给调度器准备时间）
         Instant executeAt = Instant.now().plusMillis(2000);
 
-        // 创建各档位任务
+        // 创建各档位 Intent
         Map<PrecisionTier, AtomicInteger> createdCounts = new EnumMap<>(PrecisionTier.class);
         for (PrecisionTier tier : PrecisionTier.values()) {
             createdCounts.put(tier, new AtomicInteger(0));
@@ -91,7 +91,7 @@ class SchedulerTriggerBenchmark {
                 scheduler.schedule(intent);
                 createdCounts.get(tier).incrementAndGet();
             }
-            logger.info("  {}: 已创建 {} 个任务", tier, tasksPerTier);
+            logger.info("  {}: 已创建 {} 个 Intent", tier, tasksPerTier);
         }
 
         // 等待任务进入桶
@@ -127,13 +127,13 @@ class SchedulerTriggerBenchmark {
             }
 
             if (allStable && stableCounts.size() == PrecisionTier.values().length) {
-                logger.info("所有档位任务处理已稳定");
+                logger.info("所有档位 Intent 处理已稳定");
                 break;
             }
 
             // 打印进度
             long elapsed = System.currentTimeMillis() - waitStart;
-            logger.info("等待任务处理... 已等待 {}ms", elapsed);
+            logger.info("等待 Intent 处理... 已等待 {}ms", elapsed);
         }
 
         long totalWaitMs = System.currentTimeMillis() - waitStart;
@@ -205,8 +205,8 @@ class SchedulerTriggerBenchmark {
             initialCounts.put(tier, metrics.getIntentCountsByTier().getOrDefault(tier, 0L));
         }
 
-        // 同时创建 ULTRA 和 ECONOMY 任务
-        logger.info("创建 {} ULTRA 任务, {} ECONOMY 任务", ultraTasks, economyTasks);
+        // 同时创建 ULTRA 和 ECONOMY Intent
+        logger.info("创建 {} ULTRA Intent, {} ECONOMY Intent", ultraTasks, economyTasks);
 
         for (int i = 0; i < ultraTasks; i++) {
             Intent intent = createTestIntent("isolation-ultra-" + i, PrecisionTier.ULTRA, executeAt);
@@ -239,7 +239,7 @@ class SchedulerTriggerBenchmark {
             ultraCompleted = ultraCurrent - ultraInitial;
 
             if (ultraCompleted >= ultraTasks) {
-                logger.info("ULTRA 任务全部完成，耗时 {}ms",
+                logger.info("ULTRA Intent 全部完成，耗时 {}ms",
                     System.currentTimeMillis() - waitStart);
                 break;
             }
@@ -248,18 +248,18 @@ class SchedulerTriggerBenchmark {
         long ultraProcessTime = System.currentTimeMillis() - waitStart;
 
         // 在当前测试环境下（webhook 失败），验证 ULTRA 能处理任务即可
-        // 检查 intentStore 中的任务状态变化
+        // 检查 intentStore 中的 Intent 状态变化
         long processedCount = intentStore.getAllIntents().values().stream()
             .filter(i -> i.getIntentId().startsWith("isolation-ultra-"))
             .filter(i -> i.getStatus() != IntentStatus.SCHEDULED)
             .count();
 
-        logger.info("ULTRA 任务处理统计: 已处理 {} / {} ({}ms)",
+        logger.info("ULTRA Intent 处理统计: 已处理 {} / {} ({}ms)",
             processedCount, ultraTasks, ultraProcessTime);
 
-        // 只要任务被尝试处理即可（由于 webhook 失败，任务可能进入重试状态）
+        // 只要 Intent 被尝试处理即可（由于 webhook 失败，Intent 可能进入重试状态）
         assertTrue(processedCount > 0 || ultraTasks == 0,
-            String.format("ULTRA 任务应至少部分被处理，实际处理 %d/%d",
+            String.format("ULTRA Intent 应至少部分被处理，实际处理 %d/%d",
                 processedCount, ultraTasks));
 
         logger.info("  档位隔离验证通过（在当前 webhook 失败环境下）");
@@ -280,11 +280,11 @@ class SchedulerTriggerBenchmark {
                 metrics.getBackpressureEventsByTier().getOrDefault(tier, 0L));
         }
 
-        // 创建大量 ULTRA 任务（超过其 100 并发限制）
+        // 创建大量 ULTRA Intent（超过其 100 并发限制）
         int overloadTasks = 500;
         Instant executeAt = Instant.now().plusMillis(500);
 
-        logger.info("创建 {} 个 ULTRA 任务（超过并发限制）", overloadTasks);
+        logger.info("创建 {} 个 ULTRA Intent（超过并发限制）", overloadTasks);
 
         for (int i = 0; i < overloadTasks; i++) {
             Intent intent = createTestIntent("backpressure-ultra-" + i, PrecisionTier.ULTRA, executeAt);

@@ -535,24 +535,24 @@ public class ClusterCoordinator implements AutoCloseable {
     }
 
     /**
-     * 路由任务到分片节点（带版本检查）
+     * 路由 Intent 到分片节点（带版本检查）
      */
-    public RoutingTable.RoutingResult route(String taskId, Optional<Long> expectedVersion) {
-        return routingTable.route(taskId, expectedVersion);
+    public RoutingTable.RoutingResult route(String intentId, Optional<Long> expectedVersion) {
+        return routingTable.route(intentId, expectedVersion);
     }
 
     /**
      * 简单路由（不带版本检查）
      */
-    public Optional<ShardNode> route(String taskId) {
-        return routingTable.routeSimple(taskId);
+    public Optional<ShardNode> route(String intentId) {
+        return routingTable.routeSimple(intentId);
     }
 
     /**
-     * 检查任务是否应由本地节点处理
+     * 检查 Intent 是否应由本地节点处理
      */
-    public boolean isLocalTask(String taskId) {
-        Optional<ShardNode> node = route(taskId);
+    public boolean isLocalTask(String intentId) {
+        Optional<ShardNode> node = route(intentId);
         return node.isPresent() &&
                 node.get().getShardId().equals(localNode.getShardId());
     }

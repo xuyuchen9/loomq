@@ -1,181 +1,131 @@
-# LoomQ 配置文档
+# LoomQ 配置说明
 
-## 配置文件
+LoomQ 当前使用两层配置来源：
 
-配置文件位于 `src/main/resources/application.yml`。
+1. `classpath:application.yml`
+2. `file:./config/application.yml`
 
-## 服务器配置
+同时，少量环境变量或启动参数也会覆盖配置，例如 `LOOMQ_NODE_ID`、`LOOMQ_DATA_DIR`、`loomq.node.id` 和 `loomq.data.dir`。
 
-```yaml
-loomq:
-  server:
-    host: "0.0.0.0"      # 监听地址
-    port: 8080           # 监听端口
-```
+## 配置优先级
 
-## WAL 配置
+从高到低：
 
-```yaml
-loomq:
-  wal:
-    data-dir: "./data/wal"           # WAL 数据目录
-    segment-size-mb: 64              # 单个段文件大小
-    flush-strategy: "async"          # 刷盘策略: per_record | batch | async
-    batch-flush-interval-ms: 100     # 批量刷盘间隔
-    checkpoint-interval: 100000      # 检查点间隔（记录数）
-```
+1. JVM 系统属性
+2. 外部 `./config/application.yml`
+3. classpath `application.yml`
+4. `@DefaultValue`
 
-### 刷盘策略说明
+## 当前有效配置项
 
-| 策略 | 说明 | RPO | 性能 |
-|------|------|-----|------|
-| `per_record` | 每条记录 fsync | 0 | 低 |
-| `batch` | 批量 fsync | <100ms | 中 |
-| `async` | 异步刷盘 | <1s | 高 |
+### Server
 
-## 调度器配置
+| Key | 默认值 | 作用 | 生产建议 |
+|-----|--------|------|----------|
+| `server.host` | `0.0.0.0` | 绑定地址 | 生产环境绑定到明确网卡或容器入口 |
+| `server.port` | `8080` | HTTP 监听端口 | 与负载均衡和探针端口保持一致 |
+| `server.backlog` | `1024` | 连接队列长度 | 高并发入口可适度调大 |
+| `server.virtual_threads` | `true` | 是否启用虚拟线程处理请求 | 默认开启 |
+| `server.max_request_size` | `10485760` | 请求体大小上限，字节 | 按回调体积上限设置 |
+| `server.thread_pool_size` | `200` | 非虚拟线程模式下的线程池大小 | 仅在关闭虚拟线程时使用 |
 
-```yaml
-loomq:
-  scheduler:
-    bucket-granularity-ms: 100      # 时间桶粒度（毫秒）
-    max-pending-tasks: 1000000      # 最大待处理任务数
-```
+### Netty
 
-### 时间桶粒度说明
+| Key | 默认值 | 作用 | 生产建议 |
+|-----|--------|------|----------|
+| `netty.host` | `0.0.0.0` | Netty 绑定地址 | 与 `server.host` 保持一致 |
+| `netty.port` | `8080` | Netty 监听端口 | 与 `server.port` 保持一致 |
+| `netty.bossThreads` | `1` | boss 线程数 | 一般保持 1 |
+| `netty.workerThreads` | `0` | worker 线程数 | `0` 表示使用 Netty 默认值 |
+| `netty.maxContentLength` | `10485760` | HTTP body 上限，字节 | 与 `server.max_request_size` 对齐 |
+| `netty.useEpoll` | `true` | Linux epoll 优化 | Linux 上保持开启 |
+| `netty.pooledAllocator` | `true` | 是否使用池化分配器 | 生产建议开启 |
+| `netty.soBacklog` | `1024` | socket backlog | 高峰连接场景可调大 |
+| `netty.tcpNoDelay` | `true` | 关闭 Nagle | 默认开启 |
+| `netty.connectionTimeoutMs` | `30000` | 连接超时，毫秒 | 视网络环境调整 |
+| `netty.idleTimeoutSeconds` | `60` | 空闲超时，秒 | 视负载均衡器策略调整 |
+| `netty.maxConnections` | `10000` | 最大连接数 | 按机器规格设置 |
+| `netty.writeBufferHighWaterMark` | `1048576` | 写缓冲高水位，字节 | 视响应体大小调整 |
+| `netty.writeBufferLowWaterMark` | `524288` | 写缓冲低水位，字节 | 应小于 high water mark |
+| `netty.maxConcurrentBusinessRequests` | `50000` | 业务并发上限 | 保护下游 callback 路径 |
+| `netty.gracefulShutdownTimeoutMs` | `30000` | 优雅停机等待时间，毫秒 | 与运维停机窗口对齐 |
 
-| 粒度 | 吞吐量 | 精度 | 适用场景 |
-|------|--------|------|----------|
-| 1ms | ~50K QPS | ±1ms | 高精度场景 |
-| 10ms | ~200K QPS | ±10ms | 中等精度 |
-| 100ms | ~600K QPS | ±100ms | 通用场景（默认） |
-| 1000ms | ~800K QPS | ±1s | 大批量低精度 |
+### WAL / 持久化
 
-## 重试配置
+| Key | 默认值 | 作用 | 生产建议 |
+|-----|--------|------|----------|
+| `wal.data_dir` | `./data/wal` | WAL 根目录 | 放在独立磁盘或卷上 |
+| `wal.segment_size_mb` | `64` | 段文件大小 | 维持默认起步即可 |
+| `wal.flush_strategy` | `batch` | 刷盘策略 | 生产通常优先 `batch` |
+| `wal.batch_flush_interval_ms` | `100` | 批量刷盘间隔，毫秒 | 结合 RPO 目标调整 |
+| `wal.sync_on_write` | `false` | 写时同步刷盘 | 仅在极端可靠性要求下开启 |
+| `wal.engine` | `memory_segment` | WAL 引擎 | 当前主路径 |
+| `wal.memory_segment.initial_size_mb` | `64` | 初始映射大小，MB | 与预计负载匹配 |
+| `wal.memory_segment.max_size_mb` | `1024` | 最大映射大小，MB | 与磁盘容量匹配 |
+| `wal.memory_segment.flush_threshold_kb` | `64` | 刷盘阈值，KB | 影响吞吐与延迟平衡 |
+| `wal.memory_segment.flush_interval_ms` | `10` | 刷盘间隔，毫秒 | 低延迟场景可保持较低值 |
+| `wal.memory_segment.stripe_count` | `16` | 条带数量 | 影响等待和唤醒分布 |
+| `wal.memory_segment.min_batch_size` | `100` | 最小批量 | 与吞吐目标相关 |
+| `wal.memory_segment.adaptive_flush_enabled` | `true` | 自适应刷盘 | 建议保持开启 |
+| `wal.replication.enabled` | `false` | 复制是否开启 | 当前按实验能力看待 |
+| `wal.replication.replica_host` | `localhost` | 副本地址 | 仅在复制启用时有意义 |
+| `wal.replication.replica_port` | `9090` | 副本端口 | 仅在复制启用时有意义 |
+| `wal.replication.ack_timeout_ms` | `30000` | ACK 超时，毫秒 | 仅在复制启用时有意义 |
+| `wal.replication.require_replicated_ack` | `false` | 是否必须复制 ACK | 仅在复制启用时有意义 |
 
-```yaml
-loomq:
-  retry:
-    policy: "fixed"                 # 策略: fixed | exponential
-    max-retries: 3                  # 最大重试次数
-    fixed-interval-ms: 5000         # 固定间隔（fixed 策略）
-    initial-delay-ms: 1000          # 初始延迟（exponential 策略）
-    base: 2.0                       # 指数基数（exponential 策略）
-    max-delay-ms: 60000             # 最大延迟（exponential 策略）
-```
+### Scheduler
 
-### 重试策略说明
+| Key | 默认值 | 作用 | 生产建议 |
+|-----|--------|------|----------|
+| `scheduler.max_pending_tasks` | `1000000` | 最大待处理 Intent 数 | 按 heap 和恢复时长评估 |
 
-**固定间隔 (fixed)**
-```
-重试延迟 = fixed-interval-ms
-例: 5s, 5s, 5s, ...
-```
+### Dispatcher / Retry / Recovery
 
-**指数退避 (exponential)**
-```
-重试延迟 = min(initial-delay-ms * base^(n-1), max-delay-ms)
-例: 1s, 2s, 4s, 8s, 16s, 32s, 60s (达到上限)
-```
+| Key | 默认值 | 作用 |
+|-----|--------|------|
+| `dispatcher.http_timeout_ms` | `3000` | HTTP 超时 |
+| `dispatcher.max_concurrent_dispatches` | `1000` | 并发投递上限 |
+| `dispatcher.connect_timeout_ms` | `5000` | 连接超时 |
+| `dispatcher.read_timeout_ms` | `3000` | 读取超时 |
+| `dispatcher.follow_redirects` | `true` | 是否跟随重定向 |
+| `dispatcher.retry_on_timeout` | `true` | 超时是否重试 |
+| `dispatcher.backoff_strategy` | `exponential` | 退避策略 |
+| `retry.initial_delay_ms` | `1000` | 初始退避 |
+| `retry.max_delay_ms` | `60000` | 最大退避 |
+| `retry.multiplier` | `2.0` | 指数退避倍率 |
+| `retry.default_max_retry` | `5` | 默认最大重试次数 |
+| `recovery.batch_size` | `1000` | 恢复批次大小 |
+| `recovery.sleep_ms` | `10` | 恢复轮询间隔 |
+| `recovery.concurrency_limit` | `100` | 恢复并发上限 |
+| `recovery.safe_mode` | `false` | 安全模式 |
+| `recovery.auto_start` | `true` | 启动时是否自动恢复 |
+| `recovery.checkpoint_interval_sec` | `60` | 检查点间隔，秒 |
 
-## 分发配置
+### Cluster / Security / Metrics / Health / Logging
 
-```yaml
-loomq:
-  dispatcher:
-    http-timeout-ms: 3000           # HTTP 超时时间
-    max-concurrent-dispatches: 1000 # 最大并发分发音
-```
+这些项已经在配置文件里预留，适合后续扩展：
 
-## 恢复配置
+- `cluster.*`
+- `security.*`
+- `metrics.*`
+- `health.*`
+- `logging.*`
 
-```yaml
-loomq:
-  recovery:
-    batch-size: 1000                # 恢复批处理大小
-    concurrency-limit: 100          # 恢复并发限制
-    safe-mode: false                # 安全模式（详细日志）
-```
+## 启动摘要
 
-## 集群配置
+当前 `loomq-server` 启动时会打印关键运行摘要，包括：
 
-```yaml
-loomq:
-  cluster:
-    enabled: false                  # 是否启用集群模式
-    shard-count: 4                  # 分片数量
-    heartbeat-interval-ms: 5000     # 心跳间隔
-    failure-timeout-ms: 15000       # 故障超时
-    virtual-nodes: 150              # 虚拟节点数（一致性哈希）
-```
+- `nodeId`
+- `dataDir`
+- `server` 和 `netty` 绑定参数
+- `wal` 的引擎与刷盘配置
+- `scheduler`、`retry`、`recovery` 的核心阈值
 
-### 集群启动参数
+这能帮助排查“配置写了但没有生效”或“节点之间配置不一致”的问题。
 
-```bash
-# 节点 1
-java -Dloomq.shard.id=0 \
-     -Dloomq.shard.count=2 \
-     -Dloomq.cluster.enabled=true \
-     --enable-preview -jar loomq.jar
+## 一点约定
 
-# 节点 2
-java -Dloomq.shard.id=1 \
-     -Dloomq.shard.count=2 \
-     -Dloomq.cluster.enabled=true \
-     --enable-preview -jar loomq.jar
-```
-
-## 环境变量覆盖
-
-所有配置都可通过环境变量覆盖：
-
-```bash
-# 格式: LOOMQ_<SECTION>_<KEY>
-export LOOMQ_SERVER_PORT=9090
-export LOOMQ_WAL_DATA_DIR=/data/wal
-export LOOMQ_RETRY_POLICY=exponential
-```
-
-## 完整配置示例
-
-```yaml
-loomq:
-  server:
-    host: "0.0.0.0"
-    port: 8080
-
-  wal:
-    data-dir: "./data/wal"
-    segment-size-mb: 64
-    flush-strategy: "async"
-    batch-flush-interval-ms: 100
-    checkpoint-interval: 100000
-
-  scheduler:
-    bucket-granularity-ms: 100
-    max-pending-tasks: 1000000
-
-  dispatcher:
-    http-timeout-ms: 3000
-    max-concurrent-dispatches: 1000
-
-  retry:
-    policy: "fixed"
-    max-retries: 3
-    fixed-interval-ms: 5000
-    initial-delay-ms: 1000
-    base: 2.0
-    max-delay-ms: 60000
-
-  recovery:
-    batch-size: 1000
-    concurrency-limit: 100
-    safe-mode: false
-
-  cluster:
-    enabled: false
-    shard-count: 4
-    heartbeat-interval-ms: 5000
-    failure-timeout-ms: 15000
-    virtual-nodes: 150
-```
+- 新增配置项时，优先补默认值和单位
+- 公共文档里优先使用 `Intent`，不要再把新文档写成 `task` 体系
+- 如果某个配置尚未真正进入执行路径，要在文档里明确标成“预留”或“实验”
+- `loomq.data.dir` 当前作为 WAL 根目录覆盖项使用，优先级高于 `wal.data_dir`

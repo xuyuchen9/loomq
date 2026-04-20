@@ -12,16 +12,16 @@ public enum ErrorCode {
     INTERNAL_ERROR(2, "internal error"),
     SERVICE_UNAVAILABLE(3, "service unavailable"),
 
-    // 任务相关错误 100-199
-    TASK_NOT_FOUND(100, "task not found"),
-    TASK_ALREADY_EXISTS(101, "task already exists"),
-    TASK_STATUS_INVALID(102, "task status invalid for this operation"),
-    TASK_ALREADY_TERMINATED(103, "task already terminated"),
-    TASK_CANNOT_CANCEL(104, "task cannot be cancelled"),
-    TASK_CANNOT_MODIFY(105, "task cannot be modified"),
-    VERSION_CONFLICT(106, "version conflict, task has been modified"),
-    DUPLICATE_TASK(107, "duplicate task"),
-    TASK_ALREADY_COMPLETED(108, "task already completed"),
+    // Intent 相关错误 100-199
+    TASK_NOT_FOUND(100, "intent not found"),
+    TASK_ALREADY_EXISTS(101, "intent already exists"),
+    TASK_STATUS_INVALID(102, "intent status invalid for this operation"),
+    TASK_ALREADY_TERMINATED(103, "intent already terminated"),
+    TASK_CANNOT_CANCEL(104, "intent cannot be cancelled"),
+    TASK_CANNOT_MODIFY(105, "intent cannot be modified"),
+    VERSION_CONFLICT(106, "version conflict, intent has been modified"),
+    DUPLICATE_TASK(107, "duplicate intent"),
+    TASK_ALREADY_COMPLETED(108, "intent already completed"),
 
     // 幂等相关错误 200-299
     IDEMPOTENCY_KEY_CONFLICT(200, "idempotency key conflict"),

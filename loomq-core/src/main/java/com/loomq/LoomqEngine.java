@@ -70,10 +70,12 @@ public class LoomqEngine implements AutoCloseable {
     // ========== 配置 ==========
     private final Path walDir;
     private final String nodeId;
+    private final WalConfig walConfig;
 
     private LoomqEngine(Builder builder) {
         this.nodeId = builder.nodeId != null ? builder.nodeId : "default-node";
         this.walDir = builder.walDir != null ? builder.walDir : Path.of("./data");
+        this.walConfig = builder.walConfig != null ? builder.walConfig : defaultWalConfig();
         this.callbackExecutor = builder.callbackExecutor != null
             ? builder.callbackExecutor
             : Executors.newVirtualThreadPerTaskExecutor();
@@ -85,7 +87,7 @@ public class LoomqEngine implements AutoCloseable {
 
             // 初始化组件
             this.intentStore = new IntentStore();
-            this.walWriter = new SimpleWalWriter(createWalConfig(), "shard-0");
+            this.walWriter = new SimpleWalWriter(walConfig, "shard-0");
             this.metricsCollector = MetricsCollector.getInstance();
             this.recoveryPipeline = new RecoveryPipeline(walDir);
 
@@ -107,7 +109,17 @@ public class LoomqEngine implements AutoCloseable {
                 builder.callbackHandler
             );
 
-            logger.info("LoomqEngine created: nodeId={}, walDir={}", nodeId, walDir);
+            logger.info(
+                "LoomqEngine created: nodeId={}, walDir={}, walEngine={}, flushStrategy={}, syncOnWrite={}, segmentSizeMb={}, flushThresholdKb={}, stripeCount={}",
+                nodeId,
+                walDir,
+                walConfig.engine(),
+                walConfig.flushStrategy(),
+                walConfig.syncOnWrite(),
+                walConfig.segmentSizeMb(),
+                walConfig.memorySegmentFlushThresholdKb(),
+                walConfig.memorySegmentStripeCount()
+            );
 
         } catch (IOException e) {
             throw new RuntimeException("Failed to initialize LoomqEngine", e);
@@ -328,7 +340,7 @@ public class LoomqEngine implements AutoCloseable {
         }
     }
 
-    private WalConfig createWalConfig() {
+    private WalConfig defaultWalConfig() {
         return new WalConfig() {
             @Override
             public String dataDir() {
@@ -431,6 +443,7 @@ public class LoomqEngine implements AutoCloseable {
     public static class Builder {
         private Path walDir;
         private String nodeId;
+        private WalConfig walConfig;
         private Executor callbackExecutor;
         private CallbackHandler callbackHandler;
         private DeliveryHandler deliveryHandler;
@@ -443,6 +456,11 @@ public class LoomqEngine implements AutoCloseable {
 
         public Builder nodeId(String nodeId) {
             this.nodeId = nodeId;
+            return this;
+        }
+
+        public Builder walConfig(WalConfig walConfig) {
+            this.walConfig = walConfig;
             return this;
         }
 

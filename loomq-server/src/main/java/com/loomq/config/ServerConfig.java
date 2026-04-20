@@ -23,7 +23,7 @@ public interface ServerConfig extends Config {
      * 操作系统连接队列大小，0 表示使用系统默认值
      */
     @Key("server.backlog")
-    @DefaultValue("0")
+    @DefaultValue("1024")
     int backlog();
 
     /**

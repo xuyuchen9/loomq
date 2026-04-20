@@ -249,7 +249,7 @@ public class ReplicationManager implements AutoCloseable {
             record.getOffset(), record.getType());
 
         // 硬约束 #4：幂等性检查
-        // 实际幂等检查在应用层（TaskStore）处理
+        // 实际幂等检查在应用层（IntentStore）处理
         // 这里只负责调用应用处理器
 
         if (recordApplier != null) {

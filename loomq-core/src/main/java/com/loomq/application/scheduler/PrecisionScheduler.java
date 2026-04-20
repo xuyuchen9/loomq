@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * 精度调度器 (v0.5.1)
  *
- * 支持多精度档位的任务调度，每个档位独立的扫描线程。
+ * 支持多精度档位的 Intent 调度，每个档位独立的扫描线程。
  * 核心架构：虚拟线程独立休眠 + 分层 Bucket 唤醒。
  *
  * v0.7.1: 迁移至 loomq-core，使用 DeliveryHandler SPI 接口投递
@@ -59,7 +59,7 @@ public class PrecisionScheduler {
     // 档位级批量队列（使用LinkedBlockingDeque支持队首插入和阻塞操作）
     private final Map<PrecisionTier, LinkedBlockingDeque<Intent>> tierDispatchQueues;
 
-    // 按精度档位的扫描任务调度器
+    // 按精度档位的扫描调度器
     private final Map<PrecisionTier, ScheduledExecutorService> scanSchedulers;
     private final Map<PrecisionTier, ScheduledFuture<?>> scanTasks;
 
@@ -143,7 +143,7 @@ public class PrecisionScheduler {
 
         logger.info("PrecisionScheduler starting...");
 
-        // 为每个精度档位启动独立的扫描任务
+        // 为每个精度档位启动独立的扫描循环
         for (PrecisionTier tier : PrecisionTier.values()) {
             startScanTask(tier);
         }
@@ -194,7 +194,7 @@ public class PrecisionScheduler {
         );
 
         scanTasks.put(tier, future);
-        logger.info("Started scan task for tier {} with interval {}ms", tier, intervalMs);
+        logger.info("Started scan cycle for tier {} with interval {}ms", tier, intervalMs);
     }
 
     /**
@@ -423,7 +423,7 @@ public class PrecisionScheduler {
 
                 if (!acquired) {
                     metrics.incrementBackpressureEvent(tier);
-                    logger.warn("Backpressure for tier {}: semaphore exhausted, batch {} tasks dropped",
+                    logger.warn("Backpressure for tier {}: semaphore exhausted, batch {} intents dropped",
                         tier, batch.size());
                     Thread.sleep(100);
                     continue;

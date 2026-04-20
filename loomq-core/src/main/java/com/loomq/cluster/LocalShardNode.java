@@ -239,15 +239,15 @@ public class LocalShardNode implements ShardNode {
      * 检查是否由当前分片负责
      * 基于一致性 Hash 的判断
      *
-     * @param taskId 任务 ID
+     * @param intentId Intent ID
      * @param router 路由器（用于计算 hash）
-     * @return true 如果该任务应由本分片处理
+     * @return true 如果该 Intent 应由本分片处理
      */
-    public boolean isResponsibleFor(String taskId, ShardRouter router) {
+    public boolean isResponsibleFor(String intentId, ShardRouter router) {
         if (!isAvailable()) {
             return false;
         }
-        ShardNode responsibleNode = router.route(taskId);
+        ShardNode responsibleNode = router.route(intentId);
         return responsibleNode != null && responsibleNode.getShardId().equals(getShardId());
     }
 
