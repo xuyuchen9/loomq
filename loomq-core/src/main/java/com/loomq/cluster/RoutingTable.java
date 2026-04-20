@@ -164,13 +164,13 @@ public class RoutingTable {
     }
 
     /**
-     * 根据 taskId 路由到分片节点（带版本检查）
+     * 根据 intentId 路由到分片节点（带版本检查）
      *
-     * @param taskId  任务 ID
+     * @param intentId Intent ID
      * @param reqVersion 请求的版本号（可选，用于一致性检查）
      * @return 路由结果
      */
-    public RoutingResult route(String taskId, Optional<Long> reqVersion) {
+    public RoutingResult route(String intentId, Optional<Long> reqVersion) {
         TableSnapshot snapshot = currentSnapshot.get();
 
         // 如果请求指定了版本号，检查是否匹配
@@ -182,7 +182,7 @@ public class RoutingTable {
             return RoutingResult.noRouterAvailable();
         }
 
-        ShardNode node = snapshot.router().route(taskId);
+        ShardNode node = snapshot.router().route(intentId);
         if (node == null) {
             return RoutingResult.noNodeAvailable();
         }
@@ -196,8 +196,8 @@ public class RoutingTable {
     /**
      * 简单路由（不带版本检查）
      */
-    public Optional<ShardNode> routeSimple(String taskId) {
-        return getRouter().map(r -> r.route(taskId));
+    public Optional<ShardNode> routeSimple(String intentId) {
+        return getRouter().map(r -> r.route(intentId));
     }
 
     /**

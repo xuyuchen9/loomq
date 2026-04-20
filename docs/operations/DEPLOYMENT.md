@@ -1,130 +1,78 @@
 # LoomQ Deployment Guide
-# Version: 0.7.0-SNAPSHOT
 
-## Table of Contents
+Version: `0.7.0-SNAPSHOT`
 
-1. [Quick Start](#quick-start)
-2. [Single Node Deployment](#single-node-deployment)
-3. [Cluster Deployment](#cluster-deployment)
-4. [Docker Deployment](#docker-deployment)
-5. [Kubernetes Deployment](#kubernetes-deployment)
-6. [Monitoring Setup](#monitoring-setup)
-7. [Configuration Reference](#configuration-reference)
-8. [Troubleshooting](#troubleshooting)
-
----
+This guide matches the current `Intent`-based standalone server.
 
 ## Quick Start
 
 ### Prerequisites
 
-- Java 21+ (OpenJDK or Eclipse Temurin)
-- Maven 3.8+ (for building from source)
-- Docker 20.10+ (for containerized deployment)
-- 4GB+ RAM available
+- JDK 25+
+- Maven 3.9+
+- Optional: Docker 20.10+ for containerized deployment
 
-### 1. Build from Source
+### Build
 
 ```bash
-# Clone repository
 git clone https://github.com/yourusername/loomq.git
 cd loomq
-
-# Build
 mvn clean package -DskipTests
-
-# Run
-java --enable-preview -jar target/loomq-0.1.0-SNAPSHOT-shaded.jar
 ```
 
-### 2. Docker Quick Start
+### Run
 
 ```bash
-# Pull and run
-docker run -d -p 8080:8080 loomq:0.7.0-SNAPSHOT
-
-# Or use docker-compose
-docker-compose up -d
+java -jar loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar
 ```
 
-### 3. Verify Installation
+The server listens on `http://localhost:8080` by default.
+
+### Verify
 
 ```bash
-# Health check
 curl http://localhost:8080/health
-
-# Create a test task
-curl -X POST http://localhost:8080/api/v1/tasks \
-  -H "Content-Type: application/json" \
-  -d '{"callbackUrl":"https://httpbin.org/post","delayMillis":5000}'
+curl http://localhost:8080/health/ready
+curl http://localhost:8080/metrics
 ```
 
----
+Create an `Intent`:
+
+```bash
+curl -X POST http://localhost:8080/v1/intents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "executeAt": "2026-04-20T10:00:00Z",
+    "deadline": "2026-04-20T10:05:00Z",
+    "precisionTier": "STANDARD",
+    "shardKey": "order-123",
+    "callback": {
+      "url": "https://httpbin.org/post",
+      "method": "POST"
+    }
+  }'
+```
 
 ## Single Node Deployment
 
-### System Requirements
+### Recommended Layout
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| CPU | 2 cores | 4+ cores |
-| RAM | 4GB | 8GB |
-| Disk | 10GB | 50GB+ SSD |
-| Network | 100Mbps | 1Gbps |
-
-### JVM Configuration
-
-```bash
-# Development
-java -Xms2g -Xmx2g \
-     -XX:+UseZGC \
-     --enable-preview \
-     -jar loomq.jar
-
-# Production (8GB heap)
-java -Xms8g -Xmx8g \
-     -XX:+UseZGC \
-     -XX:MaxGCPauseMillis=10 \
-     -XX:+DisableExplicitGC \
-     --enable-preview \
-     -jar loomq.jar
-
-# Production (16GB heap with large pages)
-java -Xms16g -Xmx16g \
-     -XX:+UseZGC \
-     -XX:+UseLargePages \
-     -XX:MaxGCPauseMillis=10 \
-     --enable-preview \
-     -jar loomq.jar
-```
-
-### Directory Structure
-
-```
+```text
 /opt/loomq/
 ├── bin/
-│   ├── loomq.jar
-│   └── start.sh
+│   └── loomq-server.jar
 ├── config/
 │   └── application.yml
 ├── data/
-│   └── wal/           # WAL segments
-├── logs/
-│   ├── loomq.log
-│   ├── audit.log
-│   ├── wal.log
-│   └── scheduler.log
-└── scripts/
-    └── backup.sh
+│   └── wal/
+└── logs/
 ```
 
-### Systemd Service
-
-Create `/etc/systemd/system/loomq.service`:
+### Systemd Example
 
 ```ini
 [Unit]
-Description=LoomQ Delayed Task Queue
+Description=LoomQ Standalone Server
 After=network.target
 
 [Service]
@@ -132,179 +80,59 @@ Type=simple
 User=loomq
 Group=loomq
 WorkingDirectory=/opt/loomq
-Environment="JVM_XMS=8g"
-Environment="JVM_XMX=8g"
-Environment="JVM_GC=ZGC"
-Environment="LOOMQ_PORT=8080"
+Environment="LOOMQ_SERVER_HOST=0.0.0.0"
+Environment="LOOMQ_SERVER_PORT=8080"
 Environment="LOOMQ_DATA_DIR=/opt/loomq/data/wal"
-ExecStart=/opt/loomq/bin/start.sh
-ExecStop=/bin/kill -TERM $MAINPID
+Environment="LOOMQ_NODE_ID=node-1"
+ExecStart=/opt/loomq/bin/loomq-server.jar
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=loomq
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Enable and start:
+### JVM Settings
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable loomq
-sudo systemctl start loomq
-sudo systemctl status loomq
+java -Xms2g -Xmx2g -XX:+UseZGC -jar loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar
 ```
 
----
+For production, increase heap according to your pending-intent target and WAL retention.
 
-## Cluster Deployment
+## Container Deployment
 
-### 3-Node Cluster Example
-
-**Node 1 (192.168.1.10):**
+### Docker
 
 ```bash
-export LOOMQ_SHARD_INDEX=0
-export LOOMQ_TOTAL_SHARDS=3
-export LOOMQ_NODES="shard-0:192.168.1.10:8080,shard-1:192.168.1.11:8080,shard-2:192.168.1.12:8080"
-export LOOMQ_PORT=8080
-./scripts/start.sh
-```
-
-**Node 2 (192.168.1.11):**
-
-```bash
-export LOOMQ_SHARD_INDEX=1
-export LOOMQ_TOTAL_SHARDS=3
-export LOOMQ_NODES="shard-0:192.168.1.10:8080,shard-1:192.168.1.11:8080,shard-2:192.168.1.12:8080"
-export LOOMQ_PORT=8080
-./scripts/start.sh
-```
-
-**Node 3 (192.168.1.12):**
-
-```bash
-export LOOMQ_SHARD_INDEX=2
-export LOOMQ_TOTAL_SHARDS=3
-export LOOMQ_NODES="shard-0:192.168.1.10:8080,shard-1:192.168.1.11:8080,shard-2:192.168.1.12:8080"
-export LOOMQ_PORT=8080
-./scripts/start.sh
-```
-
-### Load Balancer Configuration
-
-**Nginx Example:**
-
-```nginx
-upstream loomq_cluster {
-    least_conn;
-    server 192.168.1.10:8080;
-    server 192.168.1.11:8080;
-    server 192.168.1.12:8080;
-
-    keepalive 32;
-}
-
-server {
-    listen 80;
-
-    location / {
-        proxy_pass http://loomq_cluster;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_connect_timeout 5s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-
-    location /health {
-        access_log off;
-        proxy_pass http://loomq_cluster/health;
-    }
-}
-```
-
----
-
-## Docker Deployment
-
-### Single Container
-
-```bash
-# Build
 docker build -t loomq:0.7.0-SNAPSHOT .
-
-# Run with custom config
 docker run -d \
   --name loomq \
   -p 8080:8080 \
-  -v /host/data:/app/data/wal \
-  -v /host/config:/app/config \
-  -e JVM_XMS=4g \
-  -e JVM_XMX=4g \
-  -e LOOMQ_WAL_FLUSH_STRATEGY=batch \
+  -v /host/wal:/data/wal \
+  -e LOOMQ_SERVER_PORT=8080 \
+  -e LOOMQ_DATA_DIR=/data/wal \
+  -e LOOMQ_NODE_ID=node-1 \
   loomq:0.7.0-SNAPSHOT
 ```
 
 ### Docker Compose
 
-**Single Node:**
-
-```bash
-docker-compose up -d
-```
-
-**With Monitoring:**
-
-```bash
-docker-compose --profile monitoring up -d
-```
-
-**Cluster Mode:**
-
-```bash
-docker-compose --profile cluster up -d
-```
-
-### Docker Swarm
-
-```bash
-# Initialize swarm
-docker swarm init
-
-# Deploy stack
-docker stack deploy -c docker-compose.yml loomq
-
-# Scale
-docker service scale loomq_loomq-single=3
-```
-
----
+Use the repository `docker-compose.yml` if you want the bundled stack.
 
 ## Kubernetes Deployment
 
-### Namespace
+The current server is still a single-node standalone runtime, so Kubernetes should be treated as a packaging and orchestration layer rather than a full cluster-consensus setup.
 
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: loomq
-```
-
-### ConfigMap
+### Example ConfigMap
 
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: loomq-config
-  namespace: loomq
 data:
   application.yml: |
     server:
@@ -315,21 +143,17 @@ data:
       flush_strategy: "batch"
     scheduler:
       max_pending_tasks: 1000000
-    cluster:
-      enabled: true
 ```
 
-### StatefulSet
+### Example Deployment
 
 ```yaml
 apiVersion: apps/v1
-kind: StatefulSet
+kind: Deployment
 metadata:
   name: loomq
-  namespace: loomq
 spec:
-  serviceName: loomq-headless
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       app: loomq
@@ -339,111 +163,67 @@ spec:
         app: loomq
     spec:
       containers:
-      - name: loomq
-        image: loomq:0.7.0-SNAPSHOT
-        ports:
-        - containerPort: 8080
-          name: http
-        env:
-        - name: LOOMQ_SHARD_INDEX
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
-        - name: LOOMQ_TOTAL_SHARDS
-          value: "3"
-        - name: JVM_XMS
-          value: "2g"
-        - name: JVM_XMX
-          value: "2g"
-        volumeMounts:
-        - name: data
-          mountPath: /data/wal
-        - name: config
-          mountPath: /app/config
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 5
+        - name: loomq
+          image: loomq:0.7.0-SNAPSHOT
+          ports:
+            - containerPort: 8080
+          env:
+            - name: LOOMQ_SERVER_HOST
+              value: "0.0.0.0"
+            - name: LOOMQ_SERVER_PORT
+              value: "8080"
+            - name: LOOMQ_DATA_DIR
+              value: "/data/wal"
+            - name: LOOMQ_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: wal
+              mountPath: /data/wal
       volumes:
-      - name: config
-        configMap:
-          name: loomq-config
-  volumeClaimTemplates:
-  - metadata:
-      name: data
-    spec:
-      accessModes: ["ReadWriteOnce"]
-      resources:
-        requests:
-          storage: 10Gi
+        - name: wal
+          persistentVolumeClaim:
+            claimName: loomq-wal-pvc
 ```
 
-### Service
+### Probe Paths
 
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: loomq
-  namespace: loomq
-spec:
-  selector:
-    app: loomq
-  ports:
-  - port: 8080
-    targetPort: 8080
-  type: LoadBalancer
-```
-
-Deploy:
-
-```bash
-kubectl apply -f k8s/
-```
-
----
+- Liveness: `GET /health/live`
+- Readiness: `GET /health/ready`
 
 ## Monitoring Setup
 
+### Metrics Endpoints
+
+- `GET /metrics`
+- `GET /api/v1/metrics`
+
 ### Prometheus
 
-1. Edit `monitoring/prometheus.yml` with your targets
-2. Start Prometheus:
+Point Prometheus at the standalone server and scrape the metrics endpoint. Useful signals include:
 
-```bash
-docker run -d \
-  --name prometheus \
-  -p 9090:9090 \
-  -v $(pwd)/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml \
-  prom/prometheus:v2.50.0
-```
+- `loomq_http_requests_total`
+- `loomq_http_request_duration_seconds`
+- `loomq_http_active_requests`
+- `loomq_http_concurrency_limit_exceeded_total`
+- `loomq_netty_active_connections`
+- `loomq_netty_connection_errors_total`
+- `loomq_tasks_created_total`
+- `loomq_wal_record_count`
+- `loomq_scheduler_bucket_size`
+- `loomq_scheduler_wakeup_latency_ms_p99`
+- `loomq_scheduler_wakeup_latency_ms_p999`
 
-### Grafana
+### Dashboard Ideas
 
-1. Import dashboard from `monitoring/grafana/dashboards/`
-2. Configure Prometheus datasource
-3. Access at http://localhost:3000
-
-### Key Metrics
-
-| Metric | Description | Alert Threshold |
-|--------|-------------|-----------------|
-| `loomq_tasks_created_total` | Task creation rate | - |
-| `loomq_tasks_dispatched_total` | Task dispatch rate | - |
-| `loomq_scheduler_pending_count` | Pending tasks | > 800000 |
-| `loomq_wal_write_latency` | WAL write latency | P99 > 100ms |
-| `loomq_dispatcher_queue_size` | Dispatch queue size | > 900 |
-| `jvm_memory_used_bytes` | JVM memory usage | > 80% |
-
----
+- request rate
+- active requests
+- concurrency rejects
+- WAL health
+- intent creation rate
+- WAL record count
+- wakeup latency by precision tier
 
 ## Configuration Reference
 
@@ -451,65 +231,50 @@ docker run -d \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LOOMQ_SERVER_HOST` | `0.0.0.0` | Server bind address |
-| `LOOMQ_SERVER_PORT` | `8080` | Server port |
-| `LOOMQ_DATA_DIR` | `./data/wal` | WAL data directory |
-| `LOOMQ_WAL_FLUSH_STRATEGY` | `batch` | Flush strategy |
-| `LOOMQ_SCHEDULER_MAX_PENDING` | `1000000` | Max pending tasks |
-| `LOOMQ_DISPATCHER_MAX_CONCURRENT` | `1000` | Max concurrent dispatches |
-| `LOOMQ_SHARD_INDEX` | `0` | Shard index (cluster mode) |
-| `LOOMQ_TOTAL_SHARDS` | `1` | Total shards |
-| `LOOMQ_NODES` | - | Cluster nodes list |
-| `JVM_XMS` | `2g` | JVM initial heap |
-| `JVM_XMX` | `2g` | JVM max heap |
-| `JVM_GC` | `ZGC` | Garbage collector |
-
----
+| `LOOMQ_SERVER_HOST` | `0.0.0.0` | HTTP bind address |
+| `LOOMQ_SERVER_PORT` | `8080` | HTTP bind port |
+| `LOOMQ_SERVER_BACKLOG` | `1024` | Socket backlog |
+| `LOOMQ_VIRTUAL_THREADS` | `true` | Enable virtual threads |
+| `LOOMQ_MAX_REQUEST_SIZE` | `10485760` | Maximum request size in bytes |
+| `LOOMQ_THREAD_POOL_SIZE` | `200` | Fallback worker pool size |
+| `LOOMQ_NETTY_PORT` | `8080` | Netty bind port |
+| `LOOMQ_NETTY_HOST` | `0.0.0.0` | Netty bind address |
+| `LOOMQ_WAL_DATA_DIR` | `./data/wal` | WAL data directory |
+| `LOOMQ_WAL_FLUSH_STRATEGY` | `batch` | WAL flush strategy |
+| `LOOMQ_SCHEDULER_MAX_PENDING` | `1000000` | Maximum pending intents |
+| `LOOMQ_DISPATCHER_MAX_CONCURRENT` | `1000` | Concurrent dispatch limit |
+| `LOOMQ_SHARD_INDEX` | `0` | Cluster shard index placeholder |
+| `LOOMQ_TOTAL_SHARDS` | `1` | Total shards placeholder |
+| `LOOMQ_NODE_ID` | `node-1` | Node identifier |
+| `LOOMQ_DATA_DIR` | `./data/wal` | Overrides the WAL root directory used by the standalone server |
 
 ## Troubleshooting
 
-### High Memory Usage
+### Server Won't Start
 
-```bash
-# Check heap usage
-curl http://localhost:8080/metrics | grep jvm_memory_used_bytes
+- verify port `8080` is free
+- verify the WAL directory is writable
+- confirm the Java version is 25+
+- check the startup log for the runtime configuration summary
 
-# Adjust heap size
-export JVM_XMX=16g
-```
+### Health Check Fails
 
-### WAL Recovery Issues
+- confirm `/health` and `/health/ready` return as expected
+- inspect WAL activity and disk permissions
+- check `walHealthy` in the metrics snapshot
 
-```bash
-# Check WAL segments
-ls -la data/wal/
+### Requests Are Rejected
 
-# Enable safe mode
-export LOOMQ_RECOVERY_SAFE_MODE=true
-```
+- inspect `loomq_http_concurrency_limit_exceeded_total`
+- lower load or increase `netty.maxConcurrentBusinessRequests`
+- check downstream callback latency
 
-### Network Issues
+### Recovery Feels Slow
 
-```bash
-# Test connectivity
-curl -v http://localhost:8080/health
-
-# Check firewall
-sudo iptables -L -n | grep 8080
-```
-
-### Common Errors
-
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `Address already in use` | Port 8080 occupied | Change `LOOMQ_PORT` |
-| `OutOfMemoryError` | Heap too small | Increase `JVM_XMX` |
-| `Permission denied` | Wrong file permissions | `chmod 755 /opt/loomq` |
-| `Java version mismatch` | Java < 21 | Install Java 21+ |
-
----
+- reduce WAL retention if the data directory has grown too large
+- increase recovery batch size only after measuring
+- verify the snapshot directory under the WAL root
 
 ## Support
 
-For issues and feature requests, please visit:
-https://github.com/yourusername/loomq/issues
+For issues and feature requests, use the repository issue tracker.

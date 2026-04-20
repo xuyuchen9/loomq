@@ -3,31 +3,31 @@ package com.loomq.replication;
 /**
  * 复制记录类型枚举
  *
- * 定义复制对象范围（决策 #5）：必须包含任务全生命周期
+ * 定义复制对象范围（决策 #5）：必须包含 Intent 全生命周期
  *
  * @author loomq
  * @since v0.4.8
  */
 public enum ReplicationRecordType {
 
-    // ========== 任务生命周期 ==========
+    // ========== Intent 生命周期 ==========
     /**
-     * 任务创建（含完整 Task 对象）
+     * Intent 创建（含完整 Intent 对象）
      */
     TASK_CREATE((byte) 0x01),
 
     /**
-     * 任务取消
+     * Intent 取消
      */
     TASK_CANCEL((byte) 0x02),
 
     /**
-     * 延迟修改
+     * Intent 延迟修改
      */
     TASK_MODIFY_DELAY((byte) 0x03),
 
     /**
-     * 立即触发
+     * Intent 立即触发
      */
     TASK_TRIGGER_NOW((byte) 0x04),
 
@@ -119,7 +119,7 @@ public enum ReplicationRecordType {
     }
 
     /**
-     * 是否为任务生命周期相关类型
+     * 是否为 Intent 生命周期相关类型
      */
     public boolean isTaskLifecycle() {
         return this == TASK_CREATE || this == TASK_CANCEL

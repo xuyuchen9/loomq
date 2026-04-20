@@ -71,24 +71,24 @@ public class ShardRouter {
     }
 
     /**
-     * 根据 taskId 路由到对应的分片节点
+     * 根据 intentId 路由到对应的分片节点
      *
-     * @param taskId 任务 ID
+     * @param intentId Intent ID
      * @return 分片节点，如果没有可用节点返回 null
      */
-    public ShardNode route(String taskId) {
-        if (taskId == null || taskId.isEmpty()) {
-            throw new IllegalArgumentException("taskId cannot be null or empty");
+    public ShardNode route(String intentId) {
+        if (intentId == null || intentId.isEmpty()) {
+            throw new IllegalArgumentException("intentId cannot be null or empty");
         }
 
         lock.readLock().lock();
         try {
             if (hashRing.isEmpty()) {
-                logger.warn("Hash ring is empty, no shard available for task: {}", taskId);
+                logger.warn("Hash ring is empty, no shard available for intent: {}", intentId);
                 return null;
             }
 
-            long hash = hash(taskId);
+            long hash = hash(intentId);
 
             // 找到第一个 >= hash 的节点（顺时针查找）
             Map.Entry<Long, ShardNode> entry = hashRing.ceilingEntry(hash);
@@ -99,8 +99,8 @@ public class ShardRouter {
             }
 
             ShardNode node = entry.getValue();
-            logger.debug("Routed task {} to shard {} (hash: {}, nodeHash: {})",
-                    taskId, node.getShardId(), hash, entry.getKey());
+            logger.debug("Routed intent {} to shard {} (hash: {}, nodeHash: {})",
+                    intentId, node.getShardId(), hash, entry.getKey());
 
             return node;
 

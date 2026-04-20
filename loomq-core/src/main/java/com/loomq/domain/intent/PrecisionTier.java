@@ -16,7 +16,7 @@ public enum PrecisionTier {
      * Bucket 扫描间隔：10ms
      * 最大并发：100
      * 批量大小：1（禁用批量）
-     * 适用场景：分布式锁续期、实时回调
+     * 适用场景：高频心跳、短 deadline、实时回调
      */
     ULTRA(10, 50, 1, 0, 8),
 

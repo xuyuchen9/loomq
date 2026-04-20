@@ -243,13 +243,13 @@ public class EmbeddedDemo {
             demo.start();
 
             // 演示 1: 基本延迟任务
-            logger.info("\n--- Demo 1: Basic Delayed Task ---");
+            logger.info("\n--- Demo 1: Basic Delayed Intent ---");
             CountDownLatch latch1 = new CountDownLatch(1);
             long startTime1 = System.currentTimeMillis();
 
             demo.createIntent(500, intent -> {
                 long actualDelay = System.currentTimeMillis() - startTime1;
-                logger.info("✓ Task executed after {}ms (expected 500ms)", actualDelay);
+                logger.info("✓ Intent executed after {}ms (expected 500ms)", actualDelay);
                 latch1.countDown();
             });
 
@@ -264,28 +264,28 @@ public class EmbeddedDemo {
             // ULTRA 档位 - 高精度
             demo.createIntent(200, PrecisionTier.ULTRA, intent -> {
                 long delay = System.currentTimeMillis() - startTime2;
-                logger.info("✓ ULTRA task executed after {}ms (window: 10ms)", delay);
+                logger.info("✓ ULTRA intent executed after {}ms (window: 10ms)", delay);
                 latch2.countDown();
             });
 
             // STANDARD 档位 - 标准精度（推荐）
             demo.createIntent(200, PrecisionTier.STANDARD, intent -> {
                 long delay = System.currentTimeMillis() - startTime2;
-                logger.info("✓ STANDARD task executed after {}ms (window: 500ms)", delay);
+                logger.info("✓ STANDARD intent executed after {}ms (window: 500ms)", delay);
                 latch2.countDown();
             });
 
             // ECONOMY 档位 - 经济型
             demo.createIntent(200, PrecisionTier.ECONOMY, intent -> {
                 long delay = System.currentTimeMillis() - startTime2;
-                logger.info("✓ ECONOMY task executed after {}ms (window: 1000ms)", delay);
+                logger.info("✓ ECONOMY intent executed after {}ms (window: 1000ms)", delay);
                 latch2.countDown();
             });
 
             latch2.await(3, TimeUnit.SECONDS);
 
             // 演示 3: 批量任务
-            logger.info("\n--- Demo 3: Batch Tasks (100 tasks) ---");
+            logger.info("\n--- Demo 3: Batch Intents (100 intents) ---");
             int batchSize = 100;
             CountDownLatch latch3 = new CountDownLatch(batchSize);
             AtomicInteger counter = new AtomicInteger(0);
@@ -296,7 +296,7 @@ public class EmbeddedDemo {
                     int count = counter.incrementAndGet();
                     if (count == batchSize) {
                         long totalTime = System.currentTimeMillis() - startTime3;
-                        logger.info("✓ All {} tasks completed in {}ms", batchSize, totalTime);
+                        logger.info("✓ All {} intents completed in {}ms", batchSize, totalTime);
                     }
                     latch3.countDown();
                 });

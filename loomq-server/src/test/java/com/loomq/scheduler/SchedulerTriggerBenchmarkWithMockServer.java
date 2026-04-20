@@ -202,14 +202,14 @@ class SchedulerTriggerBenchmarkWithMockServer {
         webhookReceivedByTier.values().forEach(counter -> counter.set(0));
         totalWebhookReceived.set(0);
 
-        // 增加到 1000 任务/档位，让批量优势显现
+        // 增加到 1000 Intent/档位，让批量优势显现
         int tasksPerTier = 1000;
-        // 任务在 2 秒后触发，给调度器足够时间攒批
+        // Intent 在 2 秒后触发，给调度器足够时间攒批
         Instant executeAt = Instant.now().plusMillis(2000);
 
-        logger.info("创建 {} 个任务/档位，预计执行时间: {}", tasksPerTier, executeAt);
+        logger.info("创建 {} 个 Intent/档位，预计执行时间: {}", tasksPerTier, executeAt);
 
-        // 创建各档位任务
+        // 创建各档位 Intent
         for (PrecisionTier tier : PrecisionTier.values()) {
             for (int i = 0; i < tasksPerTier; i++) {
                 Intent intent = createTestIntent(
@@ -221,7 +221,7 @@ class SchedulerTriggerBenchmarkWithMockServer {
                 intentStore.save(intent);
                 scheduler.schedule(intent);
             }
-            logger.info("  {}: 已创建 {} 个任务", tier, tasksPerTier);
+            logger.info("  {}: 已创建 {} 个 Intent", tier, tasksPerTier);
         }
 
         // 等待任务到期并执行（1000任务/档位需要更长时间）
@@ -242,11 +242,11 @@ class SchedulerTriggerBenchmarkWithMockServer {
                 break;
             }
 
-            // 检测是否稳定（连续 3 秒没有新任务）
+            // 检测是否稳定（连续 3 秒没有新 Intent）
             if (received == lastReceived) {
                 stableCount++;
                 if (stableCount >= 3) {
-                    logger.info("任务处理已稳定: {}/{} (稳定 {} 秒)",
+                    logger.info("Intent 处理已稳定: {}/{} (稳定 {} 秒)",
                         received, expected, stableCount);
                     break;
                 }
@@ -257,7 +257,7 @@ class SchedulerTriggerBenchmarkWithMockServer {
 
             long elapsed = System.currentTimeMillis() - waitStart;
             if (elapsed % 5000 == 0) {
-                logger.info("等待中... 已接收 {}/{} ({}ms, {}%)",
+                logger.info("等待中... 已接收 {}/{} Intent ({}ms, {}%)",
                     received, expected, elapsed,
                     (int)((double)received / expected * 100));
             }
@@ -308,12 +308,12 @@ class SchedulerTriggerBenchmarkWithMockServer {
                 String.format("ECONOMY 档位吞吐不应低于 ULTRA 的 80%%，实际 %.2fx", ratio));
         }
 
-        // 验证任务处理结果
+        // 验证 Intent 处理结果
         int totalReceived = totalWebhookReceived.get();
         int totalExpected = tasksPerTier * PrecisionTier.values().length;
         double completionRate = (double) totalReceived / totalExpected * 100;
 
-        logger.info("\n总任务处理: {}/{} ({}%)", totalReceived, totalExpected,
+        logger.info("\n总 Intent 处理: {}/{} ({}%)", totalReceived, totalExpected,
             String.format("%.1f", completionRate));
 
         // 获取背压统计
@@ -326,7 +326,7 @@ class SchedulerTriggerBenchmarkWithMockServer {
 
         // 只要有显著进展就算通过（至少 50%）
         assertTrue(completionRate >= 50,
-            String.format("至少 50%% 任务应被处理，实际 %.1f%% (%d/%d)",
+            String.format("至少 50%% Intent 应被处理，实际 %.1f%% (%d/%d)",
                 completionRate, totalReceived, totalExpected));
     }
 
@@ -341,10 +341,10 @@ class SchedulerTriggerBenchmarkWithMockServer {
         totalWebhookReceived.set(0);
 
         int tasksPerTier = 50;
-        // 任务在 500ms 后执行，但给调度器足够时间准备
+        // Intent 在 500ms 后执行，但给调度器足够时间准备
         Instant executeAt = Instant.now().plusMillis(800);
 
-        // 创建任务
+        // 创建 Intent
         for (PrecisionTier tier : PrecisionTier.values()) {
             for (int i = 0; i < tasksPerTier; i++) {
                 Intent intent = createTestIntent(
@@ -358,31 +358,31 @@ class SchedulerTriggerBenchmarkWithMockServer {
             }
         }
 
-        // 等待任务执行（任务执行时间 + 处理时间 + 批量窗口）
+        // 等待 Intent 执行（执行时间 + 处理时间 + 批量窗口）
         // ULTRA 扫描间隔 10ms，ECONOMY 1000ms，所以等待至少 1.5 秒
         Thread.sleep(1500);
 
-        // 再检查任务状态
+        // 再检查 Intent 状态
         long pendingTasks = intentStore.getAllIntents().values().stream()
             .filter(i -> i.getStatus() == IntentStatus.SCHEDULED)
             .count();
-        logger.info("等待后仍有 {} 个任务处于 SCHEDULED 状态", pendingTasks);
+        logger.info("等待后仍有 {} 个 Intent 处于 SCHEDULED 状态", pendingTasks);
 
         // 统计结果
         logger.info("\n档位处理结果:");
         for (PrecisionTier tier : PrecisionTier.values()) {
             int received = webhookReceivedByTier.get(tier).get();
-            logger.info("  {}: {}/{} 任务完成", tier, received, tasksPerTier);
+            logger.info("  {}: {}/{} Intent 完成", tier, received, tasksPerTier);
         }
 
-        // 在 mock 环境下，验证任务已进入调度流程即可
-        // 由于 batch 攒批，可能不是所有任务都能被处理
+        // 在 mock 环境下，验证 Intent 已进入调度流程即可
+        // 由于 batch 攒批，可能不是所有 Intent 都能被处理
         int totalReceived = totalWebhookReceived.get();
         logger.info("总接收 webhook: {}", totalReceived);
 
-        // 只要有任务被处理就算通过（在测试环境中）
+        // 只要有 Intent 被处理就算通过（在测试环境中）
         assertTrue(totalReceived > 0,
-            "至少应有部分任务被 webhook 接收");
+            "至少应有部分 Intent 被 webhook 接收");
     }
 
     // ========== 辅助方法 ==========
@@ -429,15 +429,15 @@ class SchedulerTriggerBenchmarkWithMockServer {
         webhookReceivedByTier.values().forEach(counter -> counter.set(0));
         totalWebhookReceived.set(0);
 
-        // 十万级任务：20000/档位
+        // 十万级 Intent：20000/档位
         int tasksPerTier = 20000;
         Instant executeAt = Instant.now().plusMillis(2000);
 
-        logger.info("创建 {} 个任务/档位，总计 {} 万任务", tasksPerTier, tasksPerTier * 5 / 10000);
+        logger.info("创建 {} 个 Intent/档位，总计 {} 万 Intent", tasksPerTier, tasksPerTier * 5 / 10000);
 
         long createStart = System.currentTimeMillis();
 
-        // 创建任务
+        // 创建 Intent
         for (PrecisionTier tier : PrecisionTier.values()) {
             for (int i = 0; i < tasksPerTier; i++) {
                 Intent intent = createTestIntent(
@@ -449,13 +449,13 @@ class SchedulerTriggerBenchmarkWithMockServer {
                 intentStore.save(intent);
                 scheduler.schedule(intent);
             }
-            logger.info("  {}: 已创建 {} 个任务 (预计延迟 {}ms)",
+            logger.info("  {}: 已创建 {} 个 Intent (预计延迟 {}ms)",
                 tier, tasksPerTier, getDelayForTier(tier));
         }
 
         logger.info("任务创建耗时: {}ms", System.currentTimeMillis() - createStart);
 
-        // 等待任务执行完成
+        // 等待 Intent 执行完成
         long waitStart = System.currentTimeMillis();
         long maxWaitMs = 180000; // 最多等待 3 分钟
 
@@ -478,20 +478,20 @@ class SchedulerTriggerBenchmarkWithMockServer {
             }
 
             if (totalReceived >= totalExpected) {
-                logger.info("所有任务 webhook 已接收: {}/{}", totalReceived, totalExpected);
+                logger.info("所有 Intent webhook 已接收: {}/{}", totalReceived, totalExpected);
                 break;
             }
 
             long elapsed = System.currentTimeMillis() - waitStart;
             if (elapsed % 10000 == 0) {
-                logger.info("等待中... 已接收 {}/{} ({}ms, {}%)",
+                logger.info("等待中... 已接收 {}/{} Intent ({}ms, {}%)",
                     totalReceived, totalExpected, elapsed,
                     (int)((double)totalReceived / totalExpected * 100));
 
                 // 打印各档位进度
                 for (PrecisionTier tier : PrecisionTier.values()) {
                     int received = webhookReceivedByTier.get(tier).get();
-                    logger.info("    {}: {}/{} ({}%)", tier, received, tasksPerTier,
+                    logger.info("    {}: {}/{} Intent ({}%)", tier, received, tasksPerTier,
                         (int)((double)received / tasksPerTier * 100));
                 }
             }
@@ -503,7 +503,7 @@ class SchedulerTriggerBenchmarkWithMockServer {
         logger.info("\n" + "=".repeat(60));
         logger.info("【档位设计有效性验证结果】");
         logger.info("=".repeat(60));
-        logger.info("总任务数: {} 万", tasksPerTier * 5 / 10000);
+        logger.info("总 Intent 数: {} 万", tasksPerTier * 5 / 10000);
         logger.info("总耗时: {} ms ({} 秒)", totalWaitMs, totalWaitMs / 1000);
 
         logger.info("\n档位完成统计:");
@@ -553,14 +553,14 @@ class SchedulerTriggerBenchmarkWithMockServer {
                     ratio * 100, ratio));
         }
 
-        // 验证所有任务都完成
+        // 验证所有 Intent 都完成
         int totalReceived = totalWebhookReceived.get();
         int totalExpected = tasksPerTier * PrecisionTier.values().length;
         double completionRate = (double) totalReceived / totalExpected * 100;
 
         logger.info("\n总完成率: {:.1f}% ({}/{})", completionRate, totalReceived, totalExpected);
         assertTrue(completionRate >= 95,
-            String.format("任务完成率应 >= 95%%，实际 %.1f%%", completionRate));
+            String.format("Intent 完成率应 >= 95%%，实际 %.1f%%", completionRate));
 
         // 验证档位隔离：各档位应独立处理，不应相互阻塞
         logger.info("\n【档位隔离验证】");

@@ -4,10 +4,12 @@ import com.loomq.LoomqEngine;
 import com.loomq.callback.HttpCallbackHandler;
 import com.loomq.callback.HttpDeliveryHandler;
 import com.loomq.config.LoomqConfig;
+import com.loomq.config.WalConfig;
 import com.loomq.config.ServerConfig;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
+import com.loomq.common.MetricsCollector;
 import com.loomq.metrics.LoomQMetrics;
 import io.netty.handler.codec.http.HttpMethod;
 import org.slf4j.Logger;
@@ -36,16 +38,18 @@ public class LoomqServerApplication {
         LoomqConfig config = LoomqConfig.getInstance();
         ServerConfig serverConfig = config.getServerConfig();
 
-        String nodeId = System.getProperty("loomq.node.id", "node-1");
-        String dataDir = System.getProperty("loomq.data.dir", "./data");
+        String nodeId = resolveSetting("LOOMQ_NODE_ID", "loomq.node.id", "node-1");
+        String dataDir = resolveSetting("LOOMQ_DATA_DIR", "loomq.data.dir", config.getWalConfig().dataDir());
+        WalConfig walConfig = overrideWalDataDir(config.getWalConfig(), dataDir);
 
-        logger.info("Configuration: nodeId={}, dataDir={}, host={}, port={}",
-            nodeId, dataDir, serverConfig.host(), serverConfig.port());
+        MetricsCollector.getInstance().setWalDataDir(dataDir);
+        logRuntimeConfiguration(config, nodeId, dataDir, walConfig);
 
         HttpCallbackHandler callbackHandler = new HttpCallbackHandler();
         LoomqEngine engine = LoomqEngine.builder()
             .nodeId(nodeId)
             .walDir(Path.of(dataDir))
+            .walConfig(walConfig)
             .callbackHandler(callbackHandler)
             .deliveryHandler(new HttpDeliveryHandler())
             .build();
@@ -110,6 +114,144 @@ public class LoomqServerApplication {
         }
 
         logger.info("Application exited");
+    }
+
+    private static void logRuntimeConfiguration(LoomqConfig config, String nodeId, String dataDir, WalConfig walConfig) {
+        ServerConfig serverConfig = config.getServerConfig();
+        logger.info(
+            "Runtime config: nodeId={}, dataDir={}, server={}:{} backlog={} virtualThreads={} maxRequestSize={} threadPoolSize={}, netty={}:{} epoll={} pooledAllocator={} maxConnections={} maxConcurrentRequests={}, walDir={}, walEngine={}, walFlushStrategy={}, walFlushThresholdKb={}, walStripeCount={}, schedulerMaxPending={}, recoveryBatchSize={}, retryInitialDelayMs={}, retryMaxDelayMs={}",
+            nodeId,
+            dataDir,
+            serverConfig.host(),
+            serverConfig.port(),
+            serverConfig.backlog(),
+            serverConfig.virtualThreads(),
+            serverConfig.maxRequestSize(),
+            serverConfig.threadPoolSize(),
+            serverConfig.nettyHost(),
+            serverConfig.nettyPort(),
+            serverConfig.useEpoll(),
+            serverConfig.pooledAllocator(),
+            serverConfig.maxConnections(),
+            serverConfig.maxConcurrentBusinessRequests(),
+            walConfig.dataDir(),
+            walConfig.engine(),
+            walConfig.flushStrategy(),
+            walConfig.memorySegmentFlushThresholdKb(),
+            walConfig.memorySegmentStripeCount(),
+            config.getSchedulerConfig().maxPendingTasks(),
+            config.getRecoveryConfig().batchSize(),
+            config.getRetryConfig().initialDelayMs(),
+            config.getRetryConfig().maxDelayMs()
+        );
+    }
+
+    private static String resolveSetting(String envKey, String propertyKey, String fallback) {
+        String envValue = System.getenv(envKey);
+        if (envValue != null && !envValue.isBlank()) {
+            return envValue;
+        }
+
+        String propertyValue = System.getProperty(propertyKey);
+        if (propertyValue != null && !propertyValue.isBlank()) {
+            return propertyValue;
+        }
+
+        return fallback;
+    }
+
+    private static WalConfig overrideWalDataDir(WalConfig delegate, String dataDir) {
+        return new WalConfig() {
+            @Override
+            public String dataDir() {
+                return dataDir;
+            }
+
+            @Override
+            public int segmentSizeMb() {
+                return delegate.segmentSizeMb();
+            }
+
+            @Override
+            public String flushStrategy() {
+                return delegate.flushStrategy();
+            }
+
+            @Override
+            public long batchFlushIntervalMs() {
+                return delegate.batchFlushIntervalMs();
+            }
+
+            @Override
+            public boolean syncOnWrite() {
+                return delegate.syncOnWrite();
+            }
+
+            @Override
+            public String engine() {
+                return delegate.engine();
+            }
+
+            @Override
+            public int memorySegmentInitialSizeMb() {
+                return delegate.memorySegmentInitialSizeMb();
+            }
+
+            @Override
+            public int memorySegmentMaxSizeMb() {
+                return delegate.memorySegmentMaxSizeMb();
+            }
+
+            @Override
+            public int memorySegmentFlushThresholdKb() {
+                return delegate.memorySegmentFlushThresholdKb();
+            }
+
+            @Override
+            public long memorySegmentFlushIntervalMs() {
+                return delegate.memorySegmentFlushIntervalMs();
+            }
+
+            @Override
+            public int memorySegmentStripeCount() {
+                return delegate.memorySegmentStripeCount();
+            }
+
+            @Override
+            public int memorySegmentMinBatchSize() {
+                return delegate.memorySegmentMinBatchSize();
+            }
+
+            @Override
+            public boolean memorySegmentAdaptiveFlushEnabled() {
+                return delegate.memorySegmentAdaptiveFlushEnabled();
+            }
+
+            @Override
+            public boolean isReplicationEnabled() {
+                return delegate.isReplicationEnabled();
+            }
+
+            @Override
+            public String replicaHost() {
+                return delegate.replicaHost();
+            }
+
+            @Override
+            public int replicaPort() {
+                return delegate.replicaPort();
+            }
+
+            @Override
+            public long replicationAckTimeoutMs() {
+                return delegate.replicationAckTimeoutMs();
+            }
+
+            @Override
+            public boolean requireReplicatedAck() {
+                return delegate.requireReplicatedAck();
+            }
+        };
     }
 
     private static void registerSystemRoutes(RadixRouter router) {

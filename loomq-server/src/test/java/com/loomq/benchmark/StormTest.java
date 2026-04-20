@@ -15,18 +15,18 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 风暴测试
- * 测试大规模同时到期任务的系统表现
+ * 测试大规模同时到期 Intent 的系统表现
  */
 public class StormTest {
 
     private static final String BASE_URL = "http://localhost:8080/api/v1";
-    private static final AtomicInteger taskIdCounter = new AtomicInteger(0);
+    private static final AtomicInteger intentIdCounter = new AtomicInteger(0);
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
             System.out.println("Usage: StormTest <testType> <params>");
-            System.out.println("  storm <taskCount> <delaySec>  - 同时到期风暴测试");
-            System.out.println("  memory <targetTasks>         - 内存极限测试");
+            System.out.println("  storm <intentCount> <delaySec>  - 同时到期风暴测试");
+            System.out.println("  memory <targetIntents>         - 内存极限测试");
             System.out.println("  longrun <hours>              - 长时稳定性测试");
             return;
         }
@@ -35,13 +35,13 @@ public class StormTest {
 
         switch (testType) {
             case "storm":
-                int taskCount = Integer.parseInt(args[1]);
+                int intentCount = Integer.parseInt(args[1]);
                 int delaySec = args.length > 2 ? Integer.parseInt(args[2]) : 5;
-                runStormTest(taskCount, delaySec);
+                runStormTest(intentCount, delaySec);
                 break;
             case "memory":
-                long targetTasks = Long.parseLong(args[1]);
-                runMemoryTest(targetTasks);
+                long targetIntents = Long.parseLong(args[1]);
+                runMemoryTest(targetIntents);
                 break;
             case "longrun":
                 int hours = Integer.parseInt(args[1]);
@@ -53,25 +53,25 @@ public class StormTest {
     }
 
     /**
-     * 风暴测试：大量任务同时到期
+     * 风暴测试：大量 Intent 同时到期
      */
-    private static void runStormTest(int taskCount, int delaySec) throws Exception {
+    private static void runStormTest(int intentCount, int delaySec) throws Exception {
         System.out.println("========================================");
-        System.out.printf("风暴测试: %d 任务, %d 秒后同时到期%n", taskCount, delaySec);
+        System.out.printf("风暴测试: %d Intent, %d 秒后同时到期%n", intentCount, delaySec);
         System.out.println("========================================");
 
         // 预热
         System.out.println("预热服务...");
         for (int i = 0; i < 10; i++) {
-            createTaskWithTriggerTime(1000);
+            createIntentWithTriggerTime(1000);
         }
         Thread.sleep(2000);
 
         // 记录开始时间
         long createStartTime = System.currentTimeMillis();
 
-        // 创建任务 - 使用虚拟线程池避免端口耗尽
-        int threads = Math.min(taskCount / 100, 200);
+        // 创建 Intent - 使用虚拟线程池避免端口耗尽
+        int threads = Math.min(intentCount / 100, 200);
         if (threads < 1) threads = 1;
 
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -80,18 +80,18 @@ public class StormTest {
         AtomicLong totalLatency = new AtomicLong(0);
         List<Long> latencies = new CopyOnWriteArrayList<>();
 
-        CountDownLatch latch = new CountDownLatch(taskCount);
+        CountDownLatch latch = new CountDownLatch(intentCount);
 
         // 限流器：控制创建速率避免端口耗尽
         Semaphore rateLimiter = new Semaphore(100);
 
-        for (int i = 0; i < taskCount; i++) {
+        for (int i = 0; i < intentCount; i++) {
             final int idx = i;
             executor.submit(() -> {
                 try {
                     rateLimiter.acquire();  // 限流
                     long start = System.currentTimeMillis();
-                    String result = createTaskWithTriggerTime(delaySec * 1000L);
+                    String result = createIntentWithTriggerTime(delaySec * 1000L);
                     long latency = System.currentTimeMillis() - start;
 
                     if (result != null && !result.contains("error")) {
@@ -127,7 +127,7 @@ public class StormTest {
         long p99 = latencies.isEmpty() ? 0 : latencies.get((int) (latencies.size() * 0.99));
 
         System.out.println("\n========== 创建结果 ==========");
-        System.out.printf("创建成功: %d / %d%n", successCount.get(), taskCount);
+        System.out.printf("创建成功: %d / %d%n", successCount.get(), intentCount);
         System.out.printf("创建失败: %d%n", failCount.get());
         System.out.printf("创建耗时: %.2f s%n", createDuration / 1000.0);
         System.out.printf("创建 QPS: %.0f%n", createQps);
@@ -136,8 +136,8 @@ public class StormTest {
         System.out.printf("P95 延迟: %d ms%n", p95);
         System.out.printf("P99 延迟: %d ms%n", p99);
 
-        // 等待任务触发
-        System.out.printf("%n等待任务触发 (%d 秒)...%n", delaySec + 30);
+        // 等待 Intent 触发
+        System.out.printf("%n等待 Intent 触发 (%d 秒)...%n", delaySec + 30);
         Thread.sleep(delaySec * 1000L + 30000);
 
         // 获取系统指标
@@ -146,11 +146,11 @@ public class StormTest {
     }
 
     /**
-     * 内存极限测试：持续创建任务直到系统崩溃
+     * 内存极限测试：持续创建 Intent 直到系统崩溃
      */
-    private static void runMemoryTest(long targetTasks) throws Exception {
+    private static void runMemoryTest(long targetIntents) throws Exception {
         System.out.println("========================================");
-        System.out.printf("内存极限测试: 目标 %d 任务%n", targetTasks);
+        System.out.printf("内存极限测试: 目标 %d Intent%n", targetIntents);
         System.out.println("========================================");
 
         int batchSize = 10000;
@@ -165,8 +165,8 @@ public class StormTest {
         long startTime = System.currentTimeMillis();
         long lastReportTime = startTime;
 
-        while (totalCreated.get() < targetTasks) {
-            int remaining = (int) (targetTasks - totalCreated.get());
+        while (totalCreated.get() < targetIntents) {
+            int remaining = (int) (targetIntents - totalCreated.get());
             int currentBatch = Math.min(batchSize, remaining);
 
             CountDownLatch latch = new CountDownLatch(currentBatch);
@@ -175,7 +175,7 @@ public class StormTest {
                 executor.submit(() -> {
                     try {
                         long start = System.currentTimeMillis();
-                        String result = createTask(3600000); // 1小时后触发
+                        String result = createIntent(3600000); // 1小时后触发
                         long latency = System.currentTimeMillis() - start;
 
                         if (result != null && !result.contains("error")) {
@@ -254,12 +254,12 @@ public class StormTest {
         while (System.currentTimeMillis() < endTime) {
             long batchStart = System.currentTimeMillis();
 
-            // 创建一批任务
+            // 创建一批 Intent
             for (int i = 0; i < batchSize; i++) {
                 try {
                     // 随机延时 1-10 分钟
                     int delayMs = 60000 + (int) (Math.random() * 540000);
-                    String result = createTask(delayMs);
+                    String result = createIntent(delayMs);
                     if (result != null && !result.contains("error")) {
                         totalCreated.incrementAndGet();
                     }
@@ -288,15 +288,15 @@ public class StormTest {
         printMetrics();
     }
 
-    private static String createTask(long delayMs) throws Exception {
-        return createTaskWithTriggerTime(delayMs);
+    private static String createIntent(long delayMs) throws Exception {
+        return createIntentWithTriggerTime(delayMs);
     }
 
-    private static String createTaskWithTriggerTime(long delayMs) throws Exception {
-        String taskId = "storm_" + System.nanoTime() + "_" + taskIdCounter.incrementAndGet();
+    private static String createIntentWithTriggerTime(long delayMs) throws Exception {
+        String intentId = "storm_" + System.nanoTime() + "_" + intentIdCounter.incrementAndGet();
         String body = String.format(
             "{\"bizKey\":\"%s\",\"delayMs\":%d,\"webhookUrl\":\"http://localhost:9999/webhook\"}",
-            taskId, delayMs
+            intentId, delayMs
         );
 
         URL url = new URL(BASE_URL + "/tasks");

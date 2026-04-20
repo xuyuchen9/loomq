@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>LoomQ Core</name>
-    <description>Embedded kernel for LoomQ delayed task queue - minimal dependencies (slf4j, owner, snakeyaml, HdrHistogram)</description>
+    <description>Embedded kernel for LoomQ delayed Intent queue - minimal dependencies (slf4j, owner, snakeyaml, HdrHistogram)</description>
 
     <dependencies>
         <!-- Logging: SLF4J API only, no implementation -->

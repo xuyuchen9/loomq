@@ -205,27 +205,27 @@ public class ClusterManager {
     }
 
     /**
-     * 路由任务到分片节点
+     * 路由 Intent 到分片节点
      *
-     * @param taskId 任务 ID
-     * @return 负责该任务的分片节点
+     * @param intentId Intent ID
+     * @return 负责该 Intent 的分片节点
      */
-    public ShardNode route(String taskId) {
-        return router.route(taskId);
+    public ShardNode route(String intentId) {
+        return router.route(intentId);
     }
 
     /**
-     * 检查任务是否应由本地节点处理
+     * 检查 Intent 是否应由本地节点处理
      *
-     * @param taskId 任务 ID
-     * @return true 如果是本地任务
+     * @param intentId Intent ID
+     * @return true 如果是本地 Intent
      */
-    public boolean isLocalTask(String taskId) {
+    public boolean isLocalTask(String intentId) {
         if (localNode == null || !localNode.isAvailable()) {
             return false;
         }
 
-        ShardNode responsible = router.route(taskId);
+        ShardNode responsible = router.route(intentId);
         if (responsible == null) {
             return false;
         }

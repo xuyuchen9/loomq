@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 风暴测试 v2 - 使用 HttpClient 连接池
- * 测试大规模同时到期任务的系统表现
+ * 测试大规模同时到期 Intent 的系统表现
  */
 public class StormTestV2 {
 
@@ -29,33 +29,33 @@ public class StormTestV2 {
             .executor(Executors.newVirtualThreadPerTaskExecutor())
             .build();
 
-    private static final AtomicInteger taskIdCounter = new AtomicInteger(0);
+    private static final AtomicInteger intentIdCounter = new AtomicInteger(0);
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
-            System.out.println("Usage: StormTestV2 storm <taskCount> <delaySec>");
-            System.out.println("  storm 10000 5  - 1万任务5秒后同时到期");
+            System.out.println("Usage: StormTestV2 storm <intentCount> <delaySec>");
+            System.out.println("  storm 10000 5  - 1万 Intent 5秒后同时到期");
             return;
         }
 
         String testType = args[0];
 
         if ("storm".equals(testType)) {
-            int taskCount = Integer.parseInt(args[1]);
+            int intentCount = Integer.parseInt(args[1]);
             int delaySec = args.length > 2 ? Integer.parseInt(args[2]) : 5;
-            runStormTest(taskCount, delaySec);
+            runStormTest(intentCount, delaySec);
         }
     }
 
-    private static void runStormTest(int taskCount, int delaySec) throws Exception {
+    private static void runStormTest(int intentCount, int delaySec) throws Exception {
         System.out.println("========================================");
-        System.out.printf("风暴测试: %d 任务, %d 秒后同时到期%n", taskCount, delaySec);
+        System.out.printf("风暴测试: %d Intent, %d 秒后同时到期%n", intentCount, delaySec);
         System.out.println("========================================");
 
         // 预热
         System.out.println("预热服务...");
         for (int i = 0; i < 20; i++) {
-            createTask(delaySec * 1000L);
+            createIntent(delaySec * 1000L);
         }
         Thread.sleep(2000);
 
@@ -67,18 +67,18 @@ public class StormTestV2 {
 
         // 使用信号量限制并发
         Semaphore semaphore = new Semaphore(200);
-        CountDownLatch latch = new CountDownLatch(taskCount);
+        CountDownLatch latch = new CountDownLatch(intentCount);
 
-        System.out.println("创建任务中...");
+        System.out.println("创建 Intent 中...");
 
-        for (int i = 0; i < taskCount; i++) {
+        for (int i = 0; i < intentCount; i++) {
             semaphore.acquire();
 
             final int idx = i;
             Thread.ofVirtual().start(() -> {
                 try {
                     long start = System.currentTimeMillis();
-                    boolean success = createTask(delaySec * 1000L);
+                    boolean success = createIntent(delaySec * 1000L);
                     long latency = System.currentTimeMillis() - start;
 
                     if (success) {
@@ -89,7 +89,7 @@ public class StormTestV2 {
                     }
 
                     if ((idx + 1) % 5000 == 0) {
-                        System.out.printf("  已完成: %d/%d%n", idx + 1, taskCount);
+                        System.out.printf("  已完成: %d/%d%n", idx + 1, intentCount);
                     }
                 } catch (Exception e) {
                     failCount.incrementAndGet();
@@ -112,7 +112,7 @@ public class StormTestV2 {
         long p99 = latencies.isEmpty() ? 0 : latencies.get((int) (latencies.size() * 0.99));
 
         System.out.println("\n========== 创建结果 ==========");
-        System.out.printf("创建成功: %d / %d%n", successCount.get(), taskCount);
+        System.out.printf("创建成功: %d / %d%n", successCount.get(), intentCount);
         System.out.printf("创建失败: %d%n", failCount.get());
         System.out.printf("创建耗时: %.2f s%n", createDuration / 1000.0);
         System.out.printf("创建 QPS: %.0f%n", qps);
@@ -121,7 +121,7 @@ public class StormTestV2 {
         System.out.printf("P99 延迟: %d ms%n", p99);
 
         // 等待触发
-        System.out.printf("%n等待任务触发 (%d 秒)...%n", delaySec + 60);
+        System.out.printf("%n等待 Intent 触发 (%d 秒)...%n", delaySec + 60);
         Thread.sleep(delaySec * 1000L + 60000);
 
         // 获取系统指标
@@ -129,12 +129,12 @@ public class StormTestV2 {
         printMetrics();
     }
 
-    private static boolean createTask(long delayMs) {
+    private static boolean createIntent(long delayMs) {
         try {
-            String taskId = "storm_" + System.nanoTime() + "_" + taskIdCounter.incrementAndGet();
+            String intentId = "storm_" + System.nanoTime() + "_" + intentIdCounter.incrementAndGet();
             String body = String.format(
                     "{\"bizKey\":\"%s\",\"delayMs\":%d,\"webhookUrl\":\"%s\"}",
-                    taskId, delayMs, WEBHOOK_URL
+                    intentId, delayMs, WEBHOOK_URL
             );
 
             HttpRequest request = HttpRequest.newBuilder()

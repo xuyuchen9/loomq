@@ -3,6 +3,9 @@
 > 开始时间: 2026-04-10
 > 执行者: Claude Code
 > 目标: 基于 V2 引擎合并重复代码，简化代码库
+>
+> Historical note: this document records one specific cleanup pass from an earlier stage of the project.
+> It is preserved for context and does not describe the current codebase state verbatim.
 
 ## 背景
 

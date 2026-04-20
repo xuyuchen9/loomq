@@ -1,285 +1,139 @@
-# LoomQ API 文档
+# LoomQ API
 
-## 基础信息
+The current standalone API is intent-based.
 
-- **Base URL**: `http://localhost:8080/api/v1`
-- **Content-Type**: `application/json`
+- Base path: `/v1`
+- Resource: `intents`
 
-## 错误码
+## Create Intent
 
-| 错误码 | 说明 |
-|--------|------|
-| 0 | 成功 |
-| 1 | 参数无效 |
-| 2 | 内部错误 |
-| 100 | 任务不存在 |
-| 101 | 任务已存在 |
-| 103 | 任务已终态 |
-| 104 | 任务无法取消 |
-| 105 | 任务无法修改 |
-| 106 | 版本冲突 |
-| 108 | 任务已完成 |
-| 200 | 幂等键冲突 |
-| 400 | WAL 写入错误 |
-| 500 | 调度器已满 |
-| 600 | Webhook 调用失败 |
-| 601 | Webhook 超时 |
+`POST /v1/intents`
 
-## API 端点
-
-### 1. 创建任务
-
-```
-POST /api/v1/tasks
-```
-
-**请求体**
+### Request
 
 ```json
 {
-  "webhookUrl": "https://example.com/webhook",
-  "delayMs": 60000,
-  "wakeTime": null,
-  "bizKey": "order-123",
-  "idempotencyKey": "req-abc",
-  "method": "POST",
-  "headers": {
-    "X-Custom-Header": "value"
-  },
-  "payload": {
-    "orderId": "123",
-    "action": "cancel"
-  },
-  "maxRetry": 3,
-  "timeoutMs": 3000,
-  "durable": true
-}
-```
-
-**参数说明**
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| webhookUrl | string | ✅ | 回调地址 |
-| delayMs | long | ❌ | 延迟毫秒数（与 wakeTime 二选一） |
-| wakeTime | long | ❌ | 计划触发时间戳（与 delayMs 二选一） |
-| bizKey | string | ❌ | 业务键，用于业务层检索 |
-| idempotencyKey | string | ❌ | 幂等键，用于请求去重 |
-| method | string | ❌ | HTTP 方法，默认 POST |
-| headers | map | ❌ | 请求头 |
-| payload | object | ❌ | 请求体 |
-| maxRetry | int | ❌ | 最大重试次数，默认 3 |
-| timeoutMs | long | ❌ | 超时毫秒数，默认 3000 |
-| durable | boolean | ❌ | 是否持久化，默认 true |
-
-**响应**
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "taskId": "task_1704067200000_abc123",
-    "status": "PENDING",
-    "wakeTime": 1704067260000,
-    "isDuplicate": false,
-    "isDurable": true
-  }
-}
-```
-
----
-
-### 2. 查询任务
-
-```
-GET /api/v1/tasks/{taskId}
-GET /api/v1/tasks?bizKey={bizKey}
-GET /api/v1/tasks?idempotencyKey={idempotencyKey}
-GET /api/v1/tasks?status={status}
-```
-
-**响应**
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "taskId": "task_1704067200000_abc123",
-    "bizKey": "order-123",
-    "idempotencyKey": "req-abc",
-    "status": "SUCCESS",
-    "wakeTime": 1704067260000,
-    "webhookUrl": "https://example.com/webhook",
+  "intentId": "intent_123",
+  "executeAt": "2026-04-20T10:00:00Z",
+  "deadline": "2026-04-20T10:05:00Z",
+  "expiredAction": "DISCARD",
+  "precisionTier": "STANDARD",
+  "shardKey": "order-123",
+  "ackLevel": "DURABLE",
+  "callback": {
+    "url": "https://example.com/webhook",
     "method": "POST",
-    "headers": {},
-    "payload": "{\"orderId\":\"123\"}",
-    "maxRetryCount": 3,
-    "retryCount": 0,
-    "timeoutMs": 3000,
-    "version": 5,
-    "createTime": 1704067200000,
-    "updateTime": 1704067260100,
-    "lastError": null
+    "headers": {
+      "X-Request-Id": "abc-123"
+    },
+    "body": {
+      "type": "timeout"
+    }
+  },
+  "redelivery": {
+    "maxAttempts": 5,
+    "backoff": "exponential",
+    "initialDelayMs": 1000,
+    "maxDelayMs": 60000,
+    "multiplier": 2.0,
+    "jitter": true
+  },
+  "idempotencyKey": "req-abc-123",
+  "tags": {
+    "tenant": "demo"
   }
 }
 ```
 
-**状态查询响应**
+### Rules
+
+- `executeAt` is required
+- `deadline` is required
+- `shardKey` is required
+- `deadline` must be after `executeAt`
+- `executeAt` must be in the future
+- `callback.url` is required when `callback` is provided
+
+### Response
 
 ```json
 {
-  "code": 0,
-  "message": "success",
-  "data": {
-    "count": 10,
-    "tasks": [...]
+  "intentId": "intent_123",
+  "status": "SCHEDULED",
+  "executeAt": "2026-04-20T10:00:00Z",
+  "deadline": "2026-04-20T10:05:00Z",
+  "expiredAction": "DISCARD",
+  "precisionTier": "STANDARD",
+  "ackLevel": "DURABLE",
+  "attempts": 0,
+  "lastDeliveryId": null,
+  "createdAt": "2026-04-20T09:59:00Z",
+  "updatedAt": "2026-04-20T09:59:00Z"
+}
+```
+
+## Get Intent
+
+`GET /v1/intents/{intentId}`
+
+Returns the current intent snapshot or `404` if the intent is missing.
+
+## Patch Intent
+
+`PATCH /v1/intents/{intentId}`
+
+### Request
+
+```json
+{
+  "executeAt": "2026-04-20T10:10:00Z",
+  "deadline": "2026-04-20T10:15:00Z",
+  "expiredAction": "DEAD_LETTER",
+  "redelivery": {
+    "maxAttempts": 8,
+    "backoff": "fixed",
+    "initialDelayMs": 2000,
+    "maxDelayMs": 60000,
+    "multiplier": 2.0,
+    "jitter": false
+  },
+  "tags": {
+    "tenant": "demo",
+    "priority": "high"
   }
 }
 ```
 
----
+Only the non-null fields are applied.
 
-### 3. 取消任务
+## Cancel Intent
 
-```
-DELETE /api/v1/tasks/{taskId}
-```
+`POST /v1/intents/{intentId}/cancel`
 
-**响应**
+The intent must be in a cancellable state.
 
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "taskId": "task_1704067200000_abc123",
-    "status": "CANCELLED",
-    ...
-  }
-}
-```
+## Fire Now
 
-**注意事项**
+`POST /v1/intents/{intentId}/fire-now`
 
-- 只有 PENDING、SCHEDULED、READY、RETRY_WAIT 状态可取消
-- RUNNING 状态不可取消（任务可能已在执行）
-- 下游服务需实现幂等以处理可能的重复调用
-
----
-
-### 4. 修改任务
-
-```
-PATCH /api/v1/tasks/{taskId}
-```
-
-**请求体**
+Triggers the intent immediately and returns a small action response:
 
 ```json
 {
-  "version": 1,
-  "wakeTime": 1704067300000,
-  "webhookUrl": "https://example.com/new-webhook",
-  "payload": {"orderId": "456"},
-  "maxRetryCount": 5,
-  "timeoutMs": 5000
+  "intentId": "intent_123",
+  "status": "DISPATCHING"
 }
 ```
 
-**参数说明**
+## Error Handling
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| version | long | 乐观锁版本号（可选） |
-| wakeTime | long | 新的计划触发时间 |
-| webhookUrl | string | 新的回调地址 |
-| payload | object | 新的请求体 |
-| maxRetryCount | int | 新的最大重试次数 |
-| timeoutMs | long | 新的超时时间 |
+Validation errors use a `422` response with an application error code. Typical cases include:
 
-**响应**
+- missing `executeAt`
+- missing `deadline`
+- missing `shardKey`
+- invalid time ordering
+- invalid callback URL
 
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "taskId": "task_1704067200000_abc123",
-    "status": "SCHEDULED",
-    "version": 2,
-    ...
-  }
-}
-```
+Lifecycle errors return `404` or `422` depending on whether the intent is missing or simply not in a valid state for the requested operation.
 
----
-
-### 5. 立即触发
-
-```
-POST /api/v1/tasks/{taskId}/fire-now
-```
-
-**响应**
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "taskId": "task_1704067200000_abc123",
-    "status": "READY",
-    ...
-  }
-}
-```
-
----
-
-### 6. 健康检查
-
-```
-GET /health
-```
-
-**响应**
-
-```json
-{
-  "status": "UP",
-  "components": {
-    "wal": "UP",
-    "scheduler": "UP",
-    "store": "UP"
-  }
-}
-```
-
----
-
-### 7. 监控指标
-
-```
-GET /metrics
-```
-
-返回 Prometheus 格式的指标。
-
----
-
-## 状态值
-
-| 状态 | 说明 | 终态 |
-|------|------|------|
-| PENDING | 等待调度 | ❌ |
-| SCHEDULED | 已入调度 | ❌ |
-| READY | 已到期 | ❌ |
-| RUNNING | 执行中 | ❌ |
-| RETRY_WAIT | 等待重试 | ❌ |
-| SUCCESS | 成功 | ✅ |
-| FAILED | 失败 | ✅ |
-| CANCELLED | 已取消 | ✅ |
-| EXPIRED | 已过期 | ✅ |
-| DEAD_LETTER | 死信 | ✅ |

@@ -14,14 +14,24 @@ public class IdGenerator {
     private static final long MAX_SEQUENCE = 999999L;
 
     /**
-     * 生成任务ID
+     * 生成 Intent ID
      * 格式: t_{timestamp}_{sequence}_{random}
      */
-    public static String generateTaskId() {
+    public static String generateIntentId() {
         long timestamp = System.currentTimeMillis();
         long seq = SEQUENCE.updateAndGet(current -> current >= MAX_SEQUENCE ? 0 : current + 1);
         int random = RANDOM.nextInt(1000);
         return String.format("t_%d_%06d_%03d", timestamp, seq, random);
+    }
+
+    /**
+     * 兼容旧调用点的任务 ID 生成入口。
+     *
+     * @deprecated use {@link #generateIntentId()} instead
+     */
+    @Deprecated(forRemoval = false)
+    public static String generateTaskId() {
+        return generateIntentId();
     }
 
     /**
