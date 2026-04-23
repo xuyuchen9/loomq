@@ -34,17 +34,12 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
- * LoomQ v0.7.1 核心引擎 - 嵌入式内核
+ * LoomQ 核心引擎 - 嵌入式内核
  *
  * 纯 Java 实现，零外部依赖（仅 SLF4J API）。
- * 提供延迟任务队列的核心能力，通过 DeliveryHandler 投递任务。
- *
- * v0.7.1 变更：
- * - 集成 PrecisionScheduler 调度器
- * - 使用 DeliveryHandler SPI 接口投递
+ * 提供 Intent 队列的核心能力，通过 DeliveryHandler 投递 Intent。
  *
  * @author loomq
- * @since v0.7.0
  */
 public class LoomqEngine implements AutoCloseable {
 
@@ -135,7 +130,7 @@ public class LoomqEngine implements AutoCloseable {
         }
 
         logger.info("╔════════════════════════════════════════════════════════╗");
-        logger.info("║       LoomQ v0.7.1 Core Engine Starting...             ║");
+            logger.info("║       LoomQ Core Engine Starting...                    ║");
         logger.info("║       Mode: Embedded (Zero HTTP dependencies)          ║");
         logger.info("╚════════════════════════════════════════════════════════╝");
 

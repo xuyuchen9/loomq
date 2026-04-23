@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 批量同步投递器
+ * 批量同步投递器。
  *
  * 第一性原理实现：
  * 1. 虚拟线程使同步调用成本极低
@@ -36,10 +36,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * 3. 同步投递消除异步状态机复杂度
  * 4. 背压通过队列满拒绝实现
  *
- * v0.7.1: 迁移至 loomq-core，使用 DeliveryHandler SPI 接口投递
- *
  * @author loomq
- * @since v0.6.1
  */
 public class BatchDispatcher implements AutoCloseable {
 

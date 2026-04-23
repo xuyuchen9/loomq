@@ -6,9 +6,9 @@ import java.util.Objects;
 import java.util.zip.CRC32C;
 
 /**
- * 复制记录
+ * 复制记录。
  *
- * 这是 v0.4.8 复制的核心数据结构，用于在 primary 和 replica 之间传输任务变更。
+ * 用于在 primary 和 replica 之间传输状态变更。
  *
  * 格式设计：
  * - Magic (8 bytes)
@@ -24,7 +24,6 @@ import java.util.zip.CRC32C;
  * - Payload (variable)
  *
  * @author loomq
- * @since v0.4.8
  */
 public class ReplicationRecord {
 

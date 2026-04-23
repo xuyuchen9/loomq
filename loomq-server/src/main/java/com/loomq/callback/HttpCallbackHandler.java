@@ -18,15 +18,12 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 /**
- * HTTP 回调处理器
+ * HTTP 回调处理器。
  *
  * 实现 CallbackHandler 接口，将内核事件转换为 HTTP webhook 投递。
  * 支持异步投递、指数退避重试、超时控制。
  *
- * v0.7.0 新增：连接 core 模块与 HTTP 投递层
- *
  * @author loomq
- * @since v0.7.0
  */
 public class HttpCallbackHandler implements CallbackHandler {
 

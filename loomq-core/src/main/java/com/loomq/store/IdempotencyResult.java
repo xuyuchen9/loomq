@@ -3,7 +3,7 @@ package com.loomq.store;
 import com.loomq.domain.intent.Intent;
 
 /**
- * 幂等查询结果 (v0.5)
+ * 幂等查询结果。
  *
  * 用于区分不同的幂等场景：
  * 1. NEW - 幂等键不存在，可以创建新 Intent
@@ -12,7 +12,6 @@ import com.loomq.domain.intent.Intent;
  * 4. WINDOW_EXPIRED - 窗口期外，视为新业务请求
  *
  * @author loomq
- * @since v0.5.0
  */
 public class IdempotencyResult {
 

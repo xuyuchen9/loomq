@@ -32,15 +32,12 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 精度调度器 (v0.5.1)
+ * 精度调度器。
  *
  * 支持多精度档位的 Intent 调度，每个档位独立的扫描线程。
  * 核心架构：虚拟线程独立休眠 + 分层 Bucket 唤醒。
  *
- * v0.7.1: 迁移至 loomq-core，使用 DeliveryHandler SPI 接口投递
- *
  * @author loomq
- * @since v0.5.1
  */
 public class PrecisionScheduler {
 
