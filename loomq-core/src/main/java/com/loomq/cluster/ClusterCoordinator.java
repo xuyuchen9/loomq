@@ -13,28 +13,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 集群协调器 V2 - v0.4.8 租约仲裁版本
+ * 集群协调器。
  *
- * 硬约束 #1：Coordinator 必须是"租约 + 版本号"仲裁，不是简单投票
- *
- * 核心职责：
- * 1. 租约管理：发放、续约、撤销租约
- * 2. 路由表版本管理：单调递增版本号
- * 3. Fencing Token 生成：防止脑裂
- * 4. 故障仲裁：决定哪个节点成为新 primary
- * 5. 节点健康检测与抖动判定
- *
- * 设计原则：
- * - 租约机制：只有持有有效租约的节点才能作为 primary 写入
- * - 版本号机制：路由表版本单调递增，failover 后递增
- * - 仲裁中心：所有角色切换必须经过 coordinator 确认
- * - Fencing：旧 primary 的写入会被 fencing token 拒绝
- *
- * 注意：这不是 Raft，只是一个租约仲裁服务。
- * v0.4.8 不追求分布式共识，而是追求"可解释的高可用"。
+ * 负责租约管理、路由表版本控制、fencing token 生成、故障仲裁和节点健康监控。
+ * 这是一个租约仲裁服务，不是分布式共识协议。
  *
  * @author loomq
- * @since v0.4.8
  */
 public class ClusterCoordinator implements AutoCloseable {
 
@@ -52,7 +36,7 @@ public class ClusterCoordinator implements AutoCloseable {
     // 抖动窗口（毫秒）
     public static final long DEFAULT_FLAPPING_WINDOW_MS = 30000;
 
-    // ========== v0.4.8 新增：租约配置 ==========
+    // 租约配置
     // 默认租约有效期（毫秒）
     public static final long DEFAULT_LEASE_DURATION_MS = 10000;  // 10 秒
 
@@ -80,10 +64,10 @@ public class ClusterCoordinator implements AutoCloseable {
     // 故障时策略配置
     private final FailureHandlingConfig failureConfig;
 
-    // ========== v0.4.8 新增：租约仲裁 ==========
+    // 租约仲裁
     private final CoordinatorLeaseRegistry leaseRegistry;
 
-    // ========== v0.4.8 新增：心跳监控 ==========
+    // 心跳监控
     private final ClusterHeartbeatMonitor heartbeatMonitor;
 
     /**
@@ -141,8 +125,7 @@ public class ClusterCoordinator implements AutoCloseable {
         // 注册路由表监听器
         this.routingTable.addListener(this::onRoutingTableChanged);
 
-        logger.info("ClusterCoordinator created for cluster: {} (v0.4.8 lease arbitration)",
-            config.getClusterName());
+        logger.info("ClusterCoordinator created for cluster: {}", config.getClusterName());
     }
 
     // ========== 生命周期管理 ==========
@@ -457,7 +440,7 @@ public class ClusterCoordinator implements AutoCloseable {
         default void onRoutingTableChanged(long newVersion) {}
     }
 
-    // ========== v0.4.8 新增：租约管理（硬约束 #1）==========
+    // 租约管理
 
     /**
      * 申请租约

@@ -8,12 +8,11 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Intent 实体 (v0.5)
+ * Intent 实体。
  *
  * Intent 是对外暴露的核心资源，代表一个未来必须触发的事件。
  *
  * @author loomq
- * @since v0.5.0
  */
 public class Intent {
 

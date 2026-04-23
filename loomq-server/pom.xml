@@ -71,12 +71,6 @@
             <artifactId>netty-all</artifactId>
         </dependency>
 
-        <!-- YAML Parsing -->
-        <dependency>
-            <groupId>org.yaml</groupId>
-            <artifactId>snakeyaml</artifactId>
-        </dependency>
-
         <!-- Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

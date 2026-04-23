@@ -23,7 +23,7 @@ import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * 集群配置管理
+ * 集群配置管理。
  *
  * 管理分片集群的配置信息，支持：
  * 1. 从配置文件加载
@@ -49,7 +49,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * </pre>
  *
  * @author loomq
- * @since v0.3
  */
 public class ClusterConfig {
 

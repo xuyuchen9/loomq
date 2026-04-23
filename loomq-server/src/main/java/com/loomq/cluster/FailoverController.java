@@ -15,25 +15,12 @@ import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
- * Failover 控制器
+ * Failover 控制器。
  *
- * 硬约束 #1 续：故障转移控制器，实现租约仲裁和角色切换
- *
- * 职责：
- * 1. 接收故障通知（来自 HeartbeatManager）
- * 2. 执行 promotion/demotion 流程
- * 3. 与 Coordinator 交互获取/释放租约
- * 4. 更新路由表版本
- * 5. 协调复制管理器的角色切换
- *
- * 设计原则：
- * - 只有持有有效租约的节点才能成为 primary
- * - 租约必须由 Coordinator 仲裁发放
- * - 旧 primary 的租约过期后，新 primary 才能获取租约
- * - 使用 fencing token 防止旧 primary 写入
+ * 负责接收故障通知、执行 promotion/demotion、协调租约生命周期、
+ * 更新路由版本并切换复制管理器角色。
  *
  * @author loomq
- * @since v0.4.8
  */
 public class FailoverController implements AutoCloseable {
 

@@ -6,9 +6,9 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Coordinator 租约 (v0.5)
+ * Coordinator 租约。
  *
- * 硬约束 #1: Coordinator 必须是"租约 + 版本号"仲裁，不是简单投票
+ * Coordinator 通过租约和版本号进行仲裁，而不是简单投票。
  *
  * 租约设计原则：
  * 1. 租约 ID：唯一标识本次 primary 任期
@@ -19,7 +19,6 @@ import java.util.concurrent.atomic.AtomicLong;
  * 6. 续约机制：primary 必须定期续约，否则租约过期
  *
  * @author loomq
- * @since v0.5.0
  */
 public final class CoordinatorLease {
 

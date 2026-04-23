@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 路由表 - 支持版本控制的原子更新 (v0.4.4)
+ * 路由表。
  *
  * 设计目标：
  * 1. 路由表版本单调递增，支持 CAS 语义更新
@@ -22,7 +22,6 @@ import java.util.concurrent.atomic.AtomicReference;
  * 4. 节点抖动期间禁止频繁切换路由
  *
  * @author loomq
- * @since v0.4.4
  */
 public class RoutingTable {
 

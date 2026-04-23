@@ -1,7 +1,7 @@
 package com.loomq.domain.intent;
 
 /**
- * Intent 状态枚举 (v0.5)
+ * Intent 状态枚举。
  *
  * 状态流转：
  * CREATED → SCHEDULED ─────────────────► CANCELED
@@ -34,7 +34,6 @@ package com.loomq.domain.intent;
  * - DEAD_LETTERED: 达到最大重试次数或进入死信，终态
  *
  * @author loomq
- * @since v0.5.0
  */
 public enum IntentStatus {
 

@@ -14,15 +14,12 @@ import java.util.Properties;
 import java.util.concurrent.Executor;
 
 /**
- * LoomQ 引擎工厂
+ * LoomQ 引擎工厂。
  *
  * 提供从配置文件创建 LoomqEngine 的工厂方法。
  * 支持 YAML 和 Properties 格式。
  *
- * v0.7.1: 支持 DeliveryHandler 配置
- *
  * @author loomq
- * @since v0.7.0
  */
 public final class LoomqEngineFactory {
 

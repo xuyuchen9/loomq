@@ -104,12 +104,12 @@ class BucketGroupTest {
 
         // sleepMs = delay - precisionWindow - jitter
         // jitter 是 [0, precisionWindow) 的随机值
-        // 所以 sleepMs 应该在 [delay - 2*precisionWindow, delay - precisionWindow) 范围内
+        // 所以 sleepMs 应该在 [delay - 2*precisionWindow, delay - precisionWindow] 范围内
         long minSleep = delay - 2 * standardGroup.getPrecisionWindowMs();
         long maxSleep = delay - standardGroup.getPrecisionWindowMs();
 
         assertTrue(sleepMs >= minSleep, "sleepMs should be >= " + minSleep + " but was " + sleepMs);
-        assertTrue(sleepMs < maxSleep, "sleepMs should be < " + maxSleep + " but was " + sleepMs);
+        assertTrue(sleepMs <= maxSleep, "sleepMs should be <= " + maxSleep + " but was " + sleepMs);
     }
 
     @Test
@@ -145,8 +145,8 @@ class BucketGroupTest {
         long minSleep = delay - 2 * standardGroup.getPrecisionWindowMs();
         long maxSleep = delay - standardGroup.getPrecisionWindowMs();
 
-        assertTrue(firstSleep >= minSleep && firstSleep < maxSleep);
-        assertTrue(secondSleep >= minSleep && secondSleep < maxSleep);
+        assertTrue(firstSleep >= minSleep && firstSleep <= maxSleep);
+        assertTrue(secondSleep >= minSleep && secondSleep <= maxSleep);
     }
 
     @Test
