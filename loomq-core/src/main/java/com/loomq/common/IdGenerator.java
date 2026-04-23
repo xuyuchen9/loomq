@@ -25,6 +25,16 @@ public class IdGenerator {
     }
 
     /**
+     * 兼容旧调用点的任务 ID 生成入口。
+     *
+     * @deprecated use {@link #generateIntentId()} instead
+     */
+    @Deprecated(forRemoval = false)
+    public static String generateTaskId() {
+        return generateIntentId();
+    }
+
+    /**
      * 生成事件ID
      * 格式: e_{timestamp}_{sequence}_{random}
      */
