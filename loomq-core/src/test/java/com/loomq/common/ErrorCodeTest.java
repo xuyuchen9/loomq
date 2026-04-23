@@ -24,16 +24,16 @@ class ErrorCodeTest {
     }
 
     @Test
-    void testTaskErrorCodes() {
-        assertEquals(100, ErrorCode.TASK_NOT_FOUND.getCode());
-        assertEquals(101, ErrorCode.TASK_ALREADY_EXISTS.getCode());
-        assertEquals(102, ErrorCode.TASK_STATUS_INVALID.getCode());
-        assertEquals(103, ErrorCode.TASK_ALREADY_TERMINATED.getCode());
-        assertEquals(104, ErrorCode.TASK_CANNOT_CANCEL.getCode());
-        assertEquals(105, ErrorCode.TASK_CANNOT_MODIFY.getCode());
+    void testIntentErrorCodes() {
+        assertEquals(100, ErrorCode.INTENT_NOT_FOUND.getCode());
+        assertEquals(101, ErrorCode.INTENT_ALREADY_EXISTS.getCode());
+        assertEquals(102, ErrorCode.INTENT_STATUS_INVALID.getCode());
+        assertEquals(103, ErrorCode.INTENT_ALREADY_TERMINATED.getCode());
+        assertEquals(104, ErrorCode.INTENT_CANNOT_CANCEL.getCode());
+        assertEquals(105, ErrorCode.INTENT_CANNOT_MODIFY.getCode());
         assertEquals(106, ErrorCode.VERSION_CONFLICT.getCode());
-        assertEquals(107, ErrorCode.DUPLICATE_TASK.getCode());
-        assertEquals(108, ErrorCode.TASK_ALREADY_COMPLETED.getCode());
+        assertEquals(107, ErrorCode.DUPLICATE_INTENT.getCode());
+        assertEquals(108, ErrorCode.INTENT_ALREADY_COMPLETED.getCode());
     }
 
     @Test
@@ -72,7 +72,7 @@ class ErrorCodeTest {
 
     @Test
     void testGetMessage() {
-        assertEquals("intent not found", ErrorCode.TASK_NOT_FOUND.getMessage());
+        assertEquals("intent not found", ErrorCode.INTENT_NOT_FOUND.getMessage());
         assertEquals("WAL write error", ErrorCode.WAL_WRITE_ERROR.getMessage());
     }
 

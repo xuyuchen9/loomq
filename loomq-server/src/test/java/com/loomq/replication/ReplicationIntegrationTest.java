@@ -70,7 +70,7 @@ class ReplicationIntegrationTest {
 
         ReplicationRecord record = ReplicationRecord.builder()
             .offset(1L)
-            .type(ReplicationRecordType.TASK_CREATE)
+            .type(ReplicationRecordType.INTENT_CREATE)
             .sourceNodeId("primary-1")
             .payload("test data".getBytes())
             .build();
@@ -101,7 +101,7 @@ class ReplicationIntegrationTest {
         for (int i = 0; i < count; i++) {
             ReplicationRecord record = ReplicationRecord.builder()
                 .offset(i + 1)
-                .type(ReplicationRecordType.TASK_CREATE)
+                .type(ReplicationRecordType.INTENT_CREATE)
                 .payload(("data-" + i).getBytes())
                 .build();
 
@@ -137,7 +137,7 @@ class ReplicationIntegrationTest {
         for (int i = 0; i < 10; i++) {
             ReplicationRecord record = ReplicationRecord.builder()
                 .offset(i + 1)
-                .type(ReplicationRecordType.TASK_CREATE)
+                .type(ReplicationRecordType.INTENT_CREATE)
                 .payload("data".getBytes())
                 .build();
             client.send(record);
@@ -179,8 +179,8 @@ class ReplicationIntegrationTest {
         client.connect().get(3, TimeUnit.SECONDS);
 
         ReplicationRecordType[] types = {
-            ReplicationRecordType.TASK_CREATE,
-            ReplicationRecordType.TASK_CANCEL,
+            ReplicationRecordType.INTENT_CREATE,
+            ReplicationRecordType.INTENT_CANCEL,
             ReplicationRecordType.STATE_TRANSITION,
             ReplicationRecordType.STATE_RETRY,
             ReplicationRecordType.INDEX_INSERT,
@@ -219,7 +219,7 @@ class ReplicationIntegrationTest {
 
         ReplicationRecord record = ReplicationRecord.builder()
             .offset(1L)
-            .type(ReplicationRecordType.TASK_CREATE)
+            .type(ReplicationRecordType.INTENT_CREATE)
             .build();
 
         CompletableFuture<Ack> future = client.send(record);
@@ -261,7 +261,7 @@ class ReplicationIntegrationTest {
         client.connect().get(3, TimeUnit.SECONDS);
         ReplicationRecord record1 = ReplicationRecord.builder()
             .offset(1L)
-            .type(ReplicationRecordType.TASK_CREATE)
+            .type(ReplicationRecordType.INTENT_CREATE)
             .build();
         client.send(record1).get(3, TimeUnit.SECONDS);
 
@@ -273,7 +273,7 @@ class ReplicationIntegrationTest {
 
         ReplicationRecord record2 = ReplicationRecord.builder()
             .offset(2L)
-            .type(ReplicationRecordType.TASK_CANCEL)
+            .type(ReplicationRecordType.INTENT_CANCEL)
             .build();
         client.send(record2).get(3, TimeUnit.SECONDS);
 

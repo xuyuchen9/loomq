@@ -99,6 +99,7 @@ public class RoutingTable {
             return false;
         }
 
+        TableSnapshot currentSnapshotValue = currentSnapshot.get();
         long newVersion = currentVersion + 1;
         TableSnapshot newSnapshot = new TableSnapshot(
                 newVersion,
@@ -107,7 +108,7 @@ public class RoutingTable {
                 Instant.now()
         );
 
-        if (currentSnapshot.compareAndSet(currentSnapshot.get(), newSnapshot)) {
+        if (currentSnapshot.compareAndSet(currentSnapshotValue, newSnapshot)) {
             version.incrementAndGet();
             logger.info("Routing table updated: version {} -> {}, nodes={}",
                     currentVersion, newVersion, nodeStates.size());

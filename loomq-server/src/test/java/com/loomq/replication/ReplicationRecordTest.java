@@ -26,13 +26,13 @@ class ReplicationRecordTest {
         ReplicationRecord record = ReplicationRecord.builder()
             .offset(100L)
             .timestamp(Instant.now())
-            .type(ReplicationRecordType.TASK_CREATE)
+            .type(ReplicationRecordType.INTENT_CREATE)
             .sourceNodeId("shard-0-primary")
             .payload(payload)
             .build();
 
         assertEquals(100L, record.getOffset());
-        assertEquals(ReplicationRecordType.TASK_CREATE, record.getType());
+        assertEquals(ReplicationRecordType.INTENT_CREATE, record.getType());
         assertEquals("shard-0-primary", record.getSourceNodeId());
         assertArrayEquals(payload, record.getPayload());
         assertTrue(record.getTimestamp() > 0);
@@ -104,7 +104,7 @@ class ReplicationRecordTest {
     void testEmptySourceNodeId() {
         ReplicationRecord record = ReplicationRecord.builder()
             .offset(1L)
-            .type(ReplicationRecordType.TASK_CREATE)
+            .type(ReplicationRecordType.INTENT_CREATE)
             .build();
 
         assertEquals("", record.getSourceNodeId());
@@ -119,7 +119,7 @@ class ReplicationRecordTest {
 
         ReplicationRecord record = ReplicationRecord.builder()
             .offset(999999L)
-            .type(ReplicationRecordType.TASK_CREATE)
+            .type(ReplicationRecordType.INTENT_CREATE)
             .payload(largePayload)
             .build();
 
@@ -134,7 +134,7 @@ class ReplicationRecordTest {
         assertThrows(IllegalArgumentException.class, () -> {
             ReplicationRecord.builder()
                 .offset(-1L)
-                .type(ReplicationRecordType.TASK_CREATE)
+                .type(ReplicationRecordType.INTENT_CREATE)
                 .build();
         });
     }
@@ -173,14 +173,14 @@ class ReplicationRecordTest {
         ReplicationRecord record1 = ReplicationRecord.builder()
             .offset(100L)
             .timestamp(fixedTime)
-            .type(ReplicationRecordType.TASK_CREATE)
+            .type(ReplicationRecordType.INTENT_CREATE)
             .payload("data".getBytes())
             .build();
 
         ReplicationRecord record2 = ReplicationRecord.builder()
             .offset(100L)
             .timestamp(fixedTime)
-            .type(ReplicationRecordType.TASK_CREATE)
+            .type(ReplicationRecordType.INTENT_CREATE)
             .payload("data".getBytes())
             .build();
 
@@ -190,26 +190,26 @@ class ReplicationRecordTest {
 
     @Test
     void testTypeClassification() {
-        assertTrue(ReplicationRecordType.TASK_CREATE.isTaskLifecycle());
-        assertTrue(ReplicationRecordType.TASK_CANCEL.isTaskLifecycle());
-        assertFalse(ReplicationRecordType.STATE_TRANSITION.isTaskLifecycle());
+        assertTrue(ReplicationRecordType.INTENT_CREATE.isIntentLifecycle());
+        assertTrue(ReplicationRecordType.INTENT_CANCEL.isIntentLifecycle());
+        assertFalse(ReplicationRecordType.STATE_TRANSITION.isIntentLifecycle());
 
         assertTrue(ReplicationRecordType.STATE_TRANSITION.isStateTransition());
         assertTrue(ReplicationRecordType.STATE_RETRY.isStateTransition());
-        assertFalse(ReplicationRecordType.TASK_CREATE.isStateTransition());
+        assertFalse(ReplicationRecordType.INTENT_CREATE.isStateTransition());
 
         assertTrue(ReplicationRecordType.INDEX_INSERT.isSchedulerIndex());
         assertTrue(ReplicationRecordType.INDEX_REMOVE.isSchedulerIndex());
         assertTrue(ReplicationRecordType.INDEX_UPDATE.isSchedulerIndex());
-        assertFalse(ReplicationRecordType.TASK_CREATE.isSchedulerIndex());
+        assertFalse(ReplicationRecordType.INTENT_CREATE.isSchedulerIndex());
 
         assertTrue(ReplicationRecordType.NODE_PROMOTION.isSystemEvent());
-        assertFalse(ReplicationRecordType.TASK_CREATE.isSystemEvent());
+        assertFalse(ReplicationRecordType.INTENT_CREATE.isSystemEvent());
     }
 
     @Test
     void testRecordTypeFromCode() {
-        assertEquals(ReplicationRecordType.TASK_CREATE,
+        assertEquals(ReplicationRecordType.INTENT_CREATE,
             ReplicationRecordType.fromCode((byte) 0x01));
         assertEquals(ReplicationRecordType.CHECKPOINT,
             ReplicationRecordType.fromCode((byte) 0x40));
@@ -224,7 +224,7 @@ class ReplicationRecordTest {
         byte[] payload = "payload".getBytes();
         ReplicationRecord record = ReplicationRecord.builder()
             .offset(1L)
-            .type(ReplicationRecordType.TASK_CREATE)
+            .type(ReplicationRecordType.INTENT_CREATE)
             .sourceNodeId("node-1")
             .payload(payload)
             .build();
@@ -239,13 +239,13 @@ class ReplicationRecordTest {
     void testToString() {
         ReplicationRecord record = ReplicationRecord.builder()
             .offset(123L)
-            .type(ReplicationRecordType.TASK_CREATE)
+            .type(ReplicationRecordType.INTENT_CREATE)
             .payload("test".getBytes())
             .build();
 
         String str = record.toString();
         assertTrue(str.contains("offset=123"));
-        assertTrue(str.contains("TASK_CREATE"));
+        assertTrue(str.contains("INTENT_CREATE"));
         assertTrue(str.contains("payloadSize=4"));
     }
 }

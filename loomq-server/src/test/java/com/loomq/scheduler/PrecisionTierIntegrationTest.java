@@ -284,7 +284,7 @@ public class PrecisionTierIntegrationTest {
         String metrics = response.getBody();
 
         // 验证基本指标存在
-        assertTrue(metrics.contains("loomq_intents") || metrics.contains("loomq_tasks"),
+        assertTrue(metrics.contains("loomq_intents") || metrics.contains("loomq_intents"),
             "Should have loomq metrics. Got: " + metrics.substring(0, Math.min(500, metrics.length())));
 
         logger.info("✅ PT-05 PASSED: Metrics endpoint works");

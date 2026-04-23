@@ -61,38 +61,14 @@ public class FailoverController implements AutoCloseable {
     // 当前正在执行的 failover 操作
     private final AtomicReference<CompletableFuture<?>> activeFailover;
 
-    // 租约提供者（从 Coordinator 获取）
-    private volatile Function<String, CompletableFuture<CoordinatorLease>> leaseProvider;
-
-    // 租约续约函数
-    private volatile BiFunction<String, String, CompletableFuture<CoordinatorLease>> leaseRenewer;
-
-    // 路由表版本生成器
-    private final AtomicLong routingVersionGenerator;
-
-    // 租约配置
-    private final long leaseDurationMs;
-    private final double renewalWindowRatio;
-
-    // 租约续约调度
-    private volatile java.util.concurrent.ScheduledFuture<?> leaseRenewalTask;
-
     // 租约失效回调
     private volatile Runnable leaseExpiredCallback;
 
-    /**
-     * 创建 Failover 控制器
-     *
-     * @param nodeId 节点 ID
-     * @param shardId 分片 ID
-     * @param initialRole 初始角色
-     * @param initialRoutingVersion 初始路由表版本
-     */
-    public FailoverController(String nodeId, String shardId,
-                              ReplicaRole initialRole, long initialRoutingVersion) {
-        this(nodeId, shardId, initialRole, initialRoutingVersion,
-            10000L, 0.3);  // 默认 10s 租约，30% 续约窗口
-    }
+    // 复制端点配置
+    private final ReplicationEndpoints replicationEndpoints;
+
+    // 租约生命周期管理
+    private final LeaseLifecycleManager leaseLifecycleManager;
 
     /**
      * 创建 Failover 控制器
@@ -101,12 +77,11 @@ public class FailoverController implements AutoCloseable {
      * @param shardId 分片 ID
      * @param initialRole 初始角色
      * @param initialRoutingVersion 初始路由表版本
-     * @param leaseDurationMs 租约有效期（毫秒）
-     * @param renewalWindowRatio 续约窗口比例
      */
     public FailoverController(String nodeId, String shardId,
                               ReplicaRole initialRole, long initialRoutingVersion,
-                              long leaseDurationMs, double renewalWindowRatio) {
+                              long leaseDurationMs, double renewalWindowRatio,
+                              ReplicationEndpoints replicationEndpoints) {
         this.nodeId = Objects.requireNonNull(nodeId, "nodeId cannot be null");
         this.shardId = Objects.requireNonNull(shardId, "shardId cannot be null");
         this.stateMachine = new ShardStateMachine(shardId, nodeId, initialRole);
@@ -114,9 +89,17 @@ public class FailoverController implements AutoCloseable {
         this.catchUpManager = new WalCatchUpManager(nodeId, shardId, stateMachine);
         this.primaryCurrentOffset = new AtomicLong(0);
         this.activeFailover = new AtomicReference<>(null);
-        this.routingVersionGenerator = new AtomicLong(initialRoutingVersion);
-        this.leaseDurationMs = leaseDurationMs;
-        this.renewalWindowRatio = renewalWindowRatio;
+        this.replicationEndpoints = Objects.requireNonNull(replicationEndpoints, "replicationEndpoints cannot be null");
+        AtomicLong routingVersionGenerator = new AtomicLong(initialRoutingVersion);
+        this.leaseLifecycleManager = new LeaseLifecycleManager(
+            shardId,
+            leaseDurationMs,
+            renewalWindowRatio,
+            routingVersionGenerator,
+            stateMachine::getCurrentLease,
+            stateMachine::setCurrentLease,
+            this::handleLeaseExpired
+        );
 
         // 设置追赶管理器的回调
         setupCatchUpCallbacks();
@@ -161,8 +144,8 @@ public class FailoverController implements AutoCloseable {
 
         // 根据初始角色初始化状态
         if (stateMachine.getCurrentRole() == ReplicaRole.LEADER) {
-            // 如果初始是 primary，需要获取租约
-            acquireLeaseAsync();
+            // 如果初始是 primary，需要先完成租约获取、续约和复制角色激活
+            bootstrapPrimaryRole();
         } else {
             // 如果初始是 replica，启动追赶流程
             // 从 REPLICA_INIT -> REPLICA_CATCHING_UP -> REPLICA_SYNCED
@@ -170,6 +153,27 @@ public class FailoverController implements AutoCloseable {
         }
 
         logger.info("FailoverController started, state={}", stateMachine.getCurrentState());
+    }
+
+    /**
+     * 启动时激活 primary 角色。
+     */
+    private void bootstrapPrimaryRole() {
+        leaseLifecycleManager.acquireLeaseAsync().whenComplete((lease, error) -> {
+            if (error != null || lease == null) {
+                logger.error("Failed to acquire lease during startup", error);
+                demoteToReplica();
+                return;
+            }
+
+            if (activatePrimaryAfterLease(lease)) {
+                logger.info("Startup lease acquired: {} for shard {}", lease.getLeaseId(), shardId);
+                return;
+            }
+
+            logger.error("Failed to activate primary during startup for shard {}", shardId);
+            demoteToReplica();
+        });
     }
 
     /**
@@ -216,9 +220,7 @@ public class FailoverController implements AutoCloseable {
         logger.info("Stopping FailoverController...");
 
         // 取消租约续约任务
-        if (leaseRenewalTask != null) {
-            leaseRenewalTask.cancel(false);
-        }
+        leaseLifecycleManager.close();
 
         // 停止追赶管理器
         catchUpManager.close();
@@ -299,7 +301,7 @@ public class FailoverController implements AutoCloseable {
         }
 
         // Step 2: 向 Coordinator 申请租约
-        acquireLeaseAsync().whenComplete((lease, error) -> {
+        leaseLifecycleManager.acquireLeaseAsync().whenComplete((lease, error) -> {
             if (error != null || lease == null) {
                 logger.error("Failed to acquire lease for promotion", error);
                 stateMachine.toSynced();
@@ -310,21 +312,12 @@ public class FailoverController implements AutoCloseable {
 
             logger.info("Lease acquired: {} for shard {}", lease.getLeaseId(), shardId);
 
-            // Step 3: 更新状态机为 PRIMARY_ACTIVE
-            if (stateMachine.toPrimaryActive(lease)) {
-                stateMachine.setCurrentLease(lease);
-
-                // Step 4: 启动租约续约
-                startLeaseRenewal(lease);
-
-                // Step 5: 更新复制管理器角色
-                updateReplicationManagerRole();
-
+            if (activatePrimaryAfterLease(lease)) {
                 logger.info("Promotion completed: node {} is now PRIMARY for shard {}",
                     nodeId, shardId);
                 future.complete(true);
             } else {
-                logger.error("Failed to transition to PRIMARY_ACTIVE");
+                logger.error("Failed to activate PRIMARY after acquiring lease");
                 stateMachine.toSynced();
                 future.complete(false);
             }
@@ -354,10 +347,7 @@ public class FailoverController implements AutoCloseable {
         }
 
         // Step 2: 停止租约续约
-        if (leaseRenewalTask != null) {
-            leaseRenewalTask.cancel(false);
-            leaseRenewalTask = null;
-        }
+        leaseLifecycleManager.stopLeaseRenewal();
 
         // Step 3: 转换到 REPLICA_INIT
         if (stateMachine.toReplicaInit()) {
@@ -400,14 +390,14 @@ public class FailoverController implements AutoCloseable {
             demoteToReplica();
         }
 
-        // 模拟故障事件触发 promotion
-        HeartbeatManager.NodeFailureEvent mockEvent = new HeartbeatManager.NodeFailureEvent(
+        // 构造手动触发的故障事件并走同一条失败处理路径
+        HeartbeatManager.NodeFailureEvent failureEvent = new HeartbeatManager.NodeFailureEvent(
             "manual-trigger", shardId, ReplicaRole.LEADER,
             HeartbeatManager.NodeFailureEvent.FailureType.MANUAL_SHUTDOWN,
             "Manual failover triggered"
         );
 
-        return handleNodeFailure(mockEvent).thenApply(success -> {
+        return handleNodeFailure(failureEvent).thenApply(success -> {
             if (success) {
                 CoordinatorLease lease = stateMachine.getCurrentLease();
                 return new FailoverResult(true, "Failover successful", lease);
@@ -420,94 +410,24 @@ public class FailoverController implements AutoCloseable {
     // ==================== 租约管理 ====================
 
     /**
-     * 异步获取租约
+     * 在获得租约后激活 primary 角色。
      */
-    private CompletableFuture<CoordinatorLease> acquireLeaseAsync() {
-        if (leaseProvider == null) {
-            return CompletableFuture.failedFuture(
-                new IllegalStateException("Lease provider not set"));
+    private boolean activatePrimaryAfterLease(CoordinatorLease lease) {
+        boolean activated;
+        if (stateMachine.isPrimaryActive()) {
+            stateMachine.setCurrentLease(lease);
+            activated = true;
+        } else {
+            activated = stateMachine.toPrimaryActive(lease);
         }
 
-        long newRoutingVersion = routingVersionGenerator.incrementAndGet();
-        logger.info("Requesting lease for shard {} with routing version {}",
-            shardId, newRoutingVersion);
-
-        return leaseProvider.apply(shardId).thenApply(lease -> {
-            if (lease != null) {
-                // 验证租约是否有效
-                if (!lease.isValid()) {
-                    throw new IllegalStateException("Acquired lease is already expired");
-                }
-                logger.info("Lease acquired successfully: {} (expires at {})",
-                    lease.getLeaseId(), lease.getExpiresAt());
-            }
-            return lease;
-        });
-    }
-
-    /**
-     * 启动租约续约任务
-     */
-    private void startLeaseRenewal(CoordinatorLease lease) {
-        if (leaseRenewalTask != null) {
-            leaseRenewalTask.cancel(false);
+        if (!activated) {
+            return false;
         }
 
-        // 计算续约间隔（在过期前 renewalWindowRatio 的时间窗口内开始续约）
-        long renewalInterval = (long) (leaseDurationMs * (1 - renewalWindowRatio));
-
-        leaseRenewalTask = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(
-            r -> {
-                Thread t = new Thread(r, "lease-renewal-" + shardId);
-                t.setDaemon(true);
-                return t;
-            }
-        ).scheduleAtFixedRate(
-            this::renewLease,
-            renewalInterval,
-            renewalInterval,
-            TimeUnit.MILLISECONDS
-        );
-
-        logger.info("Lease renewal scheduled every {}ms for shard {}", renewalInterval, shardId);
-    }
-
-    /**
-     * 执行租约续约
-     */
-    private void renewLease() {
-        CoordinatorLease currentLease = stateMachine.getCurrentLease();
-        if (currentLease == null) {
-            logger.warn("No active lease to renew");
-            return;
-        }
-
-        // 检查租约是否需要续约
-        if (!currentLease.canRenew(renewalWindowRatio)) {
-            logger.debug("Lease not yet due for renewal");
-            return;
-        }
-
-        logger.debug("Renewing lease {}...", currentLease.getLeaseId());
-
-        if (leaseRenewer != null) {
-            leaseRenewer.apply(shardId, currentLease.getLeaseId())
-                .whenComplete((newLease, error) -> {
-                    if (error != null || newLease == null) {
-                        logger.error("Failed to renew lease", error);
-
-                        // 检查当前租约是否已过期
-                        if (currentLease.isExpired()) {
-                            handleLeaseExpired();
-                        }
-                        return;
-                    }
-
-                    logger.info("Lease renewed: {} (new expiry: {})",
-                        newLease.getLeaseId(), newLease.getExpiresAt());
-                    stateMachine.setCurrentLease(newLease);
-                });
-        }
+        leaseLifecycleManager.startLeaseRenewal(lease);
+        updateReplicationManagerRole();
+        return true;
     }
 
     /**
@@ -515,12 +435,6 @@ public class FailoverController implements AutoCloseable {
      */
     private void handleLeaseExpired() {
         logger.error("Lease expired! This node is no longer the primary.");
-
-        // 停止租约续约
-        if (leaseRenewalTask != null) {
-            leaseRenewalTask.cancel(false);
-            leaseRenewalTask = null;
-        }
 
         // 转换到降级状态
         stateMachine.toPrimaryDegraded("Lease expired");
@@ -553,9 +467,7 @@ public class FailoverController implements AutoCloseable {
         }
 
         if (stateMachine.isPrimary()) {
-            // Primary：需要知道 replica 地址
-            // 实际地址应该从配置或 coordinator 获取
-            manager.promoteToPrimary("replica-host", 9090)
+            manager.promoteToPrimary(replicationEndpoints.primaryReplicaHost(), replicationEndpoints.primaryReplicaPort())
                 .whenComplete((v, e) -> {
                     if (e != null) {
                         logger.error("Failed to promote replication manager", e);
@@ -564,8 +476,7 @@ public class FailoverController implements AutoCloseable {
                     }
                 });
         } else {
-            // Replica：绑定本地端口
-            manager.demoteToReplica("0.0.0.0", 9090)
+            manager.demoteToReplica(replicationEndpoints.replicaBindHost(), replicationEndpoints.replicaBindPort())
                 .whenComplete((v, e) -> {
                     if (e != null) {
                         logger.error("Failed to demote replication manager", e);
@@ -582,14 +493,14 @@ public class FailoverController implements AutoCloseable {
      * 设置租约提供者
      */
     public void setLeaseProvider(Function<String, CompletableFuture<CoordinatorLease>> provider) {
-        this.leaseProvider = provider;
+        leaseLifecycleManager.setLeaseProvider(provider);
     }
 
     /**
      * 设置租约续约函数
      */
     public void setLeaseRenewer(BiFunction<String, String, CompletableFuture<CoordinatorLease>> renewer) {
-        this.leaseRenewer = renewer;
+        leaseLifecycleManager.setLeaseRenewer(renewer);
     }
 
     /**
@@ -618,7 +529,7 @@ public class FailoverController implements AutoCloseable {
     }
 
     public long getRoutingVersion() {
-        return routingVersionGenerator.get();
+        return leaseLifecycleManager.getRoutingVersion();
     }
 
     /**

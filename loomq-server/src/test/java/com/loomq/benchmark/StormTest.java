@@ -299,7 +299,7 @@ public class StormTest {
             intentId, delayMs
         );
 
-        URL url = new URL(BASE_URL + "/tasks");
+        URL url = new URL(BASE_URL + "/intents");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
@@ -332,9 +332,9 @@ public class StormTest {
                 String line;
                 StringBuilder sb = new StringBuilder();
                 while ((line = reader.readLine()) != null) {
-                    if (line.startsWith("loomq_tasks_total") ||
-                        line.startsWith("loomq_tasks_pending") ||
-                        line.startsWith("loomq_tasks_scheduled") ||
+                    if (line.startsWith("loomq_intents_total") ||
+                        line.startsWith("loomq_intents_pending") ||
+                        line.startsWith("loomq_intents_scheduled") ||
                         line.startsWith("loomq_wake_latency") ||
                         line.startsWith("loomq_webhook_latency") ||
                         line.startsWith("loomq_total_latency") ||

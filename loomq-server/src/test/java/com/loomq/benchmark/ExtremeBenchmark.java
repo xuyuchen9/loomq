@@ -133,22 +133,22 @@ public class ExtremeBenchmark {
         System.out.println("══════════════════════════════════════════════════════════════");
         long memBefore = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
         int intentCount = 10000;
-        createTasksForMemoryTest(intentCount);
+        createIntentsForMemoryTest(intentCount);
         System.gc();
         Thread.sleep(500);
         long memAfter = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
-        long memPerTask = (memAfter - memBefore) / intentCount;
+        long memPerIntent = (memAfter - memBefore) / intentCount;
         System.out.printf("创建 Intent 数: %d%n", intentCount);
         System.out.printf("内存增量: %.2f MB%n", (memAfter - memBefore) / 1024.0 / 1024.0);
-        System.out.printf("每 Intent 内存: ~%d bytes%n", memPerTask);
-        results.put("mem_per_task", memPerTask);
+        System.out.printf("每 Intent 内存: ~%d bytes%n", memPerIntent);
+        results.put("mem_per_intent", memPerIntent);
         System.out.println();
 
         // 汇总报告
-        printSummaryReport(tierResults, threadResults, mixedResult, queryQps, memPerTask);
+        printSummaryReport(tierResults, threadResults, mixedResult, queryQps, memPerIntent);
 
         // 生成 Markdown 报告
-        generateMarkdownReport(tierResults, threadResults, mixedResult, queryQps, memPerTask);
+        generateMarkdownReport(tierResults, threadResults, mixedResult, queryQps, memPerIntent);
     }
 
     private static void warmup() throws Exception {
@@ -351,7 +351,7 @@ public class ExtremeBenchmark {
         return (long) ((double) successCount.get() / actualDuration * 1000);
     }
 
-    private static void createTasksForMemoryTest(int count) throws Exception {
+    private static void createIntentsForMemoryTest(int count) throws Exception {
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         CountDownLatch latch = new CountDownLatch(count);
 
@@ -495,7 +495,7 @@ public class ExtremeBenchmark {
             Map<Integer, TierResult> threadResults,
             TierResult mixedResult,
             long queryQps,
-            long memPerTask) {
+            long memPerIntent) {
 
         System.out.println();
         System.out.println("╔══════════════════════════════════════════════════════════════╗");
@@ -521,7 +521,7 @@ public class ExtremeBenchmark {
         System.out.printf("📊 创建延迟 P99: %d ms%n", bestTier != null ? bestTier.p99 : 0);
 
         // 内存
-        System.out.printf("📊 每任务内存: ~%d bytes%n", memPerTask);
+        System.out.printf("📊 每任务内存: ~%d bytes%n", memPerIntent);
 
         // SLO 验证
         System.out.println();
@@ -551,7 +551,7 @@ public class ExtremeBenchmark {
             Map<Integer, TierResult> threadResults,
             TierResult mixedResult,
             long queryQps,
-            long memPerTask) {
+            long memPerIntent) {
 
         System.out.println();
         System.out.println("══════════════════════════════════════════════════════════════");
@@ -577,7 +577,7 @@ public class ExtremeBenchmark {
         if (bestTier != null) {
             System.out.printf("| **Create Latency P99** | %d ms |%n", bestTier.p99);
         }
-        System.out.printf("| **Memory per Intent** | **~%d bytes** |%n", memPerTask);
+        System.out.printf("| **Memory per Intent** | **~%d bytes** |%n", memPerIntent);
         System.out.println();
 
         // 精度档位性能

@@ -1,25 +1,43 @@
 package com.loomq.config;
 
-import org.aeonbits.owner.Config;
+import java.util.Properties;
 
 /**
- * 重试配置
+ * 重试配置.
  */
-@Config.Sources({"classpath:application.yml", "file:./config/application.yml"})
-public interface RetryConfig extends Config {
-    @Key("retry.initial_delay_ms")
-    @DefaultValue("1000")
-    long initialDelayMs();
+public record RetryConfig(
+        long initialDelayMs,
+        long maxDelayMs,
+        double multiplier,
+        int defaultMaxRetry
+) {
 
-    @Key("retry.max_delay_ms")
-    @DefaultValue("60000")
-    long maxDelayMs();
+    public RetryConfig {
+        if (initialDelayMs <= 0) {
+            throw new IllegalArgumentException("initialDelayMs must be positive");
+        }
+        if (maxDelayMs <= 0) {
+            throw new IllegalArgumentException("maxDelayMs must be positive");
+        }
+        if (multiplier <= 0.0d) {
+            throw new IllegalArgumentException("multiplier must be positive");
+        }
+        if (defaultMaxRetry < 0) {
+            throw new IllegalArgumentException("defaultMaxRetry must be non-negative");
+        }
+    }
 
-    @Key("retry.multiplier")
-    @DefaultValue("2.0")
-    double multiplier();
+    public static RetryConfig defaultConfig() {
+        return new RetryConfig(1000, 60000, 2.0d, 5);
+    }
 
-    @Key("retry.default_max_retry")
-    @DefaultValue("5")
-    int defaultMaxRetry();
+    public static RetryConfig fromProperties(Properties props) {
+        Properties source = props == null ? new Properties() : props;
+        return new RetryConfig(
+                ConfigSupport.longValue(source, 1000, "retry.initial_delay_ms", "retry.initialDelayMs", "initialDelayMs"),
+                ConfigSupport.longValue(source, 60000, "retry.max_delay_ms", "retry.maxDelayMs", "maxDelayMs"),
+                ConfigSupport.doubleValue(source, 2.0d, "retry.multiplier", "multiplier"),
+                ConfigSupport.intValue(source, 5, "retry.default_max_retry", "retry.defaultMaxRetry", "defaultMaxRetry")
+        );
+    }
 }

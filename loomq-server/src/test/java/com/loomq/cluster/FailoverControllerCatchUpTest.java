@@ -5,6 +5,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -25,15 +26,17 @@ class FailoverControllerCatchUpTest {
 
     private static final String NODE_ID = "test-node";
     private static final String SHARD_ID = "test-shard";
+    private static final long LEASE_TTL_MS = 5000L;
+    private static final double RENEWAL_WINDOW_RATIO = 0.3;
+    private static final ReplicationEndpoints REPLICATION_ENDPOINTS =
+        new ReplicationEndpoints("127.0.0.1", 9090, "0.0.0.0", 9090);
 
     private FailoverController controller;
 
     @BeforeEach
     void setUp() {
         // 创建初始为 REPLICA 角色的控制器
-        controller = new FailoverController(
-            NODE_ID, SHARD_ID, ReplicaRole.FOLLOWER, 1L,
-            5000L, 0.3);
+        controller = createController(SHARD_ID, ReplicaRole.FOLLOWER);
     }
 
     @AfterEach
@@ -41,6 +44,23 @@ class FailoverControllerCatchUpTest {
         if (controller != null) {
             controller.close();
         }
+    }
+
+    private FailoverController createController(String shardId, ReplicaRole role) {
+        FailoverController failoverController = new FailoverController(
+            NODE_ID, shardId, role, 1L,
+            LEASE_TTL_MS, RENEWAL_WINDOW_RATIO, REPLICATION_ENDPOINTS);
+        configureLeaseLifecycle(failoverController);
+        return failoverController;
+    }
+
+    private void configureLeaseLifecycle(FailoverController failoverController) {
+        failoverController.setLeaseProvider(shardId ->
+            CompletableFuture.completedFuture(
+                new CoordinatorLease(shardId, NODE_ID, 1L, LEASE_TTL_MS, 1L)));
+        failoverController.setLeaseRenewer((shardId, leaseId) ->
+            CompletableFuture.completedFuture(
+                new CoordinatorLease(leaseId, shardId, NODE_ID, 2L, Instant.now(), LEASE_TTL_MS, 1L, 0L)));
     }
 
     @Test
@@ -93,12 +113,11 @@ class FailoverControllerCatchUpTest {
 
         // 再次启动应该失败（已经关闭）
         // 或者创建新的控制器
-        FailoverController newController = new FailoverController(
-            NODE_ID, SHARD_ID + "-2", ReplicaRole.FOLLOWER, 1L);
+        FailoverController restartedController = createController(SHARD_ID + "-2", ReplicaRole.FOLLOWER);
 
-        newController.start();
-        assertFalse(newController.isCatchingUp()); // 未设置 Primary offset，不会启动追赶
-        newController.close();
+        restartedController.start();
+        assertFalse(restartedController.isCatchingUp()); // 未设置 Primary offset，不会启动追赶
+        restartedController.close();
     }
 
     @Test
@@ -117,8 +136,7 @@ class FailoverControllerCatchUpTest {
     @Test
     void testPrimaryRoleNoCatchUp() {
         // 创建 Primary 角色的控制器
-        FailoverController primaryController = new FailoverController(
-            NODE_ID, SHARD_ID, ReplicaRole.LEADER, 1L);
+        FailoverController primaryController = createController(SHARD_ID, ReplicaRole.LEADER);
 
         primaryController.start();
 
@@ -135,8 +153,7 @@ class FailoverControllerCatchUpTest {
     @Test
     void testDemoteToReplicaStartsCatchUp() throws Exception {
         // 创建 Primary 角色的控制器
-        FailoverController primaryController = new FailoverController(
-            NODE_ID, SHARD_ID, ReplicaRole.LEADER, 1L);
+        FailoverController primaryController = createController(SHARD_ID, ReplicaRole.LEADER);
 
         primaryController.start();
 
@@ -197,8 +214,7 @@ class FailoverControllerCatchUpTest {
         controller.close();
 
         // 创建新的控制器再次测试
-        FailoverController controller2 = new FailoverController(
-            NODE_ID, SHARD_ID + "-3", ReplicaRole.FOLLOWER, 1L);
+        FailoverController controller2 = createController(SHARD_ID + "-3", ReplicaRole.FOLLOWER);
 
         controller2.start();
         assertNotNull(controller2.getCatchUpManager());

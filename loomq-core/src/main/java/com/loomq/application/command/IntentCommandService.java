@@ -86,7 +86,7 @@ public final class IntentCommandService {
             intentStore.save(intent);
             scheduler.schedule(intent);
 
-            metricsCollector.incrementTasksCreated();
+            metricsCollector.incrementIntentsCreated();
             logger.debug("Intent created: id={}, ackMode={}, seq={}",
                 intent.getIntentId(), resolvedAckMode, seq);
 
@@ -164,7 +164,7 @@ public final class IntentCommandService {
             intentStore.update(intent);
             dispatchCallback(intent, CallbackHandler.EventType.CANCELLED, null);
 
-            metricsCollector.incrementTasksCancelled();
+            metricsCollector.incrementIntentsCancelled();
             logger.info("Intent cancelled: id={}", intentId);
             return true;
         } catch (IllegalStateException e) {

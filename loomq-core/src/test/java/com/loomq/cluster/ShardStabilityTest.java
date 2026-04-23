@@ -78,11 +78,11 @@ class ShardStabilityTest {
         long currentVersion = routingTable.getVersion();
 
         // 使用正确版本的路由请求
-        RoutingTable.RoutingResult result1 = routingTable.route("task-1", Optional.of(currentVersion));
+        RoutingTable.RoutingResult result1 = routingTable.route("intent-1", Optional.of(currentVersion));
         assertTrue(result1.success());
 
         // 使用错误版本的路由请求
-        RoutingTable.RoutingResult result2 = routingTable.route("task-1", Optional.of(currentVersion - 1));
+        RoutingTable.RoutingResult result2 = routingTable.route("intent-1", Optional.of(currentVersion - 1));
         assertFalse(result2.success());
         assertTrue(result2.isVersionMismatch());
     }
@@ -248,16 +248,16 @@ class ShardStabilityTest {
 
     @Test
     @DisplayName("节点离线后旧节点任务应继续执行")
-    void testRunningTasksContinueOnNodeOffline() {
+    void testRunningIntentsContinueOnNodeOffline() {
         // 验证故障时策略配置
         ClusterCoordinator.FailureHandlingConfig config =
                 ClusterCoordinator.FailureHandlingConfig.defaultConfig();
 
-        assertTrue(config.keepRunningTasks(),
+        assertTrue(config.keepRunningIntents(),
                 "默认配置应允许旧节点任务继续执行");
         assertTrue(config.rerouteNewRequests(),
                 "默认配置应将新请求路由到新节点");
-        assertEquals(300000, config.taskDrainTimeoutMs(),
+        assertEquals(300000, config.intentDrainTimeoutMs(),
                 "默认排空超时应为 5 分钟");
     }
 
@@ -275,8 +275,8 @@ class ShardStabilityTest {
 
         try {
             // 模拟本地节点任务
-            String localTaskId = "local-task-1";
-            RoutingTable.RoutingResult result = coordinator.route(localTaskId, Optional.empty());
+            String localIntentId = "local-intent-1";
+            RoutingTable.RoutingResult result = coordinator.route(localIntentId, Optional.empty());
 
             assertTrue(result.success());
             assertNotNull(result.node());
@@ -296,12 +296,12 @@ class ShardStabilityTest {
         Map<String, ShardNode.State> states = createNodeStates(3, ShardNode.State.ACTIVE);
         routingTable.forceUpdate(router, states);
 
-        String taskId = "order-12345";
+        String intentId = "order-12345";
 
         // 多次路由同一任务，应得到相同结果
         Set<String> routedShards = new HashSet<>();
         for (int i = 0; i < 100; i++) {
-            RoutingTable.RoutingResult result = routingTable.route(taskId, Optional.empty());
+            RoutingTable.RoutingResult result = routingTable.route(intentId, Optional.empty());
             assertTrue(result.success());
             routedShards.add(result.node().getShardId());
         }
@@ -323,9 +323,9 @@ class ShardStabilityTest {
         // 记录初始路由结果
         Map<String, String> initialRoutes = new HashMap<>();
         for (int i = 0; i < 100; i++) {
-            String taskId = "task-" + i;
-            RoutingTable.RoutingResult result = routingTable.route(taskId, Optional.empty());
-            initialRoutes.put(taskId, result.node().getShardId());
+            String intentId = "intent-" + i;
+            RoutingTable.RoutingResult result = routingTable.route(intentId, Optional.empty());
+            initialRoutes.put(intentId, result.node().getShardId());
         }
 
         // 路由表变更：移除一个节点
@@ -337,10 +337,10 @@ class ShardStabilityTest {
         // 验证：仍映射到剩余节点的任务应保持路由
         int consistentRoutes = 0;
         for (Map.Entry<String, String> entry : initialRoutes.entrySet()) {
-            String taskId = entry.getKey();
+            String intentId = entry.getKey();
             String originalShard = entry.getValue();
 
-            RoutingTable.RoutingResult result = routingTable.route(taskId, Optional.empty());
+            RoutingTable.RoutingResult result = routingTable.route(intentId, Optional.empty());
             if (result.success()) {
                 if (originalShard.equals(result.node().getShardId())) {
                     consistentRoutes++;
@@ -363,7 +363,7 @@ class ShardStabilityTest {
 
         int threadCount = 10;
         int requestsPerThread = 100;
-        String sharedTaskId = "shared-order-123";
+        String sharedIntentId = "shared-order-123";
 
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         CountDownLatch latch = new CountDownLatch(threadCount);
@@ -373,7 +373,7 @@ class ShardStabilityTest {
             executor.submit(() -> {
                 try {
                     for (int j = 0; j < requestsPerThread; j++) {
-                        RoutingTable.RoutingResult result = routingTable.route(sharedTaskId, Optional.empty());
+                        RoutingTable.RoutingResult result = routingTable.route(sharedIntentId, Optional.empty());
                         if (result.success()) {
                             shardRouteCount.merge(result.node().getShardId(), 1, Integer::sum);
                         }

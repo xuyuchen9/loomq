@@ -2,20 +2,24 @@ package com.loomq.cluster;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.yaml.snakeyaml.Yaml;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -27,7 +31,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * 3. 配置热更新
  * 4. 配置变更监听
  *
- * 配置文件格式（cluster.yml）：
+ * 配置文件格式（cluster.yml，使用本项目支持的简化 YAML 结构）：
  * <pre>
  * cluster:
  *   name: "loomq-cluster"
@@ -302,36 +306,219 @@ public class ClusterConfig {
     }
 
     // 配置解析
-    @SuppressWarnings("unchecked")
-    private static ClusterConfig parseYaml(InputStream is) {
-        Yaml yaml = new Yaml();
-        Map<String, Object> data = yaml.load(is);
+    private static ClusterConfig parseYaml(InputStream is) throws IOException {
+        Map<String, String> clusterValues = new HashMap<>();
+        List<Map<String, String>> nodeValues = new ArrayList<>();
+        Map<String, String> currentNode = null;
+        boolean seenClusterSection = false;
+        boolean seenNodesSection = false;
 
-        Map<String, Object> cluster = (Map<String, Object>) data.get("cluster");
-        if (cluster == null) {
-            throw new IllegalArgumentException("Missing 'cluster' section in config");
-        }
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+            String rawLine;
+            int lineNumber = 0;
 
-        String name = (String) cluster.getOrDefault("name", "loomq-cluster");
-        int totalShards = (int) cluster.getOrDefault("total_shards", 1);
-        int localShardIndex = (int) cluster.getOrDefault("local_shard_index", 0);
-        boolean hotReload = (boolean) cluster.getOrDefault("hot_reload", false);
-        int reloadInterval = (int) cluster.getOrDefault("reload_interval_ms", 60000);
+            while ((rawLine = reader.readLine()) != null) {
+                lineNumber++;
 
-        List<NodeConfig> nodes = new ArrayList<>();
-        List<Map<String, Object>> nodeList = (List<Map<String, Object>>) cluster.get("nodes");
-        if (nodeList != null) {
-            for (Map<String, Object> node : nodeList) {
-                nodes.add(new NodeConfig(
-                        (String) node.get("shard_id"),
-                        (String) node.get("host"),
-                        (int) node.getOrDefault("port", 8080),
-                        (int) node.getOrDefault("weight", 100)
-                ));
+                String line = stripComment(rawLine).stripTrailing();
+                if (line.isBlank()) {
+                    continue;
+                }
+
+                int indent = countLeadingSpaces(line);
+                if (indent % 2 != 0) {
+                    throw new IllegalArgumentException("Invalid indentation at line " + lineNumber);
+                }
+
+                int level = indent / 2;
+                String trimmed = line.substring(indent).trim();
+
+                if (level == 0) {
+                    if (!"cluster:".equals(trimmed)) {
+                        throw new IllegalArgumentException("Expected 'cluster:' at line " + lineNumber);
+                    }
+                    seenClusterSection = true;
+                    currentNode = null;
+                    continue;
+                }
+
+                if (!seenClusterSection) {
+                    throw new IllegalArgumentException("Content found before 'cluster:' section at line " + lineNumber);
+                }
+
+                if (level == 1) {
+                    currentNode = null;
+                    if ("nodes:".equals(trimmed)) {
+                        if (seenNodesSection) {
+                            throw new IllegalArgumentException("Duplicate 'nodes' section at line " + lineNumber);
+                        }
+                        seenNodesSection = true;
+                        continue;
+                    }
+                    putKeyValue(clusterValues, trimmed, lineNumber, "cluster");
+                    continue;
+                }
+
+                if (!seenNodesSection) {
+                    throw new IllegalArgumentException("Node entry found before nodes section at line " + lineNumber);
+                }
+
+                if (level == 2) {
+                    if (!trimmed.startsWith("-")) {
+                        throw new IllegalArgumentException("Expected node list item at line " + lineNumber);
+                    }
+                    currentNode = new HashMap<>();
+                    nodeValues.add(currentNode);
+
+                    String entry = trimmed.substring(1).trim();
+                    if (!entry.isEmpty()) {
+                        putKeyValue(currentNode, entry, lineNumber, "node");
+                    }
+                    continue;
+                }
+
+                if (level == 3) {
+                    if (currentNode == null) {
+                        throw new IllegalArgumentException("Node attribute found before node entry at line " + lineNumber);
+                    }
+                    putKeyValue(currentNode, trimmed, lineNumber, "node");
+                    continue;
+                }
+
+                throw new IllegalArgumentException("Unsupported indentation at line " + lineNumber);
             }
         }
 
+        if (!seenClusterSection) {
+            throw new IllegalArgumentException("Missing 'cluster' section in config");
+        }
+
+        String name = defaultString(clusterValues.get("name"), "loomq-cluster");
+        int totalShards = parseIntValue(clusterValues.get("total_shards"), 1, "total_shards");
+        int localShardIndex = parseIntValue(clusterValues.get("local_shard_index"), 0, "local_shard_index");
+        boolean hotReload = parseBooleanValue(clusterValues.get("hot_reload"), false, "hot_reload");
+        long reloadInterval = parseLongValue(clusterValues.get("reload_interval_ms"), 60000L, "reload_interval_ms");
+
+        List<NodeConfig> nodes = new ArrayList<>();
+        for (Map<String, String> node : nodeValues) {
+            nodes.add(new NodeConfig(
+                    requiredString(node, "shard_id", "node"),
+                    requiredString(node, "host", "node"),
+                    parseIntValue(node.get("port"), 8080, "port"),
+                    parseIntValue(node.get("weight"), 100, "weight")
+            ));
+        }
+
         return new ClusterConfig(name, totalShards, localShardIndex, nodes, hotReload, reloadInterval);
+    }
+
+    private static void putKeyValue(Map<String, String> target, String line, int lineNumber, String scope) {
+        int colonIndex = line.indexOf(':');
+        if (colonIndex < 0) {
+            throw new IllegalArgumentException("Expected key:value pair in " + scope + " at line " + lineNumber);
+        }
+
+        String key = line.substring(0, colonIndex).trim();
+        String value = line.substring(colonIndex + 1).trim();
+        if (key.isEmpty()) {
+            throw new IllegalArgumentException("Empty key in " + scope + " at line " + lineNumber);
+        }
+        target.put(key, unquote(value));
+    }
+
+    private static String requiredString(Map<String, String> values, String key, String scope) {
+        String value = values.get(key);
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("Missing required " + scope + " field: " + key);
+        }
+        return value;
+    }
+
+    private static String defaultString(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value;
+    }
+
+    private static int parseIntValue(String value, int defaultValue, String fieldName) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid integer for " + fieldName + ": " + value, e);
+        }
+    }
+
+    private static long parseLongValue(String value, long defaultValue, String fieldName) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid long for " + fieldName + ": " + value, e);
+        }
+    }
+
+    private static boolean parseBooleanValue(String value, boolean defaultValue, String fieldName) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+
+        String normalized = value.toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "true", "1", "yes", "on" -> true;
+            case "false", "0", "no", "off" -> false;
+            default -> throw new IllegalArgumentException("Invalid boolean for " + fieldName + ": " + value);
+        };
+    }
+
+    private static String unquote(String value) {
+        if (value.length() >= 2) {
+            if ((value.startsWith("\"") && value.endsWith("\""))
+                    || (value.startsWith("'") && value.endsWith("'"))) {
+                return value.substring(1, value.length() - 1);
+            }
+        }
+        return value;
+    }
+
+    private static String stripComment(String line) {
+        boolean singleQuoted = false;
+        boolean doubleQuoted = false;
+        StringBuilder result = new StringBuilder(line.length());
+
+        for (int i = 0; i < line.length(); i++) {
+            char ch = line.charAt(i);
+
+            if (ch == '\'' && !doubleQuoted) {
+                singleQuoted = !singleQuoted;
+                result.append(ch);
+                continue;
+            }
+
+            if (ch == '"' && !singleQuoted) {
+                doubleQuoted = !doubleQuoted;
+                result.append(ch);
+                continue;
+            }
+
+            if (ch == '#' && !singleQuoted && !doubleQuoted) {
+                break;
+            }
+
+            result.append(ch);
+        }
+
+        return result.toString();
+    }
+
+    private static int countLeadingSpaces(String line) {
+        int count = 0;
+        while (count < line.length() && line.charAt(count) == ' ') {
+            count++;
+        }
+        return count;
     }
 
     // 环境变量工具方法

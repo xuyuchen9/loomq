@@ -27,19 +27,19 @@ class ShardMigratorTest {
     @Test
     @DisplayName("启动迁移任务应成功")
     void startMigration() throws InterruptedException {
-        ShardMigrator.MigrationTask task = migrator.startMigration(
+        ShardMigrator.MigrationJob intent = migrator.startMigration(
                 "shard-0", "node-old", "node-new");
 
-        assertNotNull(task);
-        assertEquals("shard-0", task.getShardId());
-        assertEquals("node-old", task.getSourceNode());
-        assertEquals("node-new", task.getTargetNode());
+        assertNotNull(intent);
+        assertEquals("shard-0", intent.getShardId());
+        assertEquals("node-old", intent.getSourceNode());
+        assertEquals("node-new", intent.getTargetNode());
 
         // 等待迁移完成
         Thread.sleep(200); // 优化: 500 -> 200
 
-        assertEquals(ShardMigrator.MigrationState.COMPLETED, task.getState());
-        assertEquals(100, task.getProgress());
+        assertEquals(ShardMigrator.MigrationState.COMPLETED, intent.getState());
+        assertEquals(100, intent.getProgress());
     }
 
     @Test
@@ -55,7 +55,7 @@ class ShardMigratorTest {
     @Test
     @DisplayName("检查活跃迁移")
     void hasActiveMigration() throws InterruptedException {
-        ShardMigrator.MigrationTask task = migrator.startMigration(
+        ShardMigrator.MigrationJob intent = migrator.startMigration(
                 "shard-1", "node-1", "node-2");
 
         // 等待完成
@@ -63,13 +63,13 @@ class ShardMigratorTest {
 
         // 完成后不再是活跃的
         assertFalse(migrator.hasActiveMigration("shard-1"));
-        assertEquals(ShardMigrator.MigrationState.COMPLETED, task.getState());
+        assertEquals(ShardMigrator.MigrationState.COMPLETED, intent.getState());
     }
 
     @Test
     @DisplayName("取消迁移任务")
     void cancelMigration() {
-        ShardMigrator.MigrationTask task = migrator.startMigration(
+        ShardMigrator.MigrationJob intent = migrator.startMigration(
                 "shard-2", "node-1", "node-2");
 
         // 立即取消（可能还在执行）
@@ -77,23 +77,23 @@ class ShardMigratorTest {
 
         // 取消可能成功或失败（取决于执行速度）
         // 验证任务存在即可
-        assertNotNull(task);
+        assertNotNull(intent);
     }
 
     @Test
     @DisplayName("获取迁移任务状态")
-    void getMigrationTask() throws InterruptedException {
+    void getMigrationJob() throws InterruptedException {
         migrator.startMigration("shard-3", "node-1", "node-2");
 
-        ShardMigrator.MigrationTask task = migrator.getMigrationTask("shard-3");
-        assertNotNull(task);
-        assertEquals("shard-3", task.getShardId());
+        ShardMigrator.MigrationJob intent = migrator.getMigrationJob("shard-3");
+        assertNotNull(intent);
+        assertEquals("shard-3", intent.getShardId());
 
         // 等待完成后清理
         Thread.sleep(500);
         migrator.cleanupCompletedMigrations();
 
         // 清理后任务应该被移除
-        assertNull(migrator.getMigrationTask("shard-3"));
+        assertNull(migrator.getMigrationJob("shard-3"));
     }
 }

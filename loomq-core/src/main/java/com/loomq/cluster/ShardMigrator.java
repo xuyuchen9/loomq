@@ -35,8 +35,8 @@ public class ShardMigrator {
         FAILED          // 失败
     }
 
-    // 迁移任务
-    public static class MigrationTask {
+    // 迁移作业
+    public static class MigrationJob {
         private final String shardId;
         private final String sourceNode;
         private final String targetNode;
@@ -45,7 +45,7 @@ public class ShardMigrator {
         private volatile long progress;  // 0-100
         private volatile String error;
 
-        MigrationTask(String shardId, String sourceNode, String targetNode) {
+        MigrationJob(String shardId, String sourceNode, String targetNode) {
             this.shardId = shardId;
             this.sourceNode = sourceNode;
             this.targetNode = targetNode;
@@ -78,8 +78,8 @@ public class ShardMigrator {
     // 路由器
     private final ShardRouter router;
 
-    // 当前迁移任务：shardId -> MigrationTask
-    private final ConcurrentHashMap<String, MigrationTask> activeMigrations;
+    // 当前迁移作业：shardId -> MigrationJob
+    private final ConcurrentHashMap<String, MigrationJob> activeMigrations;
 
     // 构造函数
     public ShardMigrator(ShardRouter router) {
@@ -94,29 +94,29 @@ public class ShardMigrator {
      * @param shardId    分片 ID
      * @param sourceNode 源节点 ID
      * @param targetNode 目标节点 ID
-     * @return 迁移任务
+     * @return 迁移作业
      */
-    public MigrationTask startMigration(String shardId, String sourceNode, String targetNode) {
-        // 检查是否已有迁移任务
+    public MigrationJob startMigration(String shardId, String sourceNode, String targetNode) {
+        // 检查是否已有迁移作业
         if (activeMigrations.containsKey(shardId)) {
             throw new IllegalStateException("Migration already in progress for shard: " + shardId);
         }
 
-        MigrationTask task = new MigrationTask(shardId, sourceNode, targetNode);
-        activeMigrations.put(shardId, task);
+        MigrationJob job = new MigrationJob(shardId, sourceNode, targetNode);
+        activeMigrations.put(shardId, job);
 
         logger.info("Migration started: {} from {} to {}", shardId, sourceNode, targetNode);
 
         // 异步执行迁移
-        executeMigration(task);
+        executeMigration(job);
 
-        return task;
+        return job;
     }
 
     /**
      * 执行迁移（简化版 - V0.3 不实现真实数据迁移）
      */
-    private void executeMigration(MigrationTask task) {
+    private void executeMigration(MigrationJob job) {
         // V0.3 简化：只更新路由，不做实际数据迁移
         // 实际生产环境需要：
         // 1. 双写阶段
@@ -125,68 +125,68 @@ public class ShardMigrator {
 
         try {
             // 准备阶段
-            task.setState(MigrationState.PREPARING);
-            task.setProgress(10);
+            job.setState(MigrationState.PREPARING);
+            job.setProgress(10);
             Thread.sleep(100);
 
             // 双写阶段（V0.3 跳过）
-            task.setState(MigrationState.DUAL_WRITE);
-            task.setProgress(30);
+            job.setState(MigrationState.DUAL_WRITE);
+            job.setProgress(30);
             Thread.sleep(100);
 
             // 数据同步（V0.3 跳过）
-            task.setState(MigrationState.SYNCING);
-            task.setProgress(60);
+            job.setState(MigrationState.SYNCING);
+            job.setProgress(60);
             Thread.sleep(100);
 
             // 路由切换
-            task.setState(MigrationState.SWITCHING);
-            task.setProgress(80);
+            job.setState(MigrationState.SWITCHING);
+            job.setProgress(80);
 
             // 路由器会自动更新（一致性 Hash）
             Thread.sleep(100);
 
             // 完成
-            task.setState(MigrationState.COMPLETED);
-            task.setProgress(100);
+            job.setState(MigrationState.COMPLETED);
+            job.setProgress(100);
 
-            logger.info("Migration completed: {}", task.getShardId());
+            logger.info("Migration completed: {}", job.getShardId());
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            task.setError("Migration interrupted");
-            logger.error("Migration interrupted: {}", task.getShardId());
+            job.setError("Migration interrupted");
+            logger.error("Migration interrupted: {}", job.getShardId());
         } catch (Exception e) {
-            task.setError(e.getMessage());
-            logger.error("Migration failed: {}", task.getShardId(), e);
+            job.setError(e.getMessage());
+            logger.error("Migration failed: {}", job.getShardId(), e);
         } finally {
-            // 保留任务记录一段时间
+            // 保留作业记录一段时间
             // 实际应该延迟清理
         }
     }
 
     /**
-     * 获取迁移任务状态
+     * 获取迁移作业状态
      */
-    public MigrationTask getMigrationTask(String shardId) {
+    public MigrationJob getMigrationJob(String shardId) {
         return activeMigrations.get(shardId);
     }
 
     /**
-     * 取消迁移任务
+     * 取消迁移作业
      */
     public boolean cancelMigration(String shardId) {
-        MigrationTask task = activeMigrations.get(shardId);
-        if (task == null) {
+        MigrationJob job = activeMigrations.get(shardId);
+        if (job == null) {
             return false;
         }
 
-        if (task.getState() == MigrationState.COMPLETED ||
-            task.getState() == MigrationState.FAILED) {
+        if (job.getState() == MigrationState.COMPLETED ||
+            job.getState() == MigrationState.FAILED) {
             return false;
         }
 
-        task.setError("Cancelled by user");
+        job.setError("Cancelled by user");
         logger.info("Migration cancelled: {}", shardId);
         return true;
     }
@@ -195,16 +195,16 @@ public class ShardMigrator {
      * 检查是否有进行中的迁移
      */
     public boolean hasActiveMigration(String shardId) {
-        MigrationTask task = activeMigrations.get(shardId);
-        if (task == null) {
+        MigrationJob job = activeMigrations.get(shardId);
+        if (job == null) {
             return false;
         }
-        MigrationState state = task.getState();
+        MigrationState state = job.getState();
         return state != MigrationState.COMPLETED && state != MigrationState.FAILED;
     }
 
     /**
-     * 获取所有迁移任务
+     * 获取所有迁移作业
      */
     public int getActiveMigrationCount() {
         return (int) activeMigrations.values().stream()
@@ -214,7 +214,7 @@ public class ShardMigrator {
     }
 
     /**
-     * 清理已完成的迁移任务
+     * 清理已完成的迁移作业
      */
     public void cleanupCompletedMigrations() {
         activeMigrations.entrySet().removeIf(entry -> {

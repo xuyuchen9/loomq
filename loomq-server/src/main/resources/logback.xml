@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   LoomQ Logback Configuration v0.4.5
-  High-Performance Delayed Task Queue
+  High-Performance Delayed Intent Queue
 -->
 <configuration>
     <!-- Import Spring defaults if using Spring -->
@@ -69,7 +69,7 @@
         </rollingPolicy>
     </appender>
 
-    <!-- Audit log for task operations -->
+    <!-- Audit log for intent operations -->
     <appender name="AUDIT" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>${LOG_PATH}/audit.log</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">

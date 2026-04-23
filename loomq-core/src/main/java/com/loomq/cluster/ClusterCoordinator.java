@@ -5,16 +5,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -62,9 +56,6 @@ public class ClusterCoordinator implements AutoCloseable {
     // 默认租约有效期（毫秒）
     public static final long DEFAULT_LEASE_DURATION_MS = 10000;  // 10 秒
 
-    // 默认最大 token 有效期（毫秒）
-    public static final long DEFAULT_MAX_TOKEN_TTL_MS = 30000;   // 30 秒
-
     // 默认续约窗口比例
     public static final double DEFAULT_RENEWAL_WINDOW_RATIO = 0.3;
 
@@ -80,16 +71,6 @@ public class ClusterCoordinator implements AutoCloseable {
     // 运行状态
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    // 心跳执行器
-    private ScheduledExecutorService heartbeatExecutor;
-
-    // 心跳配置
-    private final long heartbeatIntervalMs;
-    private final long heartbeatTimeoutMs;
-
-    // 节点健康状态跟踪
-    private final ConcurrentHashMap<String, NodeHealth> nodeHealthMap;
-
     // 状态变更监听器
     private final List<ClusterStateListener> stateListeners;
 
@@ -100,22 +81,10 @@ public class ClusterCoordinator implements AutoCloseable {
     private final FailureHandlingConfig failureConfig;
 
     // ========== v0.4.8 新增：租约仲裁 ==========
+    private final CoordinatorLeaseRegistry leaseRegistry;
 
-    // Fencing Token 序列号生成器
-    private final AtomicLong fencingSequenceGenerator;
-
-    // 租约存储：shardId -> CoordinatorLease
-    private final ConcurrentHashMap<String, CoordinatorLease> activeLeases;
-
-    // 路由表版本：shardId -> version（每个分片独立版本）
-    private final ConcurrentHashMap<String, AtomicLong> shardRoutingVersions;
-
-    // 租约配置
-    private final long leaseDurationMs;
-    private final double renewalWindowRatio;
-
-    // 租约事件监听器
-    private volatile java.util.function.Consumer<LeaseEvent> leaseEventListener;
+    // ========== v0.4.8 新增：心跳监控 ==========
+    private final ClusterHeartbeatMonitor heartbeatMonitor;
 
     /**
      * 创建集群协调器
@@ -146,10 +115,6 @@ public class ClusterCoordinator implements AutoCloseable {
                                  long leaseDurationMs, double renewalWindowRatio) {
         this.config = config;
         this.localNode = localNode;
-        this.heartbeatIntervalMs = heartbeatIntervalMs;
-        this.heartbeatTimeoutMs = heartbeatTimeoutMs;
-        this.leaseDurationMs = leaseDurationMs;
-        this.renewalWindowRatio = renewalWindowRatio;
 
         // 初始化路由表（带抖动检测）
         RoutingTable.RoutingTableConfig routingConfig = new RoutingTable.RoutingTableConfig(
@@ -159,15 +124,19 @@ public class ClusterCoordinator implements AutoCloseable {
         );
         this.routingTable = new RoutingTable(routingConfig);
 
-        this.nodeHealthMap = new ConcurrentHashMap<>();
         this.stateListeners = new CopyOnWriteArrayList<>();
         this.routingTableVersion = new AtomicLong(0);
         this.failureConfig = FailureHandlingConfig.defaultConfig();
-
-        // v0.4.8 新增：初始化租约相关
-        this.fencingSequenceGenerator = new AtomicLong(0);
-        this.activeLeases = new ConcurrentHashMap<>();
-        this.shardRoutingVersions = new ConcurrentHashMap<>();
+        this.leaseRegistry = new CoordinatorLeaseRegistry(leaseDurationMs, renewalWindowRatio);
+        this.heartbeatMonitor = new ClusterHeartbeatMonitor(
+                localNode,
+                heartbeatIntervalMs,
+                heartbeatTimeoutMs,
+                DEFAULT_FLAPPING_THRESHOLD
+        );
+        this.heartbeatMonitor.setOfflineAdmission(shardId -> !routingTable.isNodeFlapping(shardId));
+        this.heartbeatMonitor.addOfflineListener(this::handleNodeOffline);
+        this.heartbeatMonitor.addRecoveredListener(this::handleNodeRecovered);
 
         // 注册路由表监听器
         this.routingTable.addListener(this::onRoutingTableChanged);
@@ -194,8 +163,8 @@ public class ClusterCoordinator implements AutoCloseable {
         // 2. 初始化路由表
         initializeRoutingTable();
 
-        // 3. 启动心跳
-        startHeartbeat();
+        // 3. 启动心跳监控
+        heartbeatMonitor.start();
 
         logger.info("ClusterCoordinator started, routing table version: {}",
                 routingTable.getVersion());
@@ -211,15 +180,7 @@ public class ClusterCoordinator implements AutoCloseable {
 
         logger.info("Stopping ClusterCoordinator...");
 
-        // 停止心跳
-        if (heartbeatExecutor != null) {
-            heartbeatExecutor.shutdown();
-            try {
-                heartbeatExecutor.awaitTermination(5, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
+        heartbeatMonitor.close();
 
         logger.info("ClusterCoordinator stopped");
     }
@@ -227,12 +188,7 @@ public class ClusterCoordinator implements AutoCloseable {
     @Override
     public void close() {
         stop();
-
-        // v0.4.8 新增：撤销所有租约
-        for (Map.Entry<String, CoordinatorLease> entry : activeLeases.entrySet()) {
-            revokeLeaseInternal(entry.getKey(), entry.getValue().getLeaseId(),
-                "Coordinator shutdown");
-        }
+        leaseRegistry.close();
     }
 
     // ========== 初始化方法 ==========
@@ -243,163 +199,19 @@ public class ClusterCoordinator implements AutoCloseable {
             localNode.start();
         }
 
-        NodeHealth health = new NodeHealth(
-                localNode.getShardId(),
-                NodeHealth.Status.HEALTHY,
-                0,
-                Instant.now(),
-                Instant.now()
-        );
-        nodeHealthMap.put(localNode.getShardId(), health);
-
         logger.info("Local node initialized: {} with state {}",
                 localNode.getShardId(), localNode.getState());
     }
 
     private void initializeRoutingTable() {
-        ShardRouter router = new ShardRouter();
-
-        // 添加所有配置节点到路由器
-        for (ClusterConfig.NodeConfig nodeConfig : config.getNodes()) {
-            int shardIndex = parseShardIndex(nodeConfig.shardId());
-            LocalShardNode node = new LocalShardNode(
-                    shardIndex,
-                    config.getTotalShards(),
-                    nodeConfig.host(),
-                    nodeConfig.port(),
-                    nodeConfig.weight()
-            );
-            router.addNode(node);
-        }
-
-        // 构建节点状态映射
-        Map<String, ShardNode.State> nodeStates = new HashMap<>();
-        for (ClusterConfig.NodeConfig nodeConfig : config.getNodes()) {
-            nodeStates.put(nodeConfig.shardId(), ShardNode.State.ACTIVE);
-        }
+        ClusterRoutingPlanner.RoutingPlan plan = ClusterRoutingPlanner.initialPlan(config);
 
         // 强制初始化路由表
-        routingTable.forceUpdate(router, nodeStates);
+        routingTable.forceUpdate(plan.router(), plan.nodeStates());
         routingTableVersion.set(routingTable.getVersion());
 
         logger.info("Routing table initialized with version {}, {} nodes",
                 routingTable.getVersion(), config.getNodes().size());
-    }
-
-    // ========== 心跳与健康管理 ==========
-
-    private void startHeartbeat() {
-        heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "cluster-heartbeat-v2");
-            t.setDaemon(true);
-            return t;
-        });
-
-        heartbeatExecutor.scheduleAtFixedRate(
-                this::checkNodeHealth,
-                heartbeatIntervalMs,
-                heartbeatIntervalMs,
-                TimeUnit.MILLISECONDS
-        );
-
-        logger.info("Heartbeat started, interval={}ms, timeout={}ms",
-                heartbeatIntervalMs, heartbeatTimeoutMs);
-    }
-
-    /**
-     * 检查节点健康
-     */
-    private void checkNodeHealth() {
-        if (!running.get()) {
-            return;
-        }
-
-        // 更新本地节点心跳
-        localNode.heartbeat();
-        updateNodeHealth(localNode.getShardId(), NodeHealth.Status.HEALTHY);
-
-        Instant now = Instant.now();
-
-        // 检查其他节点
-        for (Map.Entry<String, NodeHealth> entry : nodeHealthMap.entrySet()) {
-            String shardId = entry.getKey();
-            NodeHealth health = entry.getValue();
-
-            // 跳过本地节点
-            if (shardId.equals(localNode.getShardId())) {
-                continue;
-            }
-
-            // 计算心跳超时
-            long lastSeenMs = java.time.Duration.between(health.lastHeartbeat(), now).toMillis();
-
-            if (lastSeenMs > heartbeatTimeoutMs) {
-                // 记录失败
-                int newConsecutiveFailures = health.consecutiveFailures() + 1;
-                updateNodeHealth(shardId, NodeHealth.Status.SUSPECT, newConsecutiveFailures);
-
-                logger.warn("Node {} heartbeat timeout (last seen {}ms ago), consecutive failures: {}",
-                        shardId, lastSeenMs, newConsecutiveFailures);
-
-                // 检查是否达到抖动阈值
-                if (newConsecutiveFailures >= DEFAULT_FLAPPING_THRESHOLD) {
-                    markNodeOffline(shardId);
-                }
-            }
-        }
-    }
-
-    /**
-     * 标记节点离线
-     */
-    private void markNodeOffline(String shardId) {
-        NodeHealth currentHealth = nodeHealthMap.get(shardId);
-        if (currentHealth == null || currentHealth.status() == NodeHealth.Status.OFFLINE) {
-            return;
-        }
-
-        // 检查节点是否正在抖动
-        if (routingTable.isNodeFlapping(shardId)) {
-            logger.warn("Node {} is flapping, delaying offline marking", shardId);
-            return;
-        }
-
-        updateNodeHealth(shardId, NodeHealth.Status.OFFLINE, currentHealth.consecutiveFailures());
-
-        // 更新路由表（CAS 操作）
-        updateRoutingTableForOfflineNode(shardId);
-
-        // 通知监听器
-        notifyNodeOffline(shardId);
-
-        logger.info("Node {} marked as OFFLINE, routing table version: {}",
-                shardId, routingTable.getVersion());
-    }
-
-    /**
-     * 更新节点健康状态
-     */
-    private void updateNodeHealth(String shardId, NodeHealth.Status status) {
-        updateNodeHealth(shardId, status,
-                status == NodeHealth.Status.HEALTHY ? 0 :
-                        nodeHealthMap.getOrDefault(shardId,
-                                new NodeHealth(shardId, status, 0, Instant.now(), Instant.now()))
-                                .consecutiveFailures());
-    }
-
-    private void updateNodeHealth(String shardId, NodeHealth.Status status, int consecutiveFailures) {
-        NodeHealth newHealth = new NodeHealth(
-                shardId,
-                status,
-                consecutiveFailures,
-                nodeHealthMap.getOrDefault(shardId,
-                        new NodeHealth(shardId, status, 0, Instant.now(), Instant.now())).firstFailureTime(),
-                status == NodeHealth.Status.HEALTHY ? Instant.now() :
-                        nodeHealthMap.getOrDefault(shardId,
-                                new NodeHealth(shardId, status, 0, Instant.now(), Instant.now())).lastHeartbeat()
-        );
-
-        nodeHealthMap.put(shardId, newHealth);
     }
 
     // ========== 路由表更新 ==========
@@ -417,48 +229,14 @@ public class ClusterCoordinator implements AutoCloseable {
             return;
         }
 
-        // 创建新的路由器（排除离线节点）
-        ShardRouter newRouter = new ShardRouter();
-        Map<String, ShardNode.State> newNodeStates = new HashMap<>();
+        ClusterRoutingPlanner.RoutingPlan plan =
+                ClusterRoutingPlanner.offlinePlan(config, heartbeatMonitor.getAllNodeHealth(), offlineShardId);
+        applyRoutingPlan(currentVersion, plan, "offline node", offlineShardId);
+    }
 
-        for (ClusterConfig.NodeConfig nodeConfig : config.getNodes()) {
-            String shardId = nodeConfig.shardId();
-            NodeHealth health = nodeHealthMap.get(shardId);
-
-            ShardNode.State state;
-            if (shardId.equals(offlineShardId)) {
-                state = ShardNode.State.OFFLINE;
-            } else if (health != null && health.status() == NodeHealth.Status.HEALTHY) {
-                state = ShardNode.State.ACTIVE;
-            } else {
-                state = ShardNode.State.JOINING;
-            }
-
-            newNodeStates.put(shardId, state);
-
-            // 只添加活跃节点到路由器
-            if (state == ShardNode.State.ACTIVE) {
-                int shardIndex = parseShardIndex(shardId);
-                LocalShardNode node = new LocalShardNode(
-                        shardIndex,
-                        config.getTotalShards(),
-                        nodeConfig.host(),
-                        nodeConfig.port(),
-                        nodeConfig.weight()
-                );
-                newRouter.addNode(node);
-            }
-        }
-
-        // CAS 更新路由表
-        boolean updated = routingTable.compareAndSwap(currentVersion, newRouter, newNodeStates);
-        if (updated) {
-            routingTableVersion.incrementAndGet();
-            logger.info("Routing table updated for offline node: {}, new version: {}",
-                    offlineShardId, routingTable.getVersion());
-        } else {
-            logger.warn("Failed to update routing table for offline node: {}", offlineShardId);
-        }
+    private void handleNodeOffline(String shardId) {
+        updateRoutingTableForOfflineNode(shardId);
+        notifyNodeOffline(shardId);
     }
 
     /**
@@ -472,24 +250,13 @@ public class ClusterCoordinator implements AutoCloseable {
 
     // ========== 公共 API ==========
 
-    /**
-     * 接收心跳（用于远程节点）
-     */
     public void receiveHeartbeat(String shardId) {
-        NodeHealth currentHealth = nodeHealthMap.get(shardId);
+        heartbeatMonitor.receiveHeartbeat(shardId);
+    }
 
-        if (currentHealth != null && currentHealth.status() == NodeHealth.Status.OFFLINE) {
-            // 节点从离线恢复
-            logger.info("Node {} recovered, marking as HEALTHY", shardId);
-            updateNodeHealth(shardId, NodeHealth.Status.HEALTHY, 0);
-
-            // 恢复节点到路由表
-            recoverNodeToRoutingTable(shardId);
-
-            notifyNodeRecovered(shardId);
-        } else {
-            updateNodeHealth(shardId, NodeHealth.Status.HEALTHY, 0);
-        }
+    private void handleNodeRecovered(String shardId) {
+        recoverNodeToRoutingTable(shardId);
+        notifyNodeRecovered(shardId);
     }
 
     /**
@@ -503,34 +270,22 @@ public class ClusterCoordinator implements AutoCloseable {
             return;
         }
 
-        // 创建新的路由器（包含恢复的节点）
-        ShardRouter newRouter = new ShardRouter();
-        Map<String, ShardNode.State> newNodeStates = new HashMap<>(snapshot.nodeStates());
-        newNodeStates.put(recoveredShardId, ShardNode.State.ACTIVE);
+        ClusterRoutingPlanner.RoutingPlan plan =
+                ClusterRoutingPlanner.recoveryPlan(config, snapshot, recoveredShardId);
+        applyRoutingPlan(currentVersion, plan, "recovered node", recoveredShardId);
+    }
 
-        for (ClusterConfig.NodeConfig nodeConfig : config.getNodes()) {
-            String shardId = nodeConfig.shardId();
-            ShardNode.State state = newNodeStates.getOrDefault(shardId, ShardNode.State.JOINING);
-
-            if (state == ShardNode.State.ACTIVE) {
-                int shardIndex = parseShardIndex(shardId);
-                LocalShardNode node = new LocalShardNode(
-                        shardIndex,
-                        config.getTotalShards(),
-                        nodeConfig.host(),
-                        nodeConfig.port(),
-                        nodeConfig.weight()
-                );
-                newRouter.addNode(node);
-            }
-        }
-
-        // CAS 更新路由表
-        boolean updated = routingTable.compareAndSwap(currentVersion, newRouter, newNodeStates);
+    private void applyRoutingPlan(long currentVersion,
+                                  ClusterRoutingPlanner.RoutingPlan plan,
+                                  String action,
+                                  String shardId) {
+        boolean updated = routingTable.compareAndSwap(currentVersion, plan.router(), plan.nodeStates());
         if (updated) {
-            routingTableVersion.incrementAndGet();
-            logger.info("Routing table updated for recovered node: {}, new version: {}",
-                    recoveredShardId, routingTable.getVersion());
+            routingTableVersion.set(routingTable.getVersion());
+            logger.info("Routing table updated for {}: {}, new version: {}",
+                    action, shardId, routingTable.getVersion());
+        } else {
+            logger.warn("Failed to update routing table for {}: {}", action, shardId);
         }
     }
 
@@ -551,7 +306,7 @@ public class ClusterCoordinator implements AutoCloseable {
     /**
      * 检查 Intent 是否应由本地节点处理
      */
-    public boolean isLocalTask(String intentId) {
+    public boolean isLocalIntent(String intentId) {
         Optional<ShardNode> node = route(intentId);
         return node.isPresent() &&
                 node.get().getShardId().equals(localNode.getShardId());
@@ -571,18 +326,12 @@ public class ClusterCoordinator implements AutoCloseable {
         return routingTable;
     }
 
-    /**
-     * 获取节点健康状态
-     */
     public Optional<NodeHealth> getNodeHealth(String shardId) {
-        return Optional.ofNullable(nodeHealthMap.get(shardId));
+        return heartbeatMonitor.getNodeHealth(shardId);
     }
 
-    /**
-     * 获取所有节点健康状态
-     */
     public Map<String, NodeHealth> getAllNodeHealth() {
-        return Map.copyOf(nodeHealthMap);
+        return heartbeatMonitor.getAllNodeHealth();
     }
 
     /**
@@ -632,17 +381,6 @@ public class ClusterCoordinator implements AutoCloseable {
     }
 
     // ========== 工具方法 ==========
-
-    private int parseShardIndex(String shardId) {
-        if (shardId.startsWith("shard-")) {
-            try {
-                return Integer.parseInt(shardId.substring(6));
-            } catch (NumberFormatException e) {
-                logger.warn("Invalid shardId format: {}", shardId);
-            }
-        }
-        return -1;
-    }
 
     // ========== 记录定义 ==========
 
@@ -697,13 +435,13 @@ public class ClusterCoordinator implements AutoCloseable {
      * 故障处理配置
      */
     public record FailureHandlingConfig(
-            boolean keepRunningTasks,      // 故障时是否继续执行旧节点任务
+            boolean keepRunningIntents,      // 故障时是否继续执行旧节点 intent
             boolean rerouteNewRequests,    // 是否将新请求路由到新节点
-            long taskDrainTimeoutMs        // 任务排空超时
+            long intentDrainTimeoutMs        // intent 排空超时
     ) {
         public static FailureHandlingConfig defaultConfig() {
             return new FailureHandlingConfig(
-                    true,    // 保持旧节点任务运行
+                    true,    // 保持旧节点 intent 运行
                     true,    // 新请求路由到新节点
                     300000   // 5 分钟排空超时
             );
@@ -734,39 +472,7 @@ public class ClusterCoordinator implements AutoCloseable {
      * @return 租约（可能为空表示申请被拒绝）
      */
     public synchronized Optional<CoordinatorLease> grantLease(String shardId, String nodeId) {
-        if (!running.get()) {
-            logger.warn("Coordinator not running, cannot grant lease");
-            return Optional.empty();
-        }
-
-        Objects.requireNonNull(shardId, "shardId cannot be null");
-        Objects.requireNonNull(nodeId, "nodeId cannot be null");
-
-        // 获取当前租约
-        CoordinatorLease currentLease = activeLeases.get(shardId);
-
-        // 检查是否有有效租约
-        if (currentLease != null && currentLease.isValid()) {
-            // 只能由持有者续约
-            if (!currentLease.isHeldBy(nodeId)) {
-                logger.warn("Lease for shard {} is held by {}, rejecting request from {}",
-                    shardId, currentLease.getNodeId(), nodeId);
-                return Optional.empty();
-            }
-
-            // 续约（延长过期时间）
-            return renewLeaseInternal(shardId, currentLease);
-        }
-
-        // 检查是否有租约但已过期
-        if (currentLease != null) {
-            logger.info("Lease for shard {} expired (holder={}), revoking and issuing new",
-                shardId, currentLease.getNodeId());
-            revokeLeaseInternal(shardId, currentLease.getLeaseId(), "Lease expired");
-        }
-
-        // 发放新租约
-        return issueNewLease(shardId, nodeId);
+        return leaseRegistry.grantLease(running.get(), shardId, nodeId);
     }
 
     /**
@@ -777,24 +483,7 @@ public class ClusterCoordinator implements AutoCloseable {
      * @return 新租约（如果失败返回空）
      */
     public synchronized Optional<CoordinatorLease> renewLease(String shardId, String leaseId) {
-        if (!running.get()) {
-            return Optional.empty();
-        }
-
-        CoordinatorLease currentLease = activeLeases.get(shardId);
-
-        if (currentLease == null) {
-            logger.warn("No active lease found for shard {} to renew", shardId);
-            return Optional.empty();
-        }
-
-        if (!currentLease.getLeaseId().equals(leaseId)) {
-            logger.warn("Lease ID mismatch for shard {}: expected {}, got {}",
-                shardId, currentLease.getLeaseId(), leaseId);
-            return Optional.empty();
-        }
-
-        return renewLeaseInternal(shardId, currentLease);
+        return leaseRegistry.renewLease(running.get(), shardId, leaseId);
     }
 
     /**
@@ -805,146 +494,24 @@ public class ClusterCoordinator implements AutoCloseable {
      * @param reason 撤销原因
      */
     public synchronized void revokeLease(String shardId, String leaseId, String reason) {
-        if (!running.get()) {
-            return;
-        }
-
-        CoordinatorLease currentLease = activeLeases.get(shardId);
-        if (currentLease != null && currentLease.getLeaseId().equals(leaseId)) {
-            revokeLeaseInternal(shardId, leaseId, reason);
-        } else {
-            logger.warn("Cannot revoke lease {} for shard {}: not found or mismatch",
-                leaseId, shardId);
-        }
+        leaseRegistry.revokeLease(running.get(), shardId, leaseId, reason);
     }
 
     /**
      * 强制撤销租约（管理员接口）
      */
     public synchronized void forceRevokeLease(String shardId, String reason) {
-        CoordinatorLease currentLease = activeLeases.get(shardId);
-        if (currentLease != null) {
-            revokeLeaseInternal(shardId, currentLease.getLeaseId(), reason);
-        }
+        leaseRegistry.forceRevokeLease(shardId, reason);
     }
-
-    // ========== 租约内部操作 ==========
-
-    private Optional<CoordinatorLease> issueNewLease(String shardId, String nodeId) {
-        // 获取并递增路由表版本
-        long newRoutingVersion = shardRoutingVersions
-            .computeIfAbsent(shardId, k -> new AtomicLong(0))
-            .incrementAndGet();
-
-        // 生成新的 fencing sequence
-        long fencingSequence = fencingSequenceGenerator.incrementAndGet();
-
-        // 创建新租约
-        CoordinatorLease lease = new CoordinatorLease(
-            nodeId,
-            shardId,
-            leaseDurationMs,
-            newRoutingVersion,
-            fencingSequence
-        );
-
-        // 存储租约
-        activeLeases.put(shardId, lease);
-
-        // 通知监听器
-        notifyLeaseEvent(new LeaseEvent(
-            LeaseEvent.EventType.GRANTED,
-            shardId,
-            lease,
-            null
-        ));
-
-        logger.info("New lease issued: {} for shard {} to node {} (routingVer={}, fencingSeq={})",
-            lease.getLeaseId(), shardId, nodeId, newRoutingVersion, fencingSequence);
-
-        return Optional.of(lease);
-    }
-
-    private Optional<CoordinatorLease> renewLeaseInternal(String shardId,
-                                                           CoordinatorLease currentLease) {
-        // 检查是否在续约窗口内
-        if (!currentLease.canRenew(renewalWindowRatio)) {
-            logger.debug("Lease {} not yet due for renewal", currentLease.getLeaseId());
-            return Optional.of(currentLease);
-        }
-
-        // 创建新租约（保持相同的 routingVersion 和 fencingSequence）
-        CoordinatorLease newLease = new CoordinatorLease(
-            currentLease.getNodeId(),
-            shardId,
-            leaseDurationMs,
-            currentLease.getRoutingVersion(),
-            currentLease.currentFencingToken()
-        );
-
-        // 更新存储
-        activeLeases.put(shardId, newLease);
-
-        // 通知监听器
-        notifyLeaseEvent(new LeaseEvent(
-            LeaseEvent.EventType.RENEWED,
-            shardId,
-            newLease,
-            currentLease
-        ));
-
-        logger.info("Lease renewed: {} for shard {} (expires at {})",
-            newLease.getLeaseId(), shardId, newLease.getExpiresAt());
-
-        return Optional.of(newLease);
-    }
-
-    private void revokeLeaseInternal(String shardId, String leaseId, String reason) {
-        CoordinatorLease lease = activeLeases.remove(shardId);
-
-        if (lease != null) {
-            // 递增路由表版本（failover 后版本号变化）
-            shardRoutingVersions
-                .computeIfAbsent(shardId, k -> new AtomicLong(0))
-                .incrementAndGet();
-
-            // 通知监听器
-            notifyLeaseEvent(new LeaseEvent(
-                LeaseEvent.EventType.REVOKED,
-                shardId,
-                null,
-                lease
-            ));
-
-            logger.info("Lease {} for shard {} revoked: {}",
-                leaseId, shardId, reason);
-        }
-    }
-
-    // ========== Fencing Token 验证 ==========
-
-    /**
-     * 验证 fencing token 是否有效
-     */
     public boolean validateFencingToken(String shardId, FencingToken token) {
-        if (token == null) {
-            return false;
-        }
-
-        CoordinatorLease currentLease = activeLeases.get(shardId);
-        if (currentLease == null) {
-            return false;
-        }
-
-        return token.isValidAgainst(currentLease.toFencingToken());
+        return leaseRegistry.validateFencingToken(shardId, token);
     }
 
     /**
      * 获取当前有效的 fencing sequence
      */
     public long getCurrentFencingSequence(String shardId) {
-        CoordinatorLease lease = activeLeases.get(shardId);
-        return lease != null && lease.isValid() ? lease.currentFencingToken() : -1;
+        return leaseRegistry.getCurrentFencingSequence(shardId);
     }
 
     // ========== 租约查询 ==========
@@ -953,50 +520,34 @@ public class ClusterCoordinator implements AutoCloseable {
      * 获取当前租约
      */
     public Optional<CoordinatorLease> getCurrentLease(String shardId) {
-        CoordinatorLease lease = activeLeases.get(shardId);
-        if (lease != null && lease.isValid()) {
-            return Optional.of(lease);
-        }
-        return Optional.empty();
+        return leaseRegistry.getCurrentLease(shardId);
     }
 
     /**
      * 检查是否有有效租约
      */
     public boolean hasValidLease(String shardId) {
-        CoordinatorLease lease = activeLeases.get(shardId);
-        return lease != null && lease.isValid();
+        return leaseRegistry.hasValidLease(shardId);
     }
 
     /**
      * 获取当前 primary 节点
      */
     public Optional<String> getCurrentPrimary(String shardId) {
-        return getCurrentLease(shardId).map(CoordinatorLease::getNodeId);
+        return leaseRegistry.getCurrentPrimary(shardId);
     }
 
     /**
      * 获取分片路由表版本
      */
     public long getShardRoutingVersion(String shardId) {
-        AtomicLong version = shardRoutingVersions.get(shardId);
-        return version != null ? version.get() : 0;
+        return leaseRegistry.getShardRoutingVersion(shardId);
     }
 
     // ========== 租约事件 ==========
 
     public void setLeaseEventListener(java.util.function.Consumer<LeaseEvent> listener) {
-        this.leaseEventListener = listener;
-    }
-
-    private void notifyLeaseEvent(LeaseEvent event) {
-        if (leaseEventListener != null) {
-            try {
-                leaseEventListener.accept(event);
-            } catch (Exception e) {
-                logger.error("Lease event listener error", e);
-            }
-        }
+        leaseRegistry.setLeaseEventListener(listener);
     }
 
     // ========== 租约相关记录 ==========

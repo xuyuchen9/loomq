@@ -115,7 +115,7 @@ public class IntentWal implements AutoCloseable {
             // 2. 发送到 replica
             ReplicationRecord record = ReplicationRecord.builder()
                 .offset(offset)
-                .type(ReplicationRecordType.TASK_CREATE)
+                .type(ReplicationRecordType.INTENT_CREATE)
                 .sourceNodeId(nodeId)
                 .payload(payload)
                 .build();

@@ -138,7 +138,7 @@ public class StormTestV2 {
             );
 
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(BASE_URL + "/tasks"))
+                    .uri(URI.create(BASE_URL + "/intents"))
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .timeout(Duration.ofSeconds(30))
@@ -163,8 +163,8 @@ public class StormTestV2 {
             String[] lines = response.body().split("\n");
 
             for (String line : lines) {
-                if (line.startsWith("loomq_tasks_total ") ||
-                    line.startsWith("loomq_tasks_scheduled ") ||
+                if (line.startsWith("loomq_intents_total ") ||
+                    line.startsWith("loomq_intents_scheduled ") ||
                     line.startsWith("loomq_wake_latency_ms_p95 ") ||
                     line.startsWith("loomq_webhook_latency_ms_p95 ") ||
                     line.startsWith("loomq_total_latency_ms_p95 ") ||

@@ -14,22 +14,22 @@ public enum ReplicationRecordType {
     /**
      * Intent 创建（含完整 Intent 对象）
      */
-    TASK_CREATE((byte) 0x01),
+    INTENT_CREATE((byte) 0x01),
 
     /**
      * Intent 取消
      */
-    TASK_CANCEL((byte) 0x02),
+    INTENT_CANCEL((byte) 0x02),
 
     /**
      * Intent 延迟修改
      */
-    TASK_MODIFY_DELAY((byte) 0x03),
+    INTENT_MODIFY_DELAY((byte) 0x03),
 
     /**
      * Intent 立即触发
      */
-    TASK_TRIGGER_NOW((byte) 0x04),
+    INTENT_TRIGGER_NOW((byte) 0x04),
 
     // ========== 状态迁移 ==========
     /**
@@ -121,9 +121,9 @@ public enum ReplicationRecordType {
     /**
      * 是否为 Intent 生命周期相关类型
      */
-    public boolean isTaskLifecycle() {
-        return this == TASK_CREATE || this == TASK_CANCEL
-            || this == TASK_MODIFY_DELAY || this == TASK_TRIGGER_NOW;
+    public boolean isIntentLifecycle() {
+        return this == INTENT_CREATE || this == INTENT_CANCEL
+            || this == INTENT_MODIFY_DELAY || this == INTENT_TRIGGER_NOW;
     }
 
     /**

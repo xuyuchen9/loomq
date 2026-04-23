@@ -4,6 +4,7 @@ import com.loomq.common.MetricsCollector;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.spi.DefaultRedeliveryDecider;
@@ -46,6 +47,7 @@ public class PrecisionScheduler {
     private static final Logger logger = LoggerFactory.getLogger(PrecisionScheduler.class);
 
     private final IntentStore intentStore;
+    private final PrecisionTierCatalog precisionTierCatalog;
     private final BucketGroupManager bucketGroupManager;
     private final DeliveryHandler deliveryHandler;
     private final RedeliveryDecider redeliveryDecider;
@@ -61,7 +63,7 @@ public class PrecisionScheduler {
 
     // 按精度档位的扫描调度器
     private final Map<PrecisionTier, ScheduledExecutorService> scanSchedulers;
-    private final Map<PrecisionTier, ScheduledFuture<?>> scanTasks;
+    private final Map<PrecisionTier, ScheduledFuture<?>> scanFutures;
 
     private volatile boolean running = false;
     private volatile boolean paused = false;
@@ -75,7 +77,7 @@ public class PrecisionScheduler {
      * @param intentStore Intent 存储
      */
     public PrecisionScheduler(IntentStore intentStore) {
-        this(intentStore, null, null);
+        this(intentStore, null, null, null);
     }
 
     /**
@@ -85,7 +87,7 @@ public class PrecisionScheduler {
      * @param deliveryHandler 投递处理器（null 则使用 ServiceLoader 加载）
      */
     public PrecisionScheduler(IntentStore intentStore, DeliveryHandler deliveryHandler) {
-        this(intentStore, deliveryHandler, null);
+        this(intentStore, deliveryHandler, null, null);
     }
 
     /**
@@ -96,10 +98,28 @@ public class PrecisionScheduler {
      * @param redeliveryDecider 重投决策器（null 则使用默认）
      */
     public PrecisionScheduler(IntentStore intentStore, DeliveryHandler deliveryHandler, RedeliveryDecider redeliveryDecider) {
+        this(intentStore, deliveryHandler, redeliveryDecider, null);
+    }
+
+    /**
+     * 创建调度器（完整参数）
+     *
+     * @param intentStore       Intent 存储
+     * @param deliveryHandler   投递处理器（null 则使用 ServiceLoader 加载）
+     * @param redeliveryDecider 重投决策器（null 则使用默认）
+     * @param precisionTierCatalog 精度档位目录
+     */
+    public PrecisionScheduler(IntentStore intentStore,
+                              DeliveryHandler deliveryHandler,
+                              RedeliveryDecider redeliveryDecider,
+                              PrecisionTierCatalog precisionTierCatalog) {
         this.intentStore = intentStore;
-        this.bucketGroupManager = new BucketGroupManager();
+        this.precisionTierCatalog = precisionTierCatalog != null
+            ? precisionTierCatalog
+            : PrecisionTierCatalog.defaultCatalog();
+        this.bucketGroupManager = new BucketGroupManager(this.precisionTierCatalog);
         this.scanSchedulers = new ConcurrentHashMap<>();
-        this.scanTasks = new ConcurrentHashMap<>();
+        this.scanFutures = new ConcurrentHashMap<>();
 
         // 加载投递处理器
         if (deliveryHandler != null) {
@@ -124,8 +144,8 @@ public class PrecisionScheduler {
         this.tierSemaphores = new EnumMap<>(PrecisionTier.class);
         this.tierDispatchQueues = new EnumMap<>(PrecisionTier.class);
 
-        for (PrecisionTier tier : PrecisionTier.values()) {
-            tierSemaphores.put(tier, new Semaphore(tier.getMaxConcurrency()));
+        for (PrecisionTier tier : this.precisionTierCatalog.supportedTiers()) {
+            tierSemaphores.put(tier, new Semaphore(this.precisionTierCatalog.maxConcurrency(tier)));
             tierDispatchQueues.put(tier, new LinkedBlockingDeque<>());
         }
 
@@ -144,23 +164,23 @@ public class PrecisionScheduler {
         logger.info("PrecisionScheduler starting...");
 
         // 为每个精度档位启动独立的扫描循环
-        for (PrecisionTier tier : PrecisionTier.values()) {
-            startScanTask(tier);
+        for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
+            startScanCycle(tier);
         }
 
         // 启动档位级批量消费者
-        for (PrecisionTier tier : PrecisionTier.values()) {
+        for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
             startBatchConsumers(tier);
         }
 
-        logger.info("PrecisionScheduler started with {} precision tiers", PrecisionTier.values().length);
+        logger.info("PrecisionScheduler started with {} precision tiers", precisionTierCatalog.tierCount());
     }
 
     /**
      * 启动指定档位的批量消费者
      */
     private void startBatchConsumers(PrecisionTier tier) {
-        int consumerCount = tier.getConsumerCount();
+        int consumerCount = precisionTierCatalog.consumerCount(tier);
 
         for (int i = 0; i < consumerCount; i++) {
             final int consumerId = i;
@@ -176,8 +196,8 @@ public class PrecisionScheduler {
     /**
      * 启动指定精度档位的扫描任务
      */
-    private void startScanTask(PrecisionTier tier) {
-        long intervalMs = tier.getPrecisionWindowMs();
+    private void startScanCycle(PrecisionTier tier) {
+        long intervalMs = precisionTierCatalog.precisionWindowMs(tier);
 
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "scan-" + tier.name().toLowerCase());
@@ -193,7 +213,7 @@ public class PrecisionScheduler {
             TimeUnit.MILLISECONDS
         );
 
-        scanTasks.put(tier, future);
+        scanFutures.put(tier, future);
         logger.info("Started scan cycle for tier {} with interval {}ms", tier, intervalMs);
     }
 
@@ -203,11 +223,11 @@ public class PrecisionScheduler {
     public void stop() {
         running = false;
 
-        // 取消所有扫描任务
-        for (ScheduledFuture<?> future : scanTasks.values()) {
+        // 取消所有扫描循环
+        for (ScheduledFuture<?> future : scanFutures.values()) {
             future.cancel(false);
         }
-        scanTasks.clear();
+        scanFutures.clear();
 
         // 关闭所有扫描调度器
         for (ScheduledExecutorService scheduler : scanSchedulers.values()) {
@@ -273,7 +293,7 @@ public class PrecisionScheduler {
         long delayMs = Duration.between(now, executeAt).toMillis();
 
         PrecisionTier tier = intent.getPrecisionTier();
-        BucketGroup group = bucketGroupManager.getBucketGroup(tier);
+        BucketGroup group = resolveBucketGroup(tier);
 
         if (delayMs <= 0) {
             // 已到期，直接投递
@@ -308,7 +328,7 @@ public class PrecisionScheduler {
 
         logger.debug("Scheduled intent {} with tier {}, delay {}ms, sleep {}ms",
             intent.getIntentId(), tier, delayMs,
-            delayMs <= 0 ? 0 : Math.max(0, delayMs - tier.getPrecisionWindowMs()));
+            delayMs <= 0 ? 0 : Math.max(0, delayMs - precisionTierCatalog.precisionWindowMs(tier)));
     }
 
     /**
@@ -348,9 +368,10 @@ public class PrecisionScheduler {
 
         long startTime = System.nanoTime();
         Instant now = Instant.now();
+        BucketGroup group = resolveBucketGroup(tier);
 
         try {
-            List<Intent> dueIntents = bucketGroupManager.scanDue(tier, now);
+            List<Intent> dueIntents = group.scanDue(now);
 
             if (!dueIntents.isEmpty()) {
                 logger.debug("Found {} due intents for tier {}", dueIntents.size(), tier);
@@ -374,7 +395,7 @@ public class PrecisionScheduler {
             }
 
             // 更新桶大小指标
-            metrics.updateBucketSizeByTier(tier, bucketGroupManager.getBucketGroup(tier).getPendingCount());
+            metrics.updateBucketSizeByTier(tier, group.getPendingCount());
 
             // 检查过期任务
             checkExpiredIntents(tier);
@@ -394,8 +415,8 @@ public class PrecisionScheduler {
     private void runBatchConsumer(PrecisionTier tier) {
         LinkedBlockingDeque<Intent> queue = tierDispatchQueues.get(tier);
         Semaphore semaphore = tierSemaphores.get(tier);
-        int batchSize = tier.getBatchSize();
-        int batchWindowMs = tier.getBatchWindowMs();
+        int batchSize = precisionTierCatalog.batchSize(tier);
+        int batchWindowMs = precisionTierCatalog.batchWindowMs(tier);
 
         while (running) {
             try {
@@ -643,7 +664,7 @@ public class PrecisionScheduler {
         LinkedBlockingDeque<Intent> queue = tierDispatchQueues.get(tier);
 
         boolean semaphoreExhausted = semaphore.availablePermits() == 0;
-        boolean queueBackedUp = queue.size() >= tier.getMaxConcurrency() * 2;
+        boolean queueBackedUp = queue.size() >= precisionTierCatalog.maxConcurrency(tier) * 2;
 
         return semaphoreExhausted || queueBackedUp;
     }
@@ -654,7 +675,7 @@ public class PrecisionScheduler {
     public Map<PrecisionTier, BackpressureInfo> getBackpressureStatus() {
         Map<PrecisionTier, BackpressureInfo> status = new EnumMap<>(PrecisionTier.class);
 
-        for (PrecisionTier tier : PrecisionTier.values()) {
+        for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
             Semaphore semaphore = tierSemaphores.get(tier);
             LinkedBlockingDeque<Intent> queue = tierDispatchQueues.get(tier);
 
@@ -663,7 +684,7 @@ public class PrecisionScheduler {
             boolean underPressure = isTierUnderBackpressure(tier);
 
             status.put(tier, new BackpressureInfo(
-                tier.getMaxConcurrency(),
+                precisionTierCatalog.maxConcurrency(tier),
                 availablePermits,
                 queueSize,
                 underPressure
@@ -688,5 +709,13 @@ public class PrecisionScheduler {
      */
     public BucketGroupManager getBucketGroupManager() {
         return bucketGroupManager;
+    }
+
+    private BucketGroup resolveBucketGroup(PrecisionTier tier) {
+        BucketGroup group = bucketGroupManager.getBucketGroup(tier);
+        if (group == null) {
+            group = bucketGroupManager.getBucketGroup(precisionTierCatalog.defaultTier());
+        }
+        return group;
     }
 }

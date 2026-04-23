@@ -59,7 +59,7 @@ class SchedulerTriggerBenchmark {
         logger.info("=== 调度器档位触发吞吐测试 ===");
 
         // 测试参数
-        int tasksPerTier = 1000;
+        int intentsPerTier = 1000;
         // Intent 在 2 秒后触发（给调度器准备时间）
         Instant executeAt = Instant.now().plusMillis(2000);
 
@@ -75,11 +75,11 @@ class SchedulerTriggerBenchmark {
             initialDueCounts.put(tier, metrics.getIntentCountsByTier().getOrDefault(tier, 0L));
         }
 
-        logger.info("创建 {} 个任务/档位，预计执行时间: {}", tasksPerTier, executeAt);
+        logger.info("创建 {} 个任务/档位，预计执行时间: {}", intentsPerTier, executeAt);
 
         // 创建任务
         for (PrecisionTier tier : PrecisionTier.values()) {
-            for (int i = 0; i < tasksPerTier; i++) {
+            for (int i = 0; i < intentsPerTier; i++) {
                 Intent intent = createTestIntent(
                     String.format("trigger-%s-%04d", tier.name(), i),
                     tier,
@@ -91,7 +91,7 @@ class SchedulerTriggerBenchmark {
                 scheduler.schedule(intent);
                 createdCounts.get(tier).incrementAndGet();
             }
-            logger.info("  {}: 已创建 {} 个 Intent", tier, tasksPerTier);
+            logger.info("  {}: 已创建 {} 个 Intent", tier, intentsPerTier);
         }
 
         // 等待任务进入桶
@@ -116,7 +116,7 @@ class SchedulerTriggerBenchmark {
                 long last = lastDueCounts.getOrDefault(tier, 0L);
 
                 // 如果 1 秒内没有变化，认为该档位已稳定
-                if (current == last && current >= initialDueCounts.getOrDefault(tier, 0L) + tasksPerTier * 0.8) {
+                if (current == last && current >= initialDueCounts.getOrDefault(tier, 0L) + intentsPerTier * 0.8) {
                     stableCounts.putIfAbsent(tier, current);
                 } else {
                     stableCounts.remove(tier);
@@ -156,7 +156,7 @@ class SchedulerTriggerBenchmark {
             qpsResults.put(tier, qps);
 
             logger.info(String.format("%-10s %10d %10d %10.1f",
-                tier.name(), tasksPerTier, processed, qps));
+                tier.name(), intentsPerTier, processed, qps));
         }
 
         // 验证档位间吞吐差距
@@ -194,8 +194,8 @@ class SchedulerTriggerBenchmark {
     void testTierIsolationUnderHighLoad() throws Exception {
         logger.info("=== 档位隔离测试 ===");
 
-        int ultraTasks = 200;
-        int economyTasks = 2000; // ECONOMY 更多任务
+        int ultraIntents = 200;
+        int economyIntents = 2000; // ECONOMY 更多任务
 
         Instant executeAt = Instant.now().plusMillis(2000);
 
@@ -206,16 +206,16 @@ class SchedulerTriggerBenchmark {
         }
 
         // 同时创建 ULTRA 和 ECONOMY Intent
-        logger.info("创建 {} ULTRA Intent, {} ECONOMY Intent", ultraTasks, economyTasks);
+        logger.info("创建 {} ULTRA Intent, {} ECONOMY Intent", ultraIntents, economyIntents);
 
-        for (int i = 0; i < ultraTasks; i++) {
+        for (int i = 0; i < ultraIntents; i++) {
             Intent intent = createTestIntent("isolation-ultra-" + i, PrecisionTier.ULTRA, executeAt);
             intent.transitionTo(IntentStatus.SCHEDULED);
             intentStore.save(intent);
             scheduler.schedule(intent);
         }
 
-        for (int i = 0; i < economyTasks; i++) {
+        for (int i = 0; i < economyIntents; i++) {
             Intent intent = createTestIntent("isolation-economy-" + i, PrecisionTier.ECONOMY, executeAt);
             intent.transitionTo(IntentStatus.SCHEDULED);
             intentStore.save(intent);
@@ -238,7 +238,7 @@ class SchedulerTriggerBenchmark {
             long ultraCurrent = metrics.getIntentCountsByTier().getOrDefault(PrecisionTier.ULTRA, 0L);
             ultraCompleted = ultraCurrent - ultraInitial;
 
-            if (ultraCompleted >= ultraTasks) {
+            if (ultraCompleted >= ultraIntents) {
                 logger.info("ULTRA Intent 全部完成，耗时 {}ms",
                     System.currentTimeMillis() - waitStart);
                 break;
@@ -255,12 +255,12 @@ class SchedulerTriggerBenchmark {
             .count();
 
         logger.info("ULTRA Intent 处理统计: 已处理 {} / {} ({}ms)",
-            processedCount, ultraTasks, ultraProcessTime);
+            processedCount, ultraIntents, ultraProcessTime);
 
         // 只要 Intent 被尝试处理即可（由于 webhook 失败，Intent 可能进入重试状态）
-        assertTrue(processedCount > 0 || ultraTasks == 0,
+        assertTrue(processedCount > 0 || ultraIntents == 0,
             String.format("ULTRA Intent 应至少部分被处理，实际处理 %d/%d",
-                processedCount, ultraTasks));
+                processedCount, ultraIntents));
 
         logger.info("  档位隔离验证通过（在当前 webhook 失败环境下）");
     }
@@ -281,12 +281,12 @@ class SchedulerTriggerBenchmark {
         }
 
         // 创建大量 ULTRA Intent（超过其 100 并发限制）
-        int overloadTasks = 500;
+        int overloadIntents = 500;
         Instant executeAt = Instant.now().plusMillis(500);
 
-        logger.info("创建 {} 个 ULTRA Intent（超过并发限制）", overloadTasks);
+        logger.info("创建 {} 个 ULTRA Intent（超过并发限制）", overloadIntents);
 
-        for (int i = 0; i < overloadTasks; i++) {
+        for (int i = 0; i < overloadIntents; i++) {
             Intent intent = createTestIntent("backpressure-ultra-" + i, PrecisionTier.ULTRA, executeAt);
             intent.transitionTo(IntentStatus.SCHEDULED);
             intentStore.save(intent);

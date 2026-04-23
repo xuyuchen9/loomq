@@ -118,7 +118,7 @@ public class ClusterManager {
         if (localNode != null) {
             try {
                 localNode.prepareShutdown();
-                // TODO: 等待数据迁移完成
+                // 当前版本没有独立的迁移阻塞流程，直接关闭本地节点即可
                 localNode.shutdown();
             } catch (Exception e) {
                 logger.error("Error stopping local node", e);
@@ -140,16 +140,10 @@ public class ClusterManager {
         // 添加所有已知节点到路由器
         for (ClusterConfig.NodeConfig nodeConfig : config.getNodes()) {
             // 解析 shard index
-            int shardIndex = parseShardIndex(nodeConfig.shardId());
+            int shardIndex = ClusterRoutingPlanner.parseShardIndex(nodeConfig.shardId());
 
             // 创建节点引用（不一定是本地节点）
-            InetSocketAddress address = new InetSocketAddress(nodeConfig.host(), nodeConfig.port());
-            LocalShardNode node = new LocalShardNode(
-                    shardIndex,
-                    config.getTotalShards(),
-                    address,
-                    nodeConfig.weight()
-            );
+            LocalShardNode node = createLocalNode(nodeConfig);
 
             // 如果配置中已经标记为 active，直接启动
             if (shardIndex == config.getLocalShardIndex()) {
@@ -170,14 +164,7 @@ public class ClusterManager {
         if (localNode == null) {
             // 使用配置创建本地节点
             ClusterConfig.NodeConfig nodeConfig = config.getLocalNodeConfig();
-            InetSocketAddress address = new InetSocketAddress(nodeConfig.host(), nodeConfig.port());
-
-            localNode = new LocalShardNode(
-                    config.getLocalShardIndex(),
-                    config.getTotalShards(),
-                    address,
-                    nodeConfig.weight()
-            );
+            localNode = createLocalNode(nodeConfig);
 
             // 更新 knownNodes
             knownNodes.put(localNode.getShardId(), localNode);
@@ -190,18 +177,14 @@ public class ClusterManager {
         logger.info("Local node created: {}", localNode.toNodeString());
     }
 
-    /**
-     * 解析 shard ID 获取索引
-     */
-    private int parseShardIndex(String shardId) {
-        if (shardId.startsWith("shard-")) {
-            try {
-                return Integer.parseInt(shardId.substring(6));
-            } catch (NumberFormatException e) {
-                logger.warn("Invalid shardId format: {}", shardId);
-            }
-        }
-        return -1;
+    private LocalShardNode createLocalNode(ClusterConfig.NodeConfig nodeConfig) {
+        InetSocketAddress address = new InetSocketAddress(nodeConfig.host(), nodeConfig.port());
+        return new LocalShardNode(
+                ClusterRoutingPlanner.parseShardIndex(nodeConfig.shardId()),
+                config.getTotalShards(),
+                address,
+                nodeConfig.weight()
+        );
     }
 
     /**
@@ -220,7 +203,7 @@ public class ClusterManager {
      * @param intentId Intent ID
      * @return true 如果是本地 Intent
      */
-    public boolean isLocalTask(String intentId) {
+    public boolean isLocalIntent(String intentId) {
         if (localNode == null || !localNode.isAvailable()) {
             return false;
         }

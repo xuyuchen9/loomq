@@ -18,26 +18,9 @@ public final class TestUtils {
      * 创建测试用的 WalConfig
      */
     public static WalConfig createWalConfig(Path dataDir, long batchFlushIntervalMs) {
-        return new WalConfig() {
-            @Override public String dataDir() { return dataDir.toString(); }
-            @Override public int segmentSizeMb() { return 64; }
-            @Override public String flushStrategy() { return "batch"; }
-            @Override public long batchFlushIntervalMs() { return batchFlushIntervalMs; }
-            @Override public boolean syncOnWrite() { return false; }
-            @Override public String engine() { return "memory_segment"; }
-            @Override public int memorySegmentInitialSizeMb() { return 64; }
-            @Override public int memorySegmentMaxSizeMb() { return 1024; }
-            @Override public int memorySegmentFlushThresholdKb() { return 64; }
-            @Override public long memorySegmentFlushIntervalMs() { return 10; }
-            @Override public int memorySegmentStripeCount() { return 16; }
-            @Override public int memorySegmentMinBatchSize() { return 100; }
-            @Override public boolean memorySegmentAdaptiveFlushEnabled() { return true; }
-            @Override public boolean isReplicationEnabled() { return false; }
-            @Override public String replicaHost() { return "localhost"; }
-            @Override public int replicaPort() { return 9090; }
-            @Override public long replicationAckTimeoutMs() { return 30000; }
-            @Override public boolean requireReplicatedAck() { return false; }
-        };
+        return WalConfig.defaultConfig()
+                .withDataDir(dataDir.toString())
+                .withBatchFlushIntervalMs(batchFlushIntervalMs);
     }
 
     /**
@@ -64,10 +47,10 @@ public final class TestUtils {
     }
 
     /**
-     * 生成随机 taskId
+     * 生成随机 intentId
      */
-    public static String randomTaskId() {
-        return "task-" + System.nanoTime() + "-" + RANDOM.nextInt(10000);
+    public static String randomIntentId() {
+        return "intent-" + System.nanoTime() + "-" + RANDOM.nextInt(10000);
     }
 
     /**

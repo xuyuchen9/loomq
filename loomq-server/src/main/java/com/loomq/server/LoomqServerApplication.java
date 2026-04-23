@@ -40,7 +40,7 @@ public class LoomqServerApplication {
 
         String nodeId = resolveSetting("LOOMQ_NODE_ID", "loomq.node.id", "node-1");
         String dataDir = resolveSetting("LOOMQ_DATA_DIR", "loomq.data.dir", config.getWalConfig().dataDir());
-        WalConfig walConfig = overrideWalDataDir(config.getWalConfig(), dataDir);
+        WalConfig walConfig = config.getWalConfig().withDataDir(dataDir);
 
         MetricsCollector.getInstance().setWalDataDir(dataDir);
         logRuntimeConfiguration(config, nodeId, dataDir, walConfig);
@@ -119,7 +119,7 @@ public class LoomqServerApplication {
     private static void logRuntimeConfiguration(LoomqConfig config, String nodeId, String dataDir, WalConfig walConfig) {
         ServerConfig serverConfig = config.getServerConfig();
         logger.info(
-            "Runtime config: nodeId={}, dataDir={}, server={}:{} backlog={} virtualThreads={} maxRequestSize={} threadPoolSize={}, netty={}:{} epoll={} pooledAllocator={} maxConnections={} maxConcurrentRequests={}, walDir={}, walEngine={}, walFlushStrategy={}, walFlushThresholdKb={}, walStripeCount={}, schedulerMaxPending={}, recoveryBatchSize={}, retryInitialDelayMs={}, retryMaxDelayMs={}",
+            "Runtime config: nodeId={}, dataDir={}, server={}:{} backlog={} virtualThreads={} maxRequestSize={} threadPoolSize={}, netty={}:{} epoll={} pooledAllocator={} maxConnections={} maxConcurrentRequests={}, walDir={}, walEngine={}, walFlushStrategy={}, walFlushThresholdKb={}, walStripeCount={}, schedulerMaxPendingIntents={}, recoveryBatchSize={}, retryInitialDelayMs={}, retryMaxDelayMs={}",
             nodeId,
             dataDir,
             serverConfig.host(),
@@ -139,7 +139,7 @@ public class LoomqServerApplication {
             walConfig.flushStrategy(),
             walConfig.memorySegmentFlushThresholdKb(),
             walConfig.memorySegmentStripeCount(),
-            config.getSchedulerConfig().maxPendingTasks(),
+            config.getSchedulerConfig().maxPendingIntents(),
             config.getRecoveryConfig().batchSize(),
             config.getRetryConfig().initialDelayMs(),
             config.getRetryConfig().maxDelayMs()
@@ -158,100 +158,6 @@ public class LoomqServerApplication {
         }
 
         return fallback;
-    }
-
-    private static WalConfig overrideWalDataDir(WalConfig delegate, String dataDir) {
-        return new WalConfig() {
-            @Override
-            public String dataDir() {
-                return dataDir;
-            }
-
-            @Override
-            public int segmentSizeMb() {
-                return delegate.segmentSizeMb();
-            }
-
-            @Override
-            public String flushStrategy() {
-                return delegate.flushStrategy();
-            }
-
-            @Override
-            public long batchFlushIntervalMs() {
-                return delegate.batchFlushIntervalMs();
-            }
-
-            @Override
-            public boolean syncOnWrite() {
-                return delegate.syncOnWrite();
-            }
-
-            @Override
-            public String engine() {
-                return delegate.engine();
-            }
-
-            @Override
-            public int memorySegmentInitialSizeMb() {
-                return delegate.memorySegmentInitialSizeMb();
-            }
-
-            @Override
-            public int memorySegmentMaxSizeMb() {
-                return delegate.memorySegmentMaxSizeMb();
-            }
-
-            @Override
-            public int memorySegmentFlushThresholdKb() {
-                return delegate.memorySegmentFlushThresholdKb();
-            }
-
-            @Override
-            public long memorySegmentFlushIntervalMs() {
-                return delegate.memorySegmentFlushIntervalMs();
-            }
-
-            @Override
-            public int memorySegmentStripeCount() {
-                return delegate.memorySegmentStripeCount();
-            }
-
-            @Override
-            public int memorySegmentMinBatchSize() {
-                return delegate.memorySegmentMinBatchSize();
-            }
-
-            @Override
-            public boolean memorySegmentAdaptiveFlushEnabled() {
-                return delegate.memorySegmentAdaptiveFlushEnabled();
-            }
-
-            @Override
-            public boolean isReplicationEnabled() {
-                return delegate.isReplicationEnabled();
-            }
-
-            @Override
-            public String replicaHost() {
-                return delegate.replicaHost();
-            }
-
-            @Override
-            public int replicaPort() {
-                return delegate.replicaPort();
-            }
-
-            @Override
-            public long replicationAckTimeoutMs() {
-                return delegate.replicationAckTimeoutMs();
-            }
-
-            @Override
-            public boolean requireReplicatedAck() {
-                return delegate.requireReplicatedAck();
-            }
-        };
     }
 
     private static void registerSystemRoutes(RadixRouter router) {

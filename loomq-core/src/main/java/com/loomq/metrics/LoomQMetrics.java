@@ -1,12 +1,10 @@
 package com.loomq.metrics;
 
+import com.loomq.common.MetricsCollector;
+
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.Collections;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.LongAdder;
 
 /**
  * LoomQ 可观测性指标 (v0.5)
@@ -19,91 +17,48 @@ import java.util.concurrent.atomic.LongAdder;
 public class LoomQMetrics {
 
     // ==================== Intent 指标 ====================
-    private final LongAdder intentsCreated = new LongAdder();
-    private final LongAdder intentsCompleted = new LongAdder();
-    private final LongAdder intentsCancelled = new LongAdder();
-    private final LongAdder intentsExpired = new LongAdder();
-    private final LongAdder intentsDeadLettered = new LongAdder();
+    private final IntentMetricsRegistry intentMetrics = new IntentMetricsRegistry();
 
-    // 按状态的 Intent 计数
-    private final Map<String, AtomicLong> intentsByStatus = new ConcurrentHashMap<>();
-
-    // ==================== 投递指标 ====================
-    private final LongAdder deliveriesTotal = new LongAdder();
-    private final LongAdder deliveriesSuccess = new LongAdder();
-    private final LongAdder deliveriesFailed = new LongAdder();
-    private final LongAdder deliveriesRetried = new LongAdder();
-
-    // 延迟统计
-    private final LongAdder deliveryLatencyTotalMs = new LongAdder();
-    private final AtomicLong deliveryLatencyMaxMs = new AtomicLong(0);
-
-    // ==================== 复制指标 ====================
-    private final LongAdder replicationRecordsSent = new LongAdder();
-    private final LongAdder replicationRecordsAcked = new LongAdder();
-    private final LongAdder replicationBytesSent = new LongAdder();
-
-    // 复制延迟
-    private final AtomicLong replicationLagMs = new AtomicLong(0);
-
-    // ==================== 存储指标 ====================
-    private final LongAdder walRecordsWritten = new LongAdder();
-    private final LongAdder walBytesWritten = new LongAdder();
-    private final LongAdder snapshotsCreated = new LongAdder();
-
-    // ==================== 系统指标 ====================
-    private final AtomicLong pendingIntents = new AtomicLong(0);
-    private final AtomicLong activeDispatches = new AtomicLong(0);
-    private final AtomicLong memoryUsageBytes = new AtomicLong(0);
+    // ==================== 流水线指标 ====================
+    private final PipelineMetricsRegistry pipelineMetrics = new PipelineMetricsRegistry();
 
     // ==================== WAL 健康指标 ====================
-    private final AtomicLong walLastFlushTime = new AtomicLong(0);
-    private final LongAdder walFlushErrorCount = new LongAdder();
-    private final LongAdder walFlushLatencyTotalMs = new LongAdder();
-    private final AtomicLong walFlushLatencyMaxMs = new AtomicLong(0);
-    private final AtomicLong walPendingWrites = new AtomicLong(0);
-    private final AtomicLong walRingBufferSize = new AtomicLong(0);
-    private final AtomicBoolean walHealthy = new AtomicBoolean(true);
-
-    // ==================== WAL 健康指标更新 ====================
+    private final WalHealthMetricsRegistry walHealthMetrics = new WalHealthMetricsRegistry();
 
     public void updateWalLastFlushTime(long timestamp) {
-        walLastFlushTime.set(timestamp);
+        walHealthMetrics.updateWalLastFlushTime(timestamp);
     }
 
     public void incrementWalFlushErrorCount() {
-        walFlushErrorCount.increment();
+        walHealthMetrics.incrementWalFlushErrorCount();
     }
 
     public void recordWalFlushLatency(long latencyMs) {
-        walFlushLatencyTotalMs.add(latencyMs);
-        walFlushLatencyMaxMs.updateAndGet(max -> Math.max(max, latencyMs));
+        walHealthMetrics.recordWalFlushLatency(latencyMs);
     }
 
     public void updateWalPendingWrites(long count) {
-        walPendingWrites.set(count);
+        walHealthMetrics.updateWalPendingWrites(count);
     }
 
     public void updateWalRingBufferSize(long size) {
-        walRingBufferSize.set(size);
+        walHealthMetrics.updateWalRingBufferSize(size);
     }
 
     public void updateWalHealth(boolean healthy) {
-        walHealthy.set(healthy);
+        walHealthMetrics.updateWalHealth(healthy);
     }
 
     public boolean isWalHealthy() {
-        return walHealthy.get();
+        return walHealthMetrics.isWalHealthy();
     }
 
     public long getWalLastFlushTime() {
-        return walLastFlushTime.get();
+        return walHealthMetrics.getWalLastFlushTime();
     }
 
     public long getWalIdleTimeMs() {
-        long lastFlush = walLastFlushTime.get();
-        if (lastFlush == 0) return 0;
-        return System.currentTimeMillis() - lastFlush;
+        return walHealthMetrics.getWalIdleTimeMs();
     }
 
     // ==================== 单例模式 ====================
@@ -118,141 +73,113 @@ public class LoomQMetrics {
     // ==================== Intent 计数方法 ====================
 
     public void incrementIntentsCreated() {
-        intentsCreated.increment();
+        intentMetrics.incrementIntentsCreated();
     }
 
     public void incrementIntentsCompleted() {
-        intentsCompleted.increment();
+        intentMetrics.incrementIntentsCompleted();
     }
 
     public void incrementIntentsCancelled() {
-        intentsCancelled.increment();
+        intentMetrics.incrementIntentsCancelled();
     }
 
     public void incrementIntentsExpired() {
-        intentsExpired.increment();
+        intentMetrics.incrementIntentsExpired();
     }
 
     public void incrementIntentsDeadLettered() {
-        intentsDeadLettered.increment();
-    }
-
-    public void updateIntentStatus(String status, long count) {
-        intentsByStatus.computeIfAbsent(status, k -> new AtomicLong(0)).set(count);
+        intentMetrics.incrementIntentsDeadLettered();
     }
 
     // ==================== 投递计数方法 ====================
 
     public void recordDeliveryAttempt() {
-        deliveriesTotal.increment();
+        pipelineMetrics.recordDeliveryAttempt();
     }
 
     public void recordDeliverySuccess(long latencyMs) {
-        deliveriesSuccess.increment();
-        recordLatency(latencyMs);
+        pipelineMetrics.recordDeliverySuccess(latencyMs);
     }
 
     public void recordDeliveryFailure() {
-        deliveriesFailed.increment();
+        pipelineMetrics.recordDeliveryFailure();
     }
 
     public void recordDeliveryRetry() {
-        deliveriesRetried.increment();
-    }
-
-    private void recordLatency(long latencyMs) {
-        deliveryLatencyTotalMs.add(latencyMs);
-        deliveryLatencyMaxMs.updateAndGet(max -> Math.max(max, latencyMs));
+        pipelineMetrics.recordDeliveryRetry();
     }
 
     // ==================== 复制计数方法 ====================
 
     public void recordReplicationRecordSent(int bytes) {
-        replicationRecordsSent.increment();
-        replicationBytesSent.add(bytes);
+        pipelineMetrics.recordReplicationRecordSent(bytes);
     }
 
     public void recordReplicationRecordAcked() {
-        replicationRecordsAcked.increment();
+        pipelineMetrics.recordReplicationRecordAcked();
     }
 
     public void updateReplicationLag(long lagMs) {
-        replicationLagMs.set(lagMs);
+        pipelineMetrics.updateReplicationLag(lagMs);
     }
 
     // ==================== 存储计数方法 ====================
 
     public void recordWalRecordWritten(int bytes) {
-        walRecordsWritten.increment();
-        walBytesWritten.add(bytes);
+        pipelineMetrics.recordWalRecordWritten(bytes);
     }
 
     public void recordSnapshotCreated() {
-        snapshotsCreated.increment();
+        pipelineMetrics.recordSnapshotCreated();
     }
 
     // ==================== 系统状态更新 ====================
 
-    public void updatePendingIntents(long count) {
-        pendingIntents.set(count);
-    }
-
     public void updateActiveDispatches(long count) {
-        activeDispatches.set(count);
+        pipelineMetrics.updateActiveDispatches(count);
     }
 
     public void updateMemoryUsage(long bytes) {
-        memoryUsageBytes.set(bytes);
+        pipelineMetrics.updateMemoryUsage(bytes);
     }
 
     // ==================== 指标查询 ====================
 
     public MetricsSnapshot snapshot() {
-        Map<String, Long> statusSnapshot = new LinkedHashMap<>(intentsByStatus.size());
-        intentsByStatus.forEach((status, count) -> statusSnapshot.put(status, count.get()));
+        Map<String, Long> statusSnapshot = new LinkedHashMap<>(MetricsCollector.getInstance().getIntentStatusCounts());
+        long pendingIntents = MetricsCollector.getInstance().getPendingIntents();
 
         return new MetricsSnapshot(
-            intentsCreated.sum(),
-            intentsCompleted.sum(),
-            intentsCancelled.sum(),
-            intentsExpired.sum(),
-            intentsDeadLettered.sum(),
+            intentMetrics.getIntentsCreated(),
+            intentMetrics.getIntentsCompleted(),
+            intentMetrics.getIntentsCancelled(),
+            intentMetrics.getIntentsExpired(),
+            intentMetrics.getIntentsDeadLettered(),
             Collections.unmodifiableMap(statusSnapshot),
-            deliveriesTotal.sum(),
-            deliveriesSuccess.sum(),
-            deliveriesFailed.sum(),
-            deliveriesRetried.sum(),
-            calculateAverageLatency(),
-            deliveryLatencyMaxMs.get(),
-            replicationRecordsSent.sum(),
-            replicationRecordsAcked.sum(),
-            replicationLagMs.get(),
-            walRecordsWritten.sum(),
-            snapshotsCreated.sum(),
-            pendingIntents.get(),
-            activeDispatches.get(),
+            pipelineMetrics.getDeliveriesTotal(),
+            pipelineMetrics.getDeliveriesSuccess(),
+            pipelineMetrics.getDeliveriesFailed(),
+            pipelineMetrics.getDeliveriesRetried(),
+            pipelineMetrics.calculateAverageDeliveryLatency(),
+            pipelineMetrics.getDeliveryLatencyMaxMs(),
+            pipelineMetrics.getReplicationRecordsSent(),
+            pipelineMetrics.getReplicationRecordsAcked(),
+            pipelineMetrics.getReplicationLagMs(),
+            pipelineMetrics.getWalRecordsWritten(),
+            pipelineMetrics.getSnapshotsCreated(),
+            pendingIntents,
+            pipelineMetrics.getActiveDispatches(),
             // WAL 健康指标
-            walHealthy.get(),
-            walLastFlushTime.get(),
+            walHealthMetrics.isWalHealthy(),
+            walHealthMetrics.getWalLastFlushTime(),
             getWalIdleTimeMs(),
-            walFlushErrorCount.sum(),
-            calculateWalAverageFlushLatency(),
-            walFlushLatencyMaxMs.get(),
-            walPendingWrites.get(),
-            walRingBufferSize.get()
+            walHealthMetrics.getWalFlushErrorCount(),
+            walHealthMetrics.calculateAverageFlushLatency(pipelineMetrics.getWalRecordsWritten()),
+            walHealthMetrics.getWalFlushLatencyMaxMs(),
+            walHealthMetrics.getWalPendingWrites(),
+            walHealthMetrics.getWalRingBufferSize()
         );
-    }
-
-    private double calculateWalAverageFlushLatency() {
-        long total = walRecordsWritten.sum();
-        if (total == 0) return 0.0;
-        return (double) walFlushLatencyTotalMs.sum() / total;
-    }
-
-    private double calculateAverageLatency() {
-        long total = deliveriesSuccess.sum();
-        if (total == 0) return 0.0;
-        return (double) deliveryLatencyTotalMs.sum() / total;
     }
 
     // ==================== 指标快照 ====================
@@ -291,35 +218,10 @@ public class LoomQMetrics {
     // ==================== 重置 ====================
 
     public void reset() {
-        intentsCreated.reset();
-        intentsCompleted.reset();
-        intentsCancelled.reset();
-        intentsExpired.reset();
-        intentsDeadLettered.reset();
-        intentsByStatus.clear();
-        deliveriesTotal.reset();
-        deliveriesSuccess.reset();
-        deliveriesFailed.reset();
-        deliveriesRetried.reset();
-        deliveryLatencyTotalMs.reset();
-        deliveryLatencyMaxMs.set(0);
-        replicationRecordsSent.reset();
-        replicationRecordsAcked.reset();
-        replicationBytesSent.reset();
-        replicationLagMs.set(0);
-        walRecordsWritten.reset();
-        walBytesWritten.reset();
-        snapshotsCreated.reset();
-        pendingIntents.set(0);
-        activeDispatches.set(0);
-        memoryUsageBytes.set(0);
+        intentMetrics.reset();
+        pipelineMetrics.reset();
         // WAL 健康指标重置
-        walLastFlushTime.set(0);
-        walFlushErrorCount.reset();
-        walFlushLatencyTotalMs.reset();
-        walFlushLatencyMaxMs.set(0);
-        walPendingWrites.set(0);
-        walRingBufferSize.set(0);
-        walHealthy.set(true);
+        walHealthMetrics.reset();
+        MetricsCollector.getInstance().resetRuntimeIntentMetrics();
     }
 }

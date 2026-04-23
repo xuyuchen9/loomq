@@ -369,7 +369,7 @@ class WalCatchUpManagerTest {
         for (int i = 0; i < count; i++) {
             records.add(ReplicationRecord.builder()
                 .offset(100 + i)
-                .type(ReplicationRecordType.TASK_CREATE)
+                .type(ReplicationRecordType.INTENT_CREATE)
                 .sourceNodeId("primary-node")
                 .payload(("test-payload-" + i).getBytes())
                 .build());

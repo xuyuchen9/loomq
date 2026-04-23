@@ -98,26 +98,10 @@ public class SimpleWalBenchmark {
     // ========== 辅助方法 ==========
 
     private WalConfig createTestConfig(String dataDir) {
-        return new WalConfig() {
-            @Override public String dataDir() { return dataDir; }
-            @Override public int segmentSizeMb() { return 64; }
-            @Override public String flushStrategy() { return "batch"; }
-            @Override public long batchFlushIntervalMs() { return 10; }
-            @Override public boolean syncOnWrite() { return false; }
-            @Override public String engine() { return "memory_segment"; }
-            @Override public int memorySegmentInitialSizeMb() { return 64; }
-            @Override public int memorySegmentMaxSizeMb() { return 256; }
-            @Override public int memorySegmentFlushThresholdKb() { return 64; }
-            @Override public long memorySegmentFlushIntervalMs() { return 10; }
-            @Override public int memorySegmentStripeCount() { return 16; }
-            @Override public int memorySegmentMinBatchSize() { return 100; }
-            @Override public boolean memorySegmentAdaptiveFlushEnabled() { return true; }
-            @Override public boolean isReplicationEnabled() { return false; }
-            @Override public String replicaHost() { return "localhost"; }
-            @Override public int replicaPort() { return 9090; }
-            @Override public long replicationAckTimeoutMs() { return 30000; }
-            @Override public boolean requireReplicatedAck() { return false; }
-        };
+        return WalConfig.defaultConfig()
+                .withDataDir(dataDir)
+                .withBatchFlushIntervalMs(10)
+                .withMemorySegmentMaxSizeMb(256);
     }
 
     private Intent createTestIntent() {

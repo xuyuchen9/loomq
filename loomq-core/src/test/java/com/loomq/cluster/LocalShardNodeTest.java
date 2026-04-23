@@ -208,21 +208,21 @@ class LocalShardNodeTest {
         node1.start();
 
         // 找一个确实路由到 node0 的任务
-        String taskForNode0 = null;
+        String intentForNode0 = null;
         for (int i = 0; i < 10000; i++) {
-            String taskId = "task-" + i;
-            if (router.route(taskId).getShardId().equals(node0.getShardId())) {
-                taskForNode0 = taskId;
+            String intentId = "intent-" + i;
+            if (router.route(intentId).getShardId().equals(node0.getShardId())) {
+                intentForNode0 = intentId;
                 break;
             }
         }
 
-        assertNotNull(taskForNode0);
-        assertTrue(node0.isResponsibleFor(taskForNode0, router));
-        assertFalse(node1.isResponsibleFor(taskForNode0, router));
+        assertNotNull(intentForNode0);
+        assertTrue(node0.isResponsibleFor(intentForNode0, router));
+        assertFalse(node1.isResponsibleFor(intentForNode0, router));
 
         // 离线节点不应负责任务
         node0.markOffline();
-        assertFalse(node0.isResponsibleFor(taskForNode0, router));
+        assertFalse(node0.isResponsibleFor(intentForNode0, router));
     }
 }

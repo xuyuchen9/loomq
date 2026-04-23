@@ -57,8 +57,7 @@ public class Intent {
     private ExpiredAction expiredAction;
 
     /**
-     * 精度档位：ULTRA / FAST / HIGH / STANDARD / ECONOMY
-     * 默认 STANDARD
+     * 精度档位：由 PrecisionTierCatalog 提供默认 preset
      */
     private PrecisionTier precisionTier;
 
@@ -127,7 +126,7 @@ public class Intent {
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
         this.expiredAction = ExpiredAction.DISCARD;
-        this.precisionTier = PrecisionTier.STANDARD;
+        this.precisionTier = defaultPrecisionTier();
         this.ackLevel = AckLevel.DURABLE;
         this.attempts = 0;
     }
@@ -138,7 +137,7 @@ public class Intent {
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
         this.expiredAction = ExpiredAction.DISCARD;
-        this.precisionTier = PrecisionTier.STANDARD;
+        this.precisionTier = defaultPrecisionTier();
         this.ackLevel = AckLevel.DURABLE;
         this.attempts = 0;
     }
@@ -167,7 +166,7 @@ public class Intent {
         this.executeAt = executeAt;
         this.deadline = deadline;
         this.expiredAction = expiredAction != null ? expiredAction : ExpiredAction.DISCARD;
-        this.precisionTier = precisionTier != null ? precisionTier : PrecisionTier.STANDARD;
+        this.precisionTier = precisionTier != null ? precisionTier : defaultPrecisionTier();
         this.shardKey = shardKey;
         this.shardId = shardId;
         this.ackLevel = ackLevel != null ? ackLevel : AckLevel.DURABLE;
@@ -227,6 +226,10 @@ public class Intent {
      */
     private static String generateIntentId() {
         return "intent_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+    }
+
+    private static PrecisionTier defaultPrecisionTier() {
+        return PrecisionTierCatalog.defaultCatalog().defaultTier();
     }
 
     /**

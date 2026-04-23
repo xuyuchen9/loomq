@@ -40,7 +40,7 @@ class ReplicationManagerTest {
 
         ReplicationRecord record = ReplicationRecord.builder()
             .offset(1L)
-            .type(ReplicationRecordType.TASK_CREATE)
+            .type(ReplicationRecordType.INTENT_CREATE)
             .build();
 
         CompletableFuture<ReplicationManager.ReplicationResult> future =

@@ -43,7 +43,7 @@ class ShardRouterTest {
     @Test
     @DisplayName("空路由应该返回 null")
     void routeEmptyRing() {
-        ShardNode node = router.route("test-task");
+        ShardNode node = router.route("test-intent");
         assertNull(node);
     }
 
@@ -53,7 +53,7 @@ class ShardRouterTest {
         LocalShardNode node = createNode(0, 1, 8080);
         router.addNode(node);
 
-        ShardNode result = router.route("any-task");
+        ShardNode result = router.route("any-intent");
         assertNotNull(result);
         assertEquals(node.getShardId(), result.getShardId());
     }
@@ -72,7 +72,7 @@ class ShardRouterTest {
         // 路由 10000 个任务，检查分布
         Map<String, AtomicInteger> distribution = new ConcurrentHashMap<>();
         for (int i = 0; i < 10000; i++) {
-            ShardNode node = router.route("task-" + i);
+            ShardNode node = router.route("intent-" + i);
             assertNotNull(node);
             distribution.computeIfAbsent(node.getShardId(), k -> new AtomicInteger()).incrementAndGet();
         }
@@ -81,8 +81,8 @@ class ShardRouterTest {
         assertEquals(4, distribution.size());
         for (String shardId : distribution.keySet()) {
             int count = distribution.get(shardId).get();
-            System.out.println(shardId + ": " + count + " tasks");
-            assertTrue(count > 1000, "Shard " + shardId + " should have tasks");
+            System.out.println(shardId + ": " + count + " intents");
+            assertTrue(count > 1000, "Shard " + shardId + " should have intents");
         }
 
         // 验证分布相对均匀（标准差 < 30%）
@@ -110,8 +110,8 @@ class ShardRouterTest {
         // 记录初始路由
         Map<String, String> initialRoute = new HashMap<>();
         for (int i = 0; i < 1000; i++) {
-            String taskId = "task-" + i;
-            initialRoute.put(taskId, router.route(taskId).getShardId());
+            String intentId = "intent-" + i;
+            initialRoute.put(intentId, router.route(intentId).getShardId());
         }
 
         // 移除 node1
@@ -120,19 +120,19 @@ class ShardRouterTest {
         // 验证路由仍然存在（没有 NPE）
         int changed = 0;
         for (int i = 0; i < 1000; i++) {
-            String taskId = "task-" + i;
-            ShardNode newNode = router.route(taskId);
+            String intentId = "intent-" + i;
+            ShardNode newNode = router.route(intentId);
             assertNotNull(newNode);
 
             // 原来路由到 node1 的任务应该重新分配
-            if (initialRoute.get(taskId).equals(node1.getShardId())) {
+            if (initialRoute.get(intentId).equals(node1.getShardId())) {
                 assertNotEquals(node1.getShardId(), newNode.getShardId());
                 changed++;
             }
         }
 
-        System.out.println("Tasks reassigned: " + changed);
-        assertTrue(changed > 0, "Some tasks should be reassigned");
+        System.out.println("Intents reassigned: " + changed);
+        assertTrue(changed > 0, "Some intents should be reassigned");
     }
 
     @Test
@@ -147,8 +147,8 @@ class ShardRouterTest {
         // 记录初始路由
         Map<String, String> initialRoute = new HashMap<>();
         for (int i = 0; i < 10000; i++) {
-            String taskId = "task-" + i;
-            initialRoute.put(taskId, router.route(taskId).getShardId());
+            String intentId = "intent-" + i;
+            initialRoute.put(intentId, router.route(intentId).getShardId());
         }
 
         // 扩容到 3 节点
@@ -159,18 +159,18 @@ class ShardRouterTest {
         int migrated = 0;
         Map<String, AtomicInteger> newDistribution = new ConcurrentHashMap<>();
         for (int i = 0; i < 10000; i++) {
-            String taskId = "task-" + i;
-            ShardNode newNode = router.route(taskId);
+            String intentId = "intent-" + i;
+            ShardNode newNode = router.route(intentId);
             newDistribution.computeIfAbsent(newNode.getShardId(), k -> new AtomicInteger()).incrementAndGet();
 
-            if (!initialRoute.get(taskId).equals(newNode.getShardId())) {
+            if (!initialRoute.get(intentId).equals(newNode.getShardId())) {
                 migrated++;
             }
         }
 
         // 验证扩容后 3 个节点都有任务
         assertEquals(3, newDistribution.size());
-        assertTrue(newDistribution.containsKey(node2.getShardId()), "New node should have tasks");
+        assertTrue(newDistribution.containsKey(node2.getShardId()), "New node should have intents");
 
         // 验证迁移率约为 1/3（一致性 Hash 优势）
         double migrateRate = (double) migrated / 10000;
@@ -197,8 +197,8 @@ class ShardRouterTest {
             executor.submit(() -> {
                 try {
                     for (int i = 0; i < requestsPerThread; i++) {
-                        String taskId = "thread-" + threadId + "-task-" + i;
-                        ShardNode node = router.route(taskId);
+                        String intentId = "thread-" + threadId + "-intent-" + i;
+                        ShardNode node = router.route(intentId);
                         assertNotNull(node);
                     }
                 } finally {
@@ -229,21 +229,21 @@ class ShardRouterTest {
     }
 
     @Test
-    @DisplayName("相同 taskId 应该路由到相同节点")
+    @DisplayName("相同 intentId 应该路由到相同节点")
     void consistentRouting() {
         // 添加 4 个节点
         for (int i = 0; i < 4; i++) {
             router.addNode(createNode(i, 4, 8080 + i));
         }
 
-        // 多次路由相同 taskId
-        String taskId = "consistent-task";
-        ShardNode first = router.route(taskId);
+        // 多次路由相同 intentId
+        String intentId = "consistent-intent";
+        ShardNode first = router.route(intentId);
 
         for (int i = 0; i < 100; i++) {
-            ShardNode result = router.route(taskId);
+            ShardNode result = router.route(intentId);
             assertEquals(first.getShardId(), result.getShardId(),
-                    "Same task should always route to same shard");
+                    "Same intent should always route to same shard");
         }
     }
 
@@ -280,7 +280,7 @@ class ShardRouterTest {
 
         assertEquals(0, router.getAllNodes().size());
         assertEquals(0, router.getVirtualNodeCount());
-        assertNull(router.route("any-task"));
+        assertNull(router.route("any-intent"));
     }
 
     // Helper method

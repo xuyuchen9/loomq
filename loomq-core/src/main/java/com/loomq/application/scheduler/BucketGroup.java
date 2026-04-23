@@ -2,6 +2,8 @@ package com.loomq.application.scheduler;
 
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.domain.intent.PrecisionTierCatalog;
+import com.loomq.domain.intent.PrecisionTierProfile;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,9 +36,9 @@ public class BucketGroup {
     private final PrecisionTier tier;
 
     /**
-     * 精度窗口（毫秒）
+     * 精度档位参数
      */
-    private final long precisionWindowMs;
+    private final PrecisionTierProfile profile;
 
     /**
      * 时间桶存储
@@ -61,8 +63,18 @@ public class BucketGroup {
      * @param tier 精度档位
      */
     public BucketGroup(PrecisionTier tier) {
+        this(tier, PrecisionTierCatalog.defaultCatalog());
+    }
+
+    /**
+     * 构造函数
+     *
+     * @param tier    精度档位
+     * @param catalog 精度档位目录
+     */
+    public BucketGroup(PrecisionTier tier, PrecisionTierCatalog catalog) {
         this.tier = tier;
-        this.precisionWindowMs = tier.getPrecisionWindowMs();
+        this.profile = catalog.profile(tier);
         this.buckets = new ConcurrentSkipListMap<>();
         this.intentIndex = new ConcurrentHashMap<>();
         this.pendingCount = new AtomicLong();
@@ -167,6 +179,7 @@ public class BucketGroup {
      * @return 休眠时长（毫秒），0 表示直接入桶
      */
     public long calculateSleepMs(long delay) {
+        long precisionWindowMs = profile.precisionWindowMs();
         if (delay <= precisionWindowMs) {
             // 短延迟场景：跳过休眠，直接进入 Bucket
             return 0;
@@ -184,6 +197,7 @@ public class BucketGroup {
      * @return 桶 Key
      */
     private long floorToBucket(long timestampMs) {
+        long precisionWindowMs = profile.precisionWindowMs();
         return (timestampMs / precisionWindowMs) * precisionWindowMs;
     }
 
@@ -229,7 +243,7 @@ public class BucketGroup {
      * @return 精度窗口
      */
     public long getPrecisionWindowMs() {
-        return precisionWindowMs;
+        return profile.precisionWindowMs();
     }
 
     private boolean removeFromBucket(long bucketKey, String intentId) {

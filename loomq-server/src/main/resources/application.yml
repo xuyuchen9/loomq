@@ -1,6 +1,6 @@
 # =====================================================
 # LoomQ Configuration v0.7.0
-# High-Performance Delayed Task Queue
+# High-Performance Delayed Intent Queue
 # =====================================================
 
 # -----------------------------------------------------
@@ -51,7 +51,7 @@ wal:
 # Scheduler Configuration
 # -----------------------------------------------------
 scheduler:
-  max_pending_tasks: ${LOOMQ_SCHEDULER_MAX_PENDING:1000000}
+  max_pending_intents: ${LOOMQ_SCHEDULER_MAX_PENDING:1000000}
   time_bucket_ms: 100
   tick_interval_ms: 10
   virtual_threads: true

@@ -10,9 +10,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -114,8 +116,8 @@ public class WalCatchUpManager implements AutoCloseable {
 
     // ==================== 回调函数 ====================
 
-    // 发送追赶请求的函数 (shardId, request) -> response
-    private volatile BiConsumer<String, CatchUpRequest> catchUpRequestSender;
+    // 发送追赶请求的函数 request -> response future
+    private volatile Function<CatchUpRequest, CompletableFuture<CatchUpResponse>> catchUpRequestSender;
 
     // 记录应用器 (record) -> success
     private volatile Function<ReplicationRecord, Boolean> recordApplier;
@@ -446,23 +448,21 @@ public class WalCatchUpManager implements AutoCloseable {
             throw new CatchUpException("Catch up request sender not set");
         }
 
-        // 使用 CompletableFuture 包装异步请求
-        CompletableFuture<CatchUpResponse> future = new CompletableFuture<>();
+        CompletableFuture<CatchUpResponse> future = catchUpRequestSender.apply(request);
+        if (future == null) {
+            throw new CatchUpException("Catch up request sender returned null future");
+        }
 
-        // 模拟回调（实际实现中应该使用异步回调）
-        // 这里简化处理，直接调用 sender
-        catchUpRequestSender.accept(shardId, request);
-
-        // TODO: 实际实现应该等待回调并返回响应
-        // 这里返回一个模拟响应用于测试
-        return new CatchUpResponse(
-            true,               // success
-            null,               // errorMessage
-            new ArrayList<>(),  // records
-            request.getStartOffset(), // endOffset
-            false,              // hasMore
-            request.getStartOffset()  // primaryOffset
-        );
+        try {
+            return future.get(30, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            throw new CatchUpException("Timed out waiting for catch up response", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CatchUpException("Interrupted while waiting for catch up response", e);
+        } catch (ExecutionException e) {
+            throw new CatchUpException("Failed to receive catch up response", e.getCause());
+        }
     }
 
     // ==================== 进度报告 ====================
@@ -498,7 +498,7 @@ public class WalCatchUpManager implements AutoCloseable {
     /**
      * 设置追赶请求发送器
      */
-    public void setCatchUpRequestSender(BiConsumer<String, CatchUpRequest> sender) {
+    public void setCatchUpRequestSender(Function<CatchUpRequest, CompletableFuture<CatchUpResponse>> sender) {
         this.catchUpRequestSender = sender;
     }
 

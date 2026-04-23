@@ -14,31 +14,13 @@
     <packaging>jar</packaging>
 
     <name>LoomQ Core</name>
-    <description>Embedded kernel for LoomQ delayed Intent queue - minimal dependencies (slf4j, owner, snakeyaml, HdrHistogram)</description>
+    <description>Embedded kernel for LoomQ delayed Intent queue - minimal dependencies (slf4j)</description>
 
     <dependencies>
         <!-- Logging: SLF4J API only, no implementation -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
-        </dependency>
-
-        <!-- Configuration - TEMPORARY: will be refactored to zero dependency -->
-        <dependency>
-            <groupId>org.aeonbits.owner</groupId>
-            <artifactId>owner</artifactId>
-        </dependency>
-
-        <!-- YAML Parsing - TEMPORARY: will be refactored to zero dependency -->
-        <dependency>
-            <groupId>org.yaml</groupId>
-            <artifactId>snakeyaml</artifactId>
-        </dependency>
-
-        <!-- Histogram - TEMPORARY: will be refactored to zero dependency -->
-        <dependency>
-            <groupId>org.hdrhistogram</groupId>
-            <artifactId>HdrHistogram</artifactId>
         </dependency>
 
         <!-- Testing -->

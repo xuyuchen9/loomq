@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Consumer;
 
 /**
  * 复制管理器
@@ -51,6 +52,9 @@ public class ReplicationManager implements AutoCloseable {
 
     // 运行状态
     private final AtomicBoolean running = new AtomicBoolean(false);
+
+    // 复制错误回调
+    private volatile Consumer<Throwable> onReplicaErrorCallback;
 
     public ReplicationManager(String nodeId) {
         this.nodeId = nodeId;
@@ -238,7 +242,14 @@ public class ReplicationManager implements AutoCloseable {
      */
     private void onReplicaError(Throwable error) {
         logger.error("Replica connection error", error);
-        // TODO: 触发降级或 failover
+        Consumer<Throwable> callback = onReplicaErrorCallback;
+        if (callback != null) {
+            try {
+                callback.accept(error);
+            } catch (Exception e) {
+                logger.error("Replica error callback failed", e);
+            }
+        }
     }
 
     /**
@@ -279,6 +290,13 @@ public class ReplicationManager implements AutoCloseable {
      */
     public void setRecordApplier(Function<ReplicationRecord, Boolean> applier) {
         this.recordApplier = applier;
+    }
+
+    /**
+     * 设置 replica 连接错误回调
+     */
+    public void setOnReplicaError(Consumer<Throwable> callback) {
+        this.onReplicaErrorCallback = callback;
     }
 
     // ==================== 状态查询 ====================

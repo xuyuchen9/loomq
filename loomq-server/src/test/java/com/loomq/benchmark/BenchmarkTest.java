@@ -39,7 +39,7 @@ public class BenchmarkTest {
         String command = args[0];
         switch (command) {
             case "create" -> runCreateBenchmark(args);
-            case "million" -> runMillionTasksBenchmark(args);
+            case "million" -> runMillionIntentsBenchmark(args);
             case "recovery" -> runRecoveryBenchmark(args);
             default -> printUsage();
         }
@@ -86,7 +86,7 @@ public class BenchmarkTest {
         // 预热
         System.out.println("预热中...");
         for (int i = 0; i < 10; i++) {
-            createTask(3600000); // 1 小时后执行
+            createIntent(3600000); // 1 小时后执行
         }
         Thread.sleep(1000);
 
@@ -106,7 +106,7 @@ public class BenchmarkTest {
                     for (int i = 0; i < requestsPerThread; i++) {
                         long reqStart = System.nanoTime();
                         try {
-                            createTask(3600000);
+                            createIntent(3600000);
                             long latency = (System.nanoTime() - reqStart) / 1_000_000;
                             latencies.add(latency);
                             successCount.incrementAndGet();
@@ -157,7 +157,7 @@ public class BenchmarkTest {
     /**
      * 百万任务压测
      */
-    private static void runMillionTasksBenchmark(String[] args) throws Exception {
+    private static void runMillionIntentsBenchmark(String[] args) throws Exception {
         int count = args.length > 1 ? Integer.parseInt(args[1]) : 100000;
 
         System.out.println("=== 百万 Intent 压测 ===");
@@ -184,7 +184,7 @@ public class BenchmarkTest {
             executor.submit(() -> {
                 try {
                     for (int j = 0; j < batchSize && batchStart + j < count; j++) {
-                        createTask(3600000); // 1 小时后执行
+                        createIntent(3600000); // 1 小时后执行
                         int current = created.incrementAndGet();
                         if (current % 10000 == 0) {
                             System.out.println("已创建: " + current + " Intent");
@@ -269,14 +269,14 @@ public class BenchmarkTest {
         }
     }
 
-    private static String createTask(long delayMs) throws IOException, InterruptedException {
+    private static String createIntent(long delayMs) throws IOException, InterruptedException {
         String body = String.format(
                 "{\"bizKey\":\"bench_%d\",\"delayMs\":%d,\"webhookUrl\":\"http://localhost:9999/webhook\"}",
                 System.nanoTime(), delayMs
         );
 
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(BASE_URL + "/api/v1/tasks"))
+                .uri(URI.create(BASE_URL + "/api/v1/intents"))
                 .header("Content-Type", "application/json")
                 .header("X-Loomq-Token", TOKEN)
                 .POST(HttpRequest.BodyPublishers.ofString(body))

@@ -1,25 +1,43 @@
 package com.loomq.config;
 
-import org.aeonbits.owner.Config;
+import java.util.Properties;
 
 /**
- * 分发器配置
+ * 分发器配置.
  */
-@Config.Sources({"classpath:application.yml", "file:./config/application.yml"})
-public interface DispatcherConfig extends Config {
-    @Key("dispatcher.http_timeout_ms")
-    @DefaultValue("3000")
-    long httpTimeoutMs();
+public record DispatcherConfig(
+        long httpTimeoutMs,
+        int maxConcurrentDispatches,
+        long connectTimeoutMs,
+        long readTimeoutMs
+) {
 
-    @Key("dispatcher.max_concurrent_dispatches")
-    @DefaultValue("1000")
-    int maxConcurrentDispatches();
+    public DispatcherConfig {
+        if (httpTimeoutMs <= 0) {
+            throw new IllegalArgumentException("httpTimeoutMs must be positive");
+        }
+        if (maxConcurrentDispatches <= 0) {
+            throw new IllegalArgumentException("maxConcurrentDispatches must be positive");
+        }
+        if (connectTimeoutMs <= 0) {
+            throw new IllegalArgumentException("connectTimeoutMs must be positive");
+        }
+        if (readTimeoutMs <= 0) {
+            throw new IllegalArgumentException("readTimeoutMs must be positive");
+        }
+    }
 
-    @Key("dispatcher.connect_timeout_ms")
-    @DefaultValue("5000")
-    long connectTimeoutMs();
+    public static DispatcherConfig defaultConfig() {
+        return new DispatcherConfig(3000, 1000, 5000, 3000);
+    }
 
-    @Key("dispatcher.read_timeout_ms")
-    @DefaultValue("3000")
-    long readTimeoutMs();
+    public static DispatcherConfig fromProperties(Properties props) {
+        Properties source = props == null ? new Properties() : props;
+        return new DispatcherConfig(
+                ConfigSupport.longValue(source, 3000, "dispatcher.http_timeout_ms", "dispatcher.httpTimeoutMs", "httpTimeoutMs"),
+                ConfigSupport.intValue(source, 1000, "dispatcher.max_concurrent_dispatches", "dispatcher.maxConcurrentDispatches", "maxConcurrentDispatches"),
+                ConfigSupport.longValue(source, 5000, "dispatcher.connect_timeout_ms", "dispatcher.connectTimeoutMs", "connectTimeoutMs"),
+                ConfigSupport.longValue(source, 3000, "dispatcher.read_timeout_ms", "dispatcher.readTimeoutMs", "readTimeoutMs")
+        );
+    }
 }

@@ -97,6 +97,7 @@ class ClusterConfigTest {
     @DisplayName("应从配置文件加载")
     void loadFromFile() throws IOException {
         String yaml = """
+            # cluster config used for tests
             cluster:
               name: "test-cluster"
               total_shards: 4
@@ -104,7 +105,7 @@ class ClusterConfigTest {
               hot_reload: true
               reload_interval_ms: 30000
               nodes:
-                - shard_id: "shard-0"
+                - shard_id: "shard-0" # first node
                   host: "node1.example.com"
                   port: 8080
                   weight: 100

@@ -34,12 +34,12 @@ class ClusterManagerTest {
         assertTrue(manager.getLocalNode().isAvailable());
 
         // 路由测试
-        ShardNode node = manager.route("any-task");
+        ShardNode node = manager.route("any-intent");
         assertNotNull(node);
         assertEquals("shard-0", node.getShardId());
 
         // 本地任务检查
-        assertTrue(manager.isLocalTask("test-task"));
+        assertTrue(manager.isLocalIntent("test-intent"));
 
         manager.stop();
     }
@@ -61,7 +61,7 @@ class ClusterManagerTest {
         // 路由应均匀分布
         int[] distribution = new int[4];
         for (int i = 0; i < 10000; i++) {
-            ShardNode node = manager.route("task-" + i);
+            ShardNode node = manager.route("intent-" + i);
             assertNotNull(node);
             int idx = Integer.parseInt(node.getShardId().substring(6));
             distribution[idx]++;
@@ -69,7 +69,7 @@ class ClusterManagerTest {
 
         // 每个分片都应该有任务
         for (int i = 0; i < 4; i++) {
-            assertTrue(distribution[i] > 1000, "Shard-" + i + " should have tasks");
+            assertTrue(distribution[i] > 1000, "Shard-" + i + " should have intents");
         }
 
         manager.stop();
@@ -77,7 +77,7 @@ class ClusterManagerTest {
 
     @Test
     @DisplayName("本地任务识别应正确")
-    void localTaskIdentification() throws IOException {
+    void localIntentIdentification() throws IOException {
         // shard-0 的节点
         ClusterConfig config = new ClusterConfig(
                 "test",
@@ -97,24 +97,24 @@ class ClusterManagerTest {
         manager.start();
 
         // 找到实际路由到 shard-0 的任务
-        String localTask = null;
-        String remoteTask = null;
+        String localIntent = null;
+        String remoteIntent = null;
         for (int i = 0; i < 10000; i++) {
-            String taskId = "task-" + i;
-            ShardNode node = manager.route(taskId);
+            String intentId = "intent-" + i;
+            ShardNode node = manager.route(intentId);
             if (node.getShardId().equals("shard-0")) {
-                if (localTask == null) localTask = taskId;
+                if (localIntent == null) localIntent = intentId;
             } else {
-                if (remoteTask == null) remoteTask = taskId;
+                if (remoteIntent == null) remoteIntent = intentId;
             }
-            if (localTask != null && remoteTask != null) break;
+            if (localIntent != null && remoteIntent != null) break;
         }
 
-        assertNotNull(localTask);
-        assertNotNull(remoteTask);
+        assertNotNull(localIntent);
+        assertNotNull(remoteIntent);
 
-        assertTrue(manager.isLocalTask(localTask));
-        assertFalse(manager.isLocalTask(remoteTask));
+        assertTrue(manager.isLocalIntent(localIntent));
+        assertFalse(manager.isLocalIntent(remoteIntent));
 
         manager.stop();
     }

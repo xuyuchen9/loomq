@@ -1,25 +1,40 @@
 package com.loomq.config;
 
-import org.aeonbits.owner.Config;
+import java.util.Properties;
 
 /**
- * 恢复配置
+ * 恢复配置.
  */
-@Config.Sources({"classpath:application.yml", "file:./config/application.yml"})
-public interface RecoveryConfig extends Config {
-    @Key("recovery.batch_size")
-    @DefaultValue("1000")
-    int batchSize();
+public record RecoveryConfig(
+        int batchSize,
+        long sleepMs,
+        int concurrencyLimit,
+        boolean safeMode
+) {
 
-    @Key("recovery.sleep_ms")
-    @DefaultValue("10")
-    long sleepMs();
+    public RecoveryConfig {
+        if (batchSize <= 0) {
+            throw new IllegalArgumentException("batchSize must be positive");
+        }
+        if (sleepMs <= 0) {
+            throw new IllegalArgumentException("sleepMs must be positive");
+        }
+        if (concurrencyLimit <= 0) {
+            throw new IllegalArgumentException("concurrencyLimit must be positive");
+        }
+    }
 
-    @Key("recovery.concurrency_limit")
-    @DefaultValue("100")
-    int concurrencyLimit();
+    public static RecoveryConfig defaultConfig() {
+        return new RecoveryConfig(1000, 10, 100, false);
+    }
 
-    @Key("recovery.safe_mode")
-    @DefaultValue("false")
-    boolean safeMode();
+    public static RecoveryConfig fromProperties(Properties props) {
+        Properties source = props == null ? new Properties() : props;
+        return new RecoveryConfig(
+                ConfigSupport.intValue(source, 1000, "recovery.batch_size", "recovery.batchSize", "batchSize"),
+                ConfigSupport.longValue(source, 10, "recovery.sleep_ms", "recovery.sleepMs", "sleepMs"),
+                ConfigSupport.intValue(source, 100, "recovery.concurrency_limit", "recovery.concurrencyLimit", "concurrencyLimit"),
+                ConfigSupport.booleanValue(source, false, "recovery.safe_mode", "recovery.safeMode", "safeMode")
+        );
+    }
 }

@@ -2,6 +2,7 @@ package com.loomq.application.scheduler;
 
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.domain.intent.PrecisionTierCatalog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,14 +29,29 @@ public class BucketGroupManager {
     private final Map<PrecisionTier, BucketGroup> bucketGroups;
 
     /**
+     * 精度档位目录
+     */
+    private final PrecisionTierCatalog precisionTierCatalog;
+
+    /**
      * 构造函数
      * 初始化所有精度档位的 BucketGroup
      */
     public BucketGroupManager() {
+        this(PrecisionTierCatalog.defaultCatalog());
+    }
+
+    /**
+     * 构造函数
+     *
+     * @param precisionTierCatalog 精度档位目录
+     */
+    public BucketGroupManager(PrecisionTierCatalog precisionTierCatalog) {
+        this.precisionTierCatalog = precisionTierCatalog;
         this.bucketGroups = new EnumMap<>(PrecisionTier.class);
 
-        for (PrecisionTier tier : PrecisionTier.values()) {
-            bucketGroups.put(tier, new BucketGroup(tier));
+        for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
+            bucketGroups.put(tier, new BucketGroup(tier, precisionTierCatalog));
         }
 
         logger.info("Initialized {} bucket groups for precision tiers", bucketGroups.size());
@@ -51,8 +67,8 @@ public class BucketGroupManager {
         BucketGroup group = bucketGroups.get(tier);
 
         if (group == null) {
-            logger.warn("Unknown precision tier {}, using STANDARD", tier);
-            group = bucketGroups.get(PrecisionTier.STANDARD);
+            logger.warn("Unknown precision tier {}, using default tier {}", tier, precisionTierCatalog.defaultTier());
+            group = bucketGroups.get(precisionTierCatalog.defaultTier());
         }
 
         group.add(intent, intent.getExecuteAt());

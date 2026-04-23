@@ -47,7 +47,7 @@ class ResultTest {
 
     @Test
     void testError_WithErrorCode() {
-        Result<Void> result = Result.error(ErrorCode.TASK_NOT_FOUND);
+        Result<Void> result = Result.error(ErrorCode.INTENT_NOT_FOUND);
 
         assertTrue(result.isError());
         assertFalse(result.isSuccess());

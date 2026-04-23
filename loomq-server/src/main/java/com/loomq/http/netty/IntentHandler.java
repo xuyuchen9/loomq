@@ -12,6 +12,7 @@ import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.http.json.JsonCodec;
 import com.loomq.replication.AckLevel;
 import com.loomq.store.IdempotencyResult;
@@ -34,6 +35,7 @@ import java.util.UUID;
 public class IntentHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(IntentHandler.class);
+    private static final PrecisionTier DEFAULT_PRECISION_TIER = PrecisionTierCatalog.defaultCatalog().defaultTier();
 
     private final LoomqEngine engine;
     private final JsonCodec jsonCodec;
@@ -103,7 +105,7 @@ public class IntentHandler {
         intent.setExecuteAt(request.executeAt());
         intent.setDeadline(request.deadline());
         intent.setExpiredAction(request.expiredAction());
-        intent.setPrecisionTier(request.precisionTier() != null ? request.precisionTier() : PrecisionTier.STANDARD);
+        intent.setPrecisionTier(request.precisionTier() != null ? request.precisionTier() : DEFAULT_PRECISION_TIER);
         intent.setShardKey(request.shardKey());
         intent.setAckLevel(request.ackLevel() != null ? request.ackLevel() : AckLevel.DURABLE);
         intent.setCallback(request.callback());

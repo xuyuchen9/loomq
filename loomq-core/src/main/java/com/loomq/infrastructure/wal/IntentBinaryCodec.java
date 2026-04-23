@@ -5,6 +5,7 @@ import com.loomq.domain.intent.ExpiredAction;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.domain.intent.RedeliveryPolicy;
 import com.loomq.replication.AckLevel;
 
@@ -52,6 +53,8 @@ import java.util.Map;
  * @since v0.6.1
  */
 public class IntentBinaryCodec {
+
+    private static final PrecisionTierCatalog PRECISION_TIER_CATALOG = PrecisionTierCatalog.defaultCatalog();
 
     // 字段类型常量
     private static final byte FIELD_INTENT_ID = 0x01;
@@ -223,7 +226,7 @@ public class IntentBinaryCodec {
                 case FIELD_EXECUTE_AT -> executeAt = Instant.ofEpochMilli(buffer.getLong());
                 case FIELD_DEADLINE -> deadline = Instant.ofEpochMilli(buffer.getLong());
                 case FIELD_EXPIRED_ACTION -> expiredAction = ExpiredAction.values()[buffer.get()];
-                case FIELD_PRECISION_TIER -> precisionTier = PrecisionTier.values()[buffer.get()];
+                case FIELD_PRECISION_TIER -> precisionTier = PRECISION_TIER_CATALOG.tierByOrdinal(buffer.get() & 0xFF);
                 case FIELD_SHARD_KEY -> shardKey = readString(buffer, fieldLen);
                 case FIELD_SHARD_ID -> shardId = readString(buffer, fieldLen);
                 case FIELD_ACK_LEVEL -> ackLevel = AckLevel.values()[buffer.get()];

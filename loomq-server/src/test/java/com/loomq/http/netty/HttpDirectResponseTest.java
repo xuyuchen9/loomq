@@ -3,6 +3,7 @@ package com.loomq.http.netty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.loomq.api.ErrorResponse;
 import com.loomq.api.IntentActionResponse;
+import com.loomq.common.MetricsCollector;
 import com.loomq.metrics.LoomQMetrics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -37,18 +38,19 @@ class HttpDirectResponseTest {
     @DisplayName("/metrics response should match Jackson JSON")
     void metricsResponseMatchesJackson() throws Exception {
         LoomQMetrics metrics = LoomQMetrics.getInstance();
+        MetricsCollector collector = MetricsCollector.getInstance();
         metrics.reset();
         try {
             metrics.incrementIntentsCreated();
             metrics.incrementIntentsCancelled();
-            metrics.updatePendingIntents(7);
             metrics.updateActiveDispatches(2);
             metrics.updateWalHealth(true);
             metrics.updateWalLastFlushTime(1713582000000L);
             metrics.updateWalPendingWrites(3);
             metrics.updateWalRingBufferSize(1024);
-            metrics.updateIntentStatus("SCHEDULED", 4);
-            metrics.updateIntentStatus("DUE", 1);
+            collector.updatePendingIntents(7);
+            collector.updateIntentStatus("SCHEDULED", 4);
+            collector.updateIntentStatus("DUE", 1);
 
             LoomQMetrics.MetricsSnapshot snapshot = metrics.snapshot();
             String directJson = new String(MetricsResponseSerializer.toBytes(snapshot), StandardCharsets.UTF_8);

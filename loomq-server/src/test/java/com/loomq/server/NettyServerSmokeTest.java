@@ -6,7 +6,6 @@ import com.loomq.config.ServerConfig;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
-import org.aeonbits.owner.ConfigFactory;
 import io.netty.handler.codec.http.HttpMethod;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -140,6 +139,6 @@ class NettyServerSmokeTest {
         props.setProperty("server.virtual_threads", "true");
         props.setProperty("server.max_request_size", String.valueOf(10 * 1024 * 1024));
         props.setProperty("server.thread_pool_size", "200");
-        return ConfigFactory.create(ServerConfig.class, props);
+        return ServerConfig.fromProperties(props);
     }
 }
