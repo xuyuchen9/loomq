@@ -41,6 +41,8 @@ test-data/
 # Benchmark results (keep directory structure)
 benchmark/results/*.csv
 benchmark/results/reports/
+benchmark/results/runtime/
+benchmark/results/m2repo/
 
 # OS generated files
 .DS_Store

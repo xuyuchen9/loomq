@@ -367,6 +367,7 @@ public class SimpleWalWriter implements AutoCloseable {
                 }
 
             } catch (Exception e) {
+                // 刷盘循环安全网：单次 force() 失败不应杀死刷盘线程
                 logger.error("Flush loop error", e);
                 LockSupport.parkNanos(10_000_000L); // 10ms
             }
@@ -415,6 +416,7 @@ public class SimpleWalWriter implements AutoCloseable {
                 mappedRegion.force();
             }
         } catch (Exception e) {
+            // 最后一次刷盘：已关闭中，无恢复路径，只记录日志
             logger.error("Final flush failed", e);
         }
 

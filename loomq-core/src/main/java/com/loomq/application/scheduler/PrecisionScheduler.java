@@ -21,7 +21,9 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -398,6 +400,7 @@ public class PrecisionScheduler {
             checkExpiredIntents(tier);
 
         } catch (Exception e) {
+            // 扫描循环安全网：单个 tier 的异常不应杀死整个扫描线程
             logger.error("Error scanning tier {}", tier, e);
         }
 
@@ -469,8 +472,9 @@ public class PrecisionScheduler {
                         try {
                             dispatchWithMetrics(intent, tier);
                         } catch (Exception e) {
+                            // 单条 dispatch 失败不应影响同批次其他 intent
                             logger.error("Dispatch failed for intent {}: {}",
-                                intent.getIntentId(), e.getMessage());
+                                intent.getIntentId(), e.getMessage(), e);
                         } finally {
                             semaphore.release();
                         }
@@ -482,7 +486,7 @@ public class PrecisionScheduler {
                     CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                         .orTimeout(30, TimeUnit.SECONDS)
                         .join();
-                } catch (Exception e) {
+                } catch (CompletionException | CancellationException e) {
                     logger.warn("Batch dispatch timeout or error for tier {}: {}", tier, e.getMessage());
                 }
 
@@ -490,6 +494,7 @@ public class PrecisionScheduler {
                 Thread.currentThread().interrupt();
                 break;
             } catch (Exception e) {
+                // 批量消费循环安全网：单次批次异常不应杀死消费者线程
                 logger.error("Error in batch consumer for tier {}", tier, e);
             }
         }
@@ -579,19 +584,10 @@ public class PrecisionScheduler {
      */
     private void dispatchWithMetrics(Intent intent, PrecisionTier tier) {
         long startTime = System.nanoTime();
-
-        try {
-            dispatch(intent);
-
-            long durationMs = (System.nanoTime() - startTime) / 1_000_000;
-            metrics.recordWebhookLatency(durationMs);
-            metrics.incrementIntentByTier(tier);
-
-        } catch (Exception e) {
-            logger.error("Dispatch failed for intent {} in tier {}",
-                intent.getIntentId(), tier, e);
-            throw e;
-        }
+        dispatch(intent);
+        long durationMs = (System.nanoTime() - startTime) / 1_000_000;
+        metrics.recordWebhookLatency(durationMs);
+        metrics.incrementIntentByTier(tier);
     }
 
     /**

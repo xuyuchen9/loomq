@@ -247,6 +247,7 @@ public class ReplicationManager implements AutoCloseable {
             try {
                 callback.accept(error);
             } catch (Exception e) {
+                // 用户回调防御：回调异常不应影响 Replica 连接管理
                 logger.error("Replica error callback failed", e);
             }
         }
@@ -270,7 +271,7 @@ public class ReplicationManager implements AutoCloseable {
                     logger.warn("Record not applied (possibly duplicate): offset={}",
                         record.getOffset());
                 }
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 logger.error("Failed to apply record: offset={}", record.getOffset(), e);
                 throw e;  // 抛出异常会导致 ACK 失败
             }

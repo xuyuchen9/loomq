@@ -25,6 +25,15 @@
 
 .PARAMETER Help
     Show help message
+
+.PARAMETER KeepOpen
+    Keep the window open after script exits
+
+.PARAMETER NoPause
+    Never pause window on exit (even when double-click launched)
+
+.PARAMETER VerboseOutput
+    Show full scenario logs instead of condensed output
 #>
 
 param(
@@ -34,7 +43,10 @@ param(
     [switch]$NoCompile,
     [switch]$Save,
     [switch]$NoSave,
-    [switch]$Help
+    [switch]$Help,
+    [switch]$KeepOpen,
+    [switch]$NoPause,
+    [switch]$VerboseOutput
 )
 
 # ============================================================
@@ -52,7 +64,7 @@ trap {
     Write-Host "Stack Trace:" -ForegroundColor Gray
     Write-Host $_.ScriptStackTrace -ForegroundColor Gray
     Write-Host ""
-    exit 1
+    Exit-BenchmarkScript -ExitCode 1
 }
 
 # ============================================================
@@ -133,12 +145,47 @@ function Write-Info {
 
 function Wait-Exit {
     Write-Host ""
-    exit 1
+    Exit-BenchmarkScript -ExitCode 1
 }
 
 # ============================================================
 #  工具函数
 # ============================================================
+
+function Test-LaunchedFromExplorer {
+    try {
+        $self = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop
+        if ($null -eq $self) {
+            return $false
+        }
+
+        $parentPid = [int]$self.ParentProcessId
+        if ($parentPid -le 0) {
+            return $false
+        }
+
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentPid" -ErrorAction Stop
+        return $null -ne $parent -and $parent.Name -ieq "explorer.exe"
+    } catch {
+        return $false
+    }
+}
+
+$script:PauseOnExit = $false
+
+function Exit-BenchmarkScript {
+    param(
+        [int]$ExitCode = 0,
+        [string]$Prompt = "Press Enter to close"
+    )
+
+    if ($script:PauseOnExit) {
+        Write-Host ""
+        Read-Host $Prompt | Out-Null
+    }
+
+    exit $ExitCode
+}
 
 function Get-GitCommit {
     try {
@@ -324,7 +371,8 @@ function Invoke-BenchmarkScenario {
         [string]$ExecArgs = $null,
         [string]$BenchmarkBaseUrl = $null,
         [int]$TimeoutSec = 300,
-        [switch]$Quick
+        [switch]$Quick,
+        [switch]$VerboseOutput
     )
 
     Write-Header $Name
@@ -391,14 +439,28 @@ function Invoke-BenchmarkScenario {
     foreach ($Line in $StdErrLines) { [void]$Lines.Add("[stderr] $Line") }
 
     foreach ($Line in $Lines) {
-        if ($Line -match '^RESULT\|') {
-            Write-Host $Line -ForegroundColor Green
-        } elseif ($Line -match '^RESULT_ROW\|') {
-            Write-Host $Line -ForegroundColor DarkGray
-        } elseif ($Line -match '^╔|^╚|^║|^===|^---|^###|^测试配置|^峰值 QPS|^最佳 P99|^最差 P99|^失败率|^解释:') {
-            Write-Host $Line -ForegroundColor Cyan
-        } elseif ($Line -match '^\[stderr\] WARNING:|^\[stderr\] \[ERROR\]|^\[stderr\] \[INFO\]|^\[ERROR\]|^\[WARN\]|^\[INFO\]') {
-            Write-Host $Line
+        if ($VerboseOutput) {
+            if ($Line -match '^\[stderr\]\s*\[ERROR\]|^\[ERROR\]|Exception|FATAL') {
+                Write-Host $Line -ForegroundColor Red
+            } elseif ($Line -match '^\[stderr\]\s*WARNING:|^\[WARN\]') {
+                Write-Host $Line -ForegroundColor Yellow
+            } elseif ($Line -match '^RESULT\|') {
+                Write-Host $Line -ForegroundColor Green
+            } elseif ($Line -match '^RESULT_ROW\|') {
+                Write-Host $Line -ForegroundColor DarkGray
+            } else {
+                Write-Host $Line
+            }
+        } else {
+            if ($Line -match '^RESULT\|') {
+                Write-Host $Line -ForegroundColor Green
+            } elseif ($Line -match '^RESULT_ROW\|') {
+                Write-Host $Line -ForegroundColor DarkGray
+            } elseif ($Line -match '^╔|^╚|^║|^===|^---|^###|^测试配置|^峰值 QPS|^最佳 P99|^最差 P99|^失败率|^解释:') {
+                Write-Host $Line -ForegroundColor Cyan
+            } elseif ($Line -match '^\[stderr\] WARNING:|^\[stderr\] \[ERROR\]|^\[stderr\] \[INFO\]|^\[ERROR\]|^\[WARN\]|^\[INFO\]') {
+                Write-Host $Line
+            }
         }
     }
 
@@ -912,6 +974,9 @@ function Build-BenchmarkSummary {
 #  新主程序
 # ============================================================
 
+$script:PauseOnExit = (-not $NoPause) -and ($KeepOpen -or (Test-LaunchedFromExplorer))
+$script:VerboseScenarioOutput = $VerboseOutput -or $script:PauseOnExit
+
 # 显示帮助
 if ($Help) {
     Write-Host @"
@@ -926,6 +991,9 @@ Options:
   -NoCompile       Skip compilation
   -Save            Auto-save results to history
   -NoSave          Preview mode (do not save)
+  -KeepOpen        Keep console window open after finish
+  -NoPause         Never pause on exit (for scripted runs)
+  -VerboseOutput   Show full scenario logs
   -Help            Show this help
 
 Examples:
@@ -934,8 +1002,10 @@ Examples:
   .\benchmark.ps1 -Compare         # View history
   .\benchmark.ps1 -Save            # Auto save results
   .\benchmark.ps1 -NoSave          # Preview mode
+  .\benchmark.ps1 -KeepOpen        # Keep window open
+  .\benchmark.ps1 -VerboseOutput   # Full scenario logs
 "@
-    exit 0
+    Exit-BenchmarkScript -ExitCode 0
 }
 
 # 横幅
@@ -1002,7 +1072,7 @@ if ($Compare) {
     } else {
         Write-Warning "No benchmark summary found yet."
     }
-    exit 0
+    Exit-BenchmarkScript -ExitCode 0
 }
 
 # 编译项目
@@ -1055,7 +1125,8 @@ try {
         -ServerModuleDir $ServerModuleDir `
         -MainClass "com.loomq.benchmark.InternalBenchmark" `
         -TimeoutSec $(if ($Quick) { 120 } else { 240 }) `
-        -Quick:$Quick
+        -Quick:$Quick `
+        -VerboseOutput:$script:VerboseScenarioOutput
 
     if ($InternalResult.ExitCode -ne 0) {
         throw "Internal benchmark failed with exit code $($InternalResult.ExitCode)"
@@ -1087,7 +1158,8 @@ try {
                 -MainClass "com.loomq.benchmark.HttpVirtualThreadBenchmark" `
                 -BenchmarkBaseUrl $TempServerHandle.BaseUrl `
                 -TimeoutSec $(if ($Quick) { 180 } else { 420 }) `
-                -Quick:$Quick
+                -Quick:$Quick `
+                -VerboseOutput:$script:VerboseScenarioOutput
 
             if ($HttpResult.ExitCode -ne 0) {
                 throw "HTTP benchmark failed with exit code $($HttpResult.ExitCode)"
@@ -1098,7 +1170,8 @@ try {
                 -ServerModuleDir $ServerModuleDir `
                 -MainClass "com.loomq.scheduler.SchedulerTriggerBenchmarkWithMockServer" `
                 -TimeoutSec $(if ($Quick) { 180 } else { 420 }) `
-                -Quick:$Quick
+                -Quick:$Quick `
+                -VerboseOutput:$script:VerboseScenarioOutput
 
             if ($SchedulerResult.ExitCode -ne 0) {
                 throw "Scheduler benchmark failed with exit code $($SchedulerResult.ExitCode)"
@@ -1142,7 +1215,7 @@ try {
 
     Write-Host ""
     Write-Host "Tip: use -Compare to show the latest saved summary." -ForegroundColor Gray
-    exit 0
+    Exit-BenchmarkScript -ExitCode 0
 } catch {
     Write-Error "Benchmark run failed!"
     throw

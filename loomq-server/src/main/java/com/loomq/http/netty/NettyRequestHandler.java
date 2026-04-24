@@ -152,7 +152,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                                     MetricsResponseSerializer.write(snapshot, buf);
                                     writeByteBufResponse(ctx, responseStatus, buf);
                                     metrics.recordRequest(System.nanoTime() - startTime, responseStatus.code());
-                                } catch (Exception e) {
+                                } catch (RuntimeException e) {
                                     buf.release();
                                     throw e;
                                 }
@@ -163,7 +163,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                                     directResp.writeTo(buf);
                                     writeByteBufResponse(ctx, responseStatus, buf);
                                     metrics.recordRequest(System.nanoTime() - startTime, responseStatus.code());
-                                } catch (Exception e) {
+                                } catch (RuntimeException e) {
                                     buf.release();
                                     throw e;
                                 }
@@ -174,6 +174,8 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                                 metrics.recordRequest(System.nanoTime() - startTime, responseStatus.code());
                             }
                         } catch (Exception e) {
+                            // 序列化 fallback 安全网：Jackson writeBytes 可能抛 JsonProcessingException (checked)
+                            // 也接收上层 ByteBuf cleanup 的 RuntimeException rethrow
                             logger.error("Failed to serialize response", e);
                             writeResponse(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, INTERNAL_ERROR_RESPONSE);
                             metrics.recordRequest(System.nanoTime() - startTime, 500);
@@ -183,6 +185,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                     });
 
                 } catch (Exception e) {
+                    // 业务 handler 安全网：外部实现可能抛任意异常类型
                     logger.error("Business handler error", e);
                     ctx.executor().execute(() -> {
                         try {
@@ -197,6 +200,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
             });
 
         } catch (Exception e) {
+            // channelRead 最外层安全网：路由、body 提取、executor 提交的综合保护
             logger.error("Request handling error", e);
             writeResponse(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, INTERNAL_ERROR_RESPONSE);
             if (permitAcquired) {
