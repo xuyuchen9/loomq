@@ -236,7 +236,7 @@ public class ReplicaServer {
                 ctx.writeAndFlush(ack);
 
                 logger.debug("Sent ACK for offset={}", record.getOffset());
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 logger.error("Failed to process replication record: offset={}",
                     record.getOffset(), e);
 

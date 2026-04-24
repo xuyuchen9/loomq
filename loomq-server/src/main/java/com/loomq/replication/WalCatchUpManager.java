@@ -335,6 +335,7 @@ public class WalCatchUpManager implements AutoCloseable {
                     retries = 0; // 重置重试计数
 
                 } catch (Exception e) {
+                    // WAL 追赶重试安全网：捕获 CatchUpException（下层 wrap）和网络/IO 异常
                     retries++;
                     stats.errors++;
 
@@ -379,7 +380,7 @@ public class WalCatchUpManager implements AutoCloseable {
                         stats.recordsApplied++;
                     }
                 }
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 logger.error("Failed to apply record: offset={}", record.getOffset(), e);
                 throw new CatchUpException("Failed to apply record: " + record.getOffset(), e);
             }
@@ -403,6 +404,7 @@ public class WalCatchUpManager implements AutoCloseable {
             try {
                 onCatchUpComplete.run();
             } catch (Exception e) {
+                // 用户回调防御：回调异常不应影响追赶完成状态
                 logger.error("Catch up complete callback error", e);
             }
         }
@@ -423,6 +425,7 @@ public class WalCatchUpManager implements AutoCloseable {
             try {
                 onCatchUpError.accept(error, cause);
             } catch (Exception e) {
+                // 用户回调防御：回调异常不应影响错误处理流程
                 logger.error("Catch up error callback error", e);
             }
         }

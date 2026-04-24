@@ -140,6 +140,8 @@ public class ReplicaClient {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException("Connection interrupted", e);
             } catch (Exception e) {
+                // Netty Bootstrap.connect() 可抛多种 checked exception (ConnectException, UnknownHostException 等)
+                // 统一 wrap 为 RuntimeException 以适配 CompletableFuture.runAsync 的签名
                 throw new RuntimeException("Failed to connect to replica", e);
             }
         });

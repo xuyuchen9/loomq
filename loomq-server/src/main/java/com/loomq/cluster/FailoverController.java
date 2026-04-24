@@ -218,6 +218,7 @@ public class FailoverController implements AutoCloseable {
             try {
                 active.get(10, TimeUnit.SECONDS);
             } catch (Exception e) {
+                // 关闭中的等待：超时/中断/异常均非关键，仅记录日志
                 logger.warn("Active failover did not complete in time", e);
             }
         }
