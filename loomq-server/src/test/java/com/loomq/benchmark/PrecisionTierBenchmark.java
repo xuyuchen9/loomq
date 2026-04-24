@@ -11,19 +11,21 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * 精度档位压测工具 (v0.7.0)
+ * 精度档位压测工具。
  *
  * 对比不同精度档位的：
  * 1. 相同吞吐下的 CPU 占用与唤醒延迟
@@ -31,11 +33,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * 3. P99 唤醒延迟尾部分布
  *
  * @author loomq
- * @since v0.7.0
  */
 public class PrecisionTierBenchmark {
 
     private static final String BASE_URL = "http://localhost:8080";
+    private static final boolean QUICK = Boolean.getBoolean("loomq.benchmark.quick");
     private static final HttpClient httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
         .build();
@@ -66,7 +68,7 @@ public class PrecisionTierBenchmark {
     }
 
     private static void printUsage() {
-        System.out.println("LoomQ 精度档位压测工具 (v0.7.0)");
+        System.out.println("LoomQ 精度档位压测工具");
         System.out.println();
         System.out.println("用法:");
         System.out.println("  java -cp target/test-classes:target/classes com.loomq.benchmark.PrecisionTierBenchmark <command> [options]");
@@ -96,8 +98,8 @@ public class PrecisionTierBenchmark {
      */
     private static void runThroughputBenchmark(String[] args) throws Exception {
         PrecisionTier tier = args.length > 1 ? PrecisionTier.valueOf(args[1].toUpperCase()) : PrecisionTier.STANDARD;
-        int threads = args.length > 2 ? Integer.parseInt(args[2]) : 10;
-        int durationSec = args.length > 3 ? Integer.parseInt(args[3]) : 30;
+        int threads = args.length > 2 ? Integer.parseInt(args[2]) : (QUICK ? 5 : 10);
+        int durationSec = args.length > 3 ? Integer.parseInt(args[3]) : (QUICK ? 10 : 30);
 
         System.out.println("=== 吞吐量测试 ===");
         System.out.println("精度档位: " + tier);
@@ -123,8 +125,6 @@ public class PrecisionTierBenchmark {
         AtomicInteger successCount = new AtomicInteger(0);
         AtomicInteger failCount = new AtomicInteger(0);
         List<Long> latencies = Collections.synchronizedList(new ArrayList<>());
-        AtomicLong totalBytes = new AtomicLong(0);
-
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         CountDownLatch latch = new CountDownLatch(threads);
         long startTime = System.currentTimeMillis();
@@ -191,7 +191,7 @@ public class PrecisionTierBenchmark {
      */
     private static void runLatencyBenchmark(String[] args) throws Exception {
         PrecisionTier tier = args.length > 1 ? PrecisionTier.valueOf(args[1].toUpperCase()) : PrecisionTier.STANDARD;
-        int count = args.length > 2 ? Integer.parseInt(args[2]) : 1000;
+        int count = args.length > 2 ? Integer.parseInt(args[2]) : (QUICK ? 300 : 1000);
 
         System.out.println("=== 延迟分布测试 ===");
         System.out.println("精度档位: " + tier);
@@ -258,7 +258,7 @@ public class PrecisionTierBenchmark {
      * 跨档位对比测试
      */
     private static void runCompareBenchmark(String[] args) throws Exception {
-        int countPerTier = args.length > 1 ? Integer.parseInt(args[1]) : 1000;
+        int countPerTier = args.length > 1 ? Integer.parseInt(args[1]) : (QUICK ? 300 : 1000);
 
         System.out.println("=== 跨档位对比测试 ===");
         System.out.println("每档 Intent 数: " + countPerTier);
@@ -292,11 +292,19 @@ public class PrecisionTierBenchmark {
                 tier.name(), tier.getPrecisionWindowMs(), r.qps, r.p95, r.p99);
         }
 
+        Map.Entry<PrecisionTier, BenchmarkResult> peakEntry = results.entrySet().stream()
+            .max(Map.Entry.comparingByValue(Comparator.comparingDouble(BenchmarkResult::qps)))
+            .orElse(null);
+
         System.out.println();
         System.out.println("结论:");
-        System.out.println("  - 低精度档位 (STANDARD/ECONOMY) 理论上具有更高的吞吐上限");
-        System.out.println("  - 高精度档位 (ULTRA/FAST) 适合对延迟敏感的场景");
-        System.out.println("  - 实际性能受回调延迟、网络等多种因素影响");
+        System.out.println("  - 这组结果主要看档位窗口和调度频率的差异，而不是绝对吞吐宣传。");
+        System.out.println("  - 实际值会受到回调、网络和热点 shard 分布影响。");
+        if (peakEntry != null) {
+            BenchmarkResult peak = peakEntry.getValue();
+            System.out.printf("RESULT|best_tier=%s|peak_qps=%.0f|best_p99_ms=%d%n",
+                peakEntry.getKey().name(), peak.qps, peak.p99);
+        }
     }
 
     /**
@@ -348,24 +356,26 @@ public class PrecisionTierBenchmark {
     private static String createIntent(PrecisionTier tier, long delaySeconds) throws IOException, InterruptedException {
         Instant executeAt = Instant.now().plus(delaySeconds, ChronoUnit.SECONDS);
         Instant deadline = executeAt.plus(5, ChronoUnit.MINUTES);
+        String shardKey = "benchmark-" + tier.name().toLowerCase() + "-" + ThreadLocalRandom.current().nextInt(64);
+        String intentId = "bench-" + tier.name().toLowerCase() + "-" + UUID.randomUUID();
 
         String body = String.format("""
             {
-                "intentId": "bench-%s-%d",
+                "intentId": "%s",
                 "executeAt": "%s",
                 "deadline": "%s",
                 "precisionTier": "%s",
-                "shardKey": "benchmark",
+                "shardKey": "%s",
                 "callback": {
                     "url": "http://localhost:9999/webhook"
                 }
             }
             """,
-            tier.name().toLowerCase(),
-            System.nanoTime(),
+            intentId,
             executeAt.toString(),
             deadline.toString(),
-            tier.name()
+            tier.name(),
+            shardKey
         );
 
         HttpRequest request = HttpRequest.newBuilder()

@@ -10,6 +10,8 @@
 #   --save        自动保存结果
 #   --no-save     预览模式（不保存结果）
 
+set -euo pipefail
+
 QUICK_MODE=false
 TEST_MODE="all"
 AUTO_SAVE=false
@@ -57,11 +59,16 @@ fi
 echo ">>> 运行基准测试..."
 echo ""
 
-if [ "$QUICK_MODE" = true ]; then
-    mvn exec:java -Dexec.mainClass="com.loomq.benchmark.QuickBenchmark" -Dexec.classpathScope=test -q
-else
-    mvn exec:java -Dexec.mainClass="com.loomq.benchmark.BenchmarkTest" -Dexec.classpathScope=test -q
-fi
+(
+    cd loomq-server
+    if [ "$TEST_MODE" = "internal" ]; then
+        mvn exec:java -Dexec.mainClass="com.loomq.benchmark.InternalBenchmark" -Dexec.classpathScope=test -q
+    elif [ "$QUICK_MODE" = true ]; then
+        mvn exec:java -Dexec.mainClass="com.loomq.benchmark.QuickBenchmark" -Dexec.classpathScope=test -q
+    else
+        mvn exec:java -Dexec.mainClass="com.loomq.benchmark.ExtremeBenchmark" -Dexec.classpathScope=test -q
+    fi
+)
 
 echo ""
 echo "[成功] 测试完成"

@@ -5,6 +5,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -20,7 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class StormTestV2 {
 
-    private static final String BASE_URL = "http://localhost:8080/api/v1";
+    private static final String BASE_URL = "http://localhost:8080";
     private static final String WEBHOOK_URL = "http://localhost:9999/webhook";
 
     // 使用全局 HttpClient 连接池
@@ -131,14 +133,16 @@ public class StormTestV2 {
 
     private static boolean createIntent(long delayMs) {
         try {
-            String intentId = "storm_" + System.nanoTime() + "_" + intentIdCounter.incrementAndGet();
-            String body = String.format(
-                    "{\"bizKey\":\"%s\",\"delayMs\":%d,\"webhookUrl\":\"%s\"}",
-                    intentId, delayMs, WEBHOOK_URL
+        String intentId = "storm_" + System.nanoTime() + "_" + intentIdCounter.incrementAndGet();
+        Instant executeAt = Instant.now().plusMillis(Math.max(delayMs, 1_000L));
+        Instant deadline = executeAt.plus(10, ChronoUnit.MINUTES);
+        String body = String.format(
+                    "{\"intentId\":\"%s\",\"executeAt\":\"%s\",\"deadline\":\"%s\",\"precisionTier\":\"STANDARD\",\"shardKey\":\"storm\",\"callback\":{\"url\":\"%s\"}}",
+                    intentId, executeAt, deadline, WEBHOOK_URL
             );
 
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(BASE_URL + "/intents"))
+                    .uri(URI.create(BASE_URL + "/v1/intents"))
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .timeout(Duration.ofSeconds(30))
@@ -154,7 +158,7 @@ public class StormTestV2 {
     private static void printMetrics() {
         try {
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:8080/metrics"))
+                    .uri(URI.create(BASE_URL + "/metrics"))
                     .GET()
                     .timeout(Duration.ofSeconds(10))
                     .build();
@@ -163,8 +167,9 @@ public class StormTestV2 {
             String[] lines = response.body().split("\n");
 
             for (String line : lines) {
-                if (line.startsWith("loomq_intents_total ") ||
+                if (line.startsWith("loomq_intents_created_total ") ||
                     line.startsWith("loomq_intents_scheduled ") ||
+                    line.startsWith("loomq_trigger_latency_ms_p95 ") ||
                     line.startsWith("loomq_wake_latency_ms_p95 ") ||
                     line.startsWith("loomq_webhook_latency_ms_p95 ") ||
                     line.startsWith("loomq_total_latency_ms_p95 ") ||

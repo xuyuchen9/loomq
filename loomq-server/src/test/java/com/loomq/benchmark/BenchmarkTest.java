@@ -6,9 +6,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -175,7 +178,7 @@ public class BenchmarkTest {
         int batchSize = 100;
         int threads = 20;
         ExecutorService executor = Executors.newFixedThreadPool(threads);
-        CountDownLatch latch = new CountDownLatch(count / batchSize);
+        CountDownLatch latch = new CountDownLatch((count + batchSize - 1) / batchSize);
         AtomicInteger created = new AtomicInteger(0);
         long startTime = System.currentTimeMillis();
 
@@ -270,13 +273,15 @@ public class BenchmarkTest {
     }
 
     private static String createIntent(long delayMs) throws IOException, InterruptedException {
+        Instant executeAt = Instant.now().plusMillis(Math.max(delayMs, 1_000L));
+        Instant deadline = executeAt.plus(5, ChronoUnit.MINUTES);
         String body = String.format(
-                "{\"bizKey\":\"bench_%d\",\"delayMs\":%d,\"webhookUrl\":\"http://localhost:9999/webhook\"}",
-                System.nanoTime(), delayMs
+                "{\"intentId\":\"bench_%s\",\"executeAt\":\"%s\",\"deadline\":\"%s\",\"precisionTier\":\"STANDARD\",\"shardKey\":\"bench\",\"callback\":{\"url\":\"http://localhost:9999/webhook\"}}",
+                UUID.randomUUID(), executeAt, deadline
         );
 
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(BASE_URL + "/api/v1/intents"))
+                .uri(URI.create(BASE_URL + "/v1/intents"))
                 .header("Content-Type", "application/json")
                 .header("X-Loomq-Token", TOKEN)
                 .POST(HttpRequest.BodyPublishers.ofString(body))

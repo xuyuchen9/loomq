@@ -8,48 +8,53 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * HTTP 层性能测试 (v0.7.0)
+ * HTTP 层性能测试。
  *
- * 验证虚拟线程对 HTTP 吞吐量的提升效果。
- * 目标: >= 150K QPS
- *
- * 运行方式:
- * 1. 启动 LoomQ 服务 (java -jar loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar)
- * 2. 运行此测试 (java -cp target/test-classes:target/classes com.loomq.benchmark.HttpVirtualThreadBenchmark)
+ * 只报告真实观察值，不给硬编码目标。
  */
 public class HttpVirtualThreadBenchmark {
 
-    private static final String BASE_URL = "http://localhost:8080";
+    private static final String BASE_URL = System.getProperty("loomq.benchmark.baseUrl", "http://localhost:8080");
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(5);
     private static final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .version(HttpClient.Version.HTTP_1_1)
         .build();
 
     public static void main(String[] args) throws Exception {
+        boolean quick = Boolean.getBoolean("loomq.benchmark.quick");
+
         System.out.println("╔══════════════════════════════════════════════════════════════╗");
-        System.out.println("║     LoomQ v0.7.0 HTTP Virtual Thread 性能测试                ║");
-        System.out.println("║     目标: >= 150,000 QPS                                     ║");
+        System.out.println("║     LoomQ HTTP Virtual Thread 性能测试                       ║");
+        System.out.println("║     关注 HTTP / JSON / 路由 的真实观察值                    ║");
         System.out.println("╚══════════════════════════════════════════════════════════════╝");
+        System.out.println();
+        System.out.println("模式: " + (quick ? "QUICK" : "FULL"));
         System.out.println();
 
         // 预热
-        System.out.println("[预热] 发送 100 个请求预热服务...");
-        warmUp(100);
+        int warmupCount = quick ? 20 : 100;
+        System.out.println("[预热] 发送 " + warmupCount + " 个请求预热服务...");
+        warmUp(warmupCount);
         Thread.sleep(1000);
         System.out.println("[预热] 完成");
         System.out.println();
 
         // 测试配置: 递增线程数
-        int[] threadCounts = {50, 100, 200, 500, 1000};
-        int durationSec = 20;
+        int[] threadCounts = quick ? new int[] {16, 32, 64} : new int[] {50, 100, 200, 500, 1000};
+        int durationSec = quick ? 4 : 20;
+        int cooldownMs = quick ? 1000 : 2000;
 
         List<BenchmarkResult> results = new ArrayList<>();
 
@@ -67,16 +72,16 @@ public class HttpVirtualThreadBenchmark {
             System.out.printf("  P90:         %d ms%n", result.p90);
             System.out.printf("  P99:         %d ms%n", result.p99);
             System.out.printf("  成功/失败:   %,d / %,d%n", result.success, result.fail);
+            System.out.printf(Locale.ROOT,
+                "RESULT_ROW|threads=%d|qps=%.0f|avg_ms=%.2f|p50_ms=%d|p90_ms=%d|p99_ms=%d|success=%d|fail=%d%n",
+                result.threads, result.qps, result.avgLatency, result.p50, result.p90, result.p99, result.success, result.fail);
             System.out.println();
 
-            Thread.sleep(2000); // 冷却间隔
+            Thread.sleep(cooldownMs); // 冷却间隔
         }
 
         // 打印汇总
         printSummary(results);
-
-        // 判断是否达标
-        checkTarget(results);
     }
 
     private static void warmUp(int count) throws Exception {
@@ -122,7 +127,8 @@ public class HttpVirtualThreadBenchmark {
             });
         }
 
-        latch.await();
+        // Bound wait time so a single stuck request cannot hang the whole scenario forever.
+        latch.await(durationSec + 20L, TimeUnit.SECONDS);
         long actualDuration = System.currentTimeMillis() - startTime;
 
         Collections.sort(latencies);
@@ -144,15 +150,17 @@ public class HttpVirtualThreadBenchmark {
         Instant executeAt = Instant.now().plus(3600, ChronoUnit.SECONDS);
         Instant deadline = executeAt.plus(5, ChronoUnit.MINUTES);
         String id = UUID.randomUUID().toString();
+        String shardKey = "bench-" + ThreadLocalRandom.current().nextInt(64);
 
         String body = String.format(
-            "{\"intentId\":\"%s\",\"executeAt\":\"%s\",\"deadline\":\"%s\",\"precisionTier\":\"STANDARD\",\"shardKey\":\"bench\",\"callback\":{\"url\":\"http://localhost:9999/webhook\"}}",
-            id, executeAt.toString(), deadline.toString()
+            "{\"intentId\":\"%s\",\"executeAt\":\"%s\",\"deadline\":\"%s\",\"precisionTier\":\"STANDARD\",\"shardKey\":\"%s\",\"callback\":{\"url\":\"http://localhost:9999/webhook\"}}",
+            id, executeAt.toString(), deadline.toString(), shardKey
         );
 
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(BASE_URL + "/v1/intents"))
             .header("Content-Type", "application/json")
+            .timeout(REQUEST_TIMEOUT)
             .POST(HttpRequest.BodyPublishers.ofString(body))
             .build();
 
@@ -175,36 +183,30 @@ public class HttpVirtualThreadBenchmark {
             System.out.printf("%-10d %,12.0f %10.2f %10d %,10d%n",
                 r.threads, r.qps, r.avgLatency, r.p99, r.success);
         }
-    }
 
-    private static void checkTarget(List<BenchmarkResult> results) {
-        System.out.println();
-        System.out.println("══════════════════════════════════════════════════════════════");
-        System.out.println("                    目标达成检查                               ");
-        System.out.println("══════════════════════════════════════════════════════════════");
-
-        double maxQps = results.stream().mapToDouble(r -> r.qps).max().orElse(0);
-        double minP99 = results.stream().mapToLong(r -> r.p99).min().orElse(0);
-
-        System.out.println();
-        System.out.printf("峰值 QPS:   %,.0f (目标 >= 150,000)%n", maxQps);
-        System.out.printf("最低 P99:   %d ms (目标 <= 20ms)%n", minP99);
-        System.out.println();
-
-        if (maxQps >= 150_000) {
-            System.out.println("✅ QPS 目标达成!");
-        } else {
-            System.out.printf("❌ QPS 未达标 (差距: %.0f QPS)%n", 150_000 - maxQps);
+        BenchmarkResult peak = results.stream()
+            .max(Comparator.comparingDouble(r -> r.qps))
+            .orElse(null);
+        if (peak != null) {
+            BenchmarkResult bestP99 = results.stream()
+                .min(Comparator.comparingLong(r -> r.p99))
+                .orElse(peak);
+            BenchmarkResult worstP99 = results.stream()
+                .max(Comparator.comparingLong(r -> r.p99))
+                .orElse(peak);
+            int totalSuccess = results.stream().mapToInt(r -> r.success).sum();
+            int totalFail = results.stream().mapToInt(r -> r.fail).sum();
+            double failRate = (totalSuccess + totalFail) == 0 ? 0 : (double) totalFail / (totalSuccess + totalFail) * 100.0;
+            System.out.println();
+            System.out.printf("峰值 QPS:   %,.0f @ %d 线程%n", peak.qps, peak.threads);
+            System.out.printf("最佳 P99:   %d ms @ %d 线程%n", bestP99.p99, bestP99.threads);
+            System.out.printf("最差 P99:   %d ms @ %d 线程%n", worstP99.p99, worstP99.threads);
+            System.out.printf("失败率:     %.2f%%%n", failRate);
+            System.out.println("解释: 这组结果反映的是 HTTP + JSON + 路由 + 线程调度的真实开销，不是存储上限。");
+            System.out.printf(Locale.ROOT,
+                "RESULT|peak_qps=%.0f|best_threads=%d|best_p99_ms=%d|best_avg_ms=%.2f|worst_p99_ms=%d|worst_threads=%d|fail_rate=%.2f%n",
+                peak.qps, peak.threads, bestP99.p99, bestP99.avgLatency, worstP99.p99, worstP99.threads, failRate);
         }
-
-        if (minP99 <= 20) {
-            System.out.println("✅ P99 延迟目标达成!");
-        } else {
-            System.out.printf("❌ P99 延迟未达标 (差距: %d ms)%n", minP99 - 20);
-        }
-
-        System.out.println();
-        System.out.println("══════════════════════════════════════════════════════════════");
     }
 
     record BenchmarkResult(

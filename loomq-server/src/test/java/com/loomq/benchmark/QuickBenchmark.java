@@ -12,6 +12,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -27,7 +28,7 @@ public class QuickBenchmark {
 
     public static void main(String[] args) throws Exception {
         System.out.println("╔══════════════════════════════════════════════════════════════╗");
-        System.out.println("║         LoomQ v0.7.0 极限性能测试 (5 档位)                   ║");
+        System.out.println("║         LoomQ 极限性能测试 (5 档位)                          ║");
         System.out.println("╚══════════════════════════════════════════════════════════════╝");
         System.out.println();
 
@@ -108,10 +109,11 @@ public class QuickBenchmark {
     private static void createIntent(String tier) throws Exception {
         Instant executeAt = Instant.now().plus(3600, ChronoUnit.SECONDS);
         Instant deadline = executeAt.plus(5, ChronoUnit.MINUTES);
+        String intentId = "quick-" + UUID.randomUUID();
 
         String body = String.format(
-            "{\"executeAt\":\"%s\",\"deadline\":\"%s\",\"precisionTier\":\"%s\",\"shardKey\":\"bench\",\"callback\":{\"url\":\"http://localhost:9999/webhook\"}}",
-            executeAt.toString(), deadline.toString(), tier
+            "{\"intentId\":\"%s\",\"executeAt\":\"%s\",\"deadline\":\"%s\",\"precisionTier\":\"%s\",\"shardKey\":\"bench\",\"callback\":{\"url\":\"http://localhost:9999/webhook\"}}",
+            intentId, executeAt.toString(), deadline.toString(), tier
         );
 
         HttpRequest request = HttpRequest.newBuilder()

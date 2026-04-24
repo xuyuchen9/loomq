@@ -52,7 +52,7 @@ public class ExtremeBenchmark {
 
     public static void main(String[] args) throws Exception {
         System.out.println("╔══════════════════════════════════════════════════════════════╗");
-        System.out.println("║         LoomQ v0.7.0 极限性能测试                            ║");
+        System.out.println("║         LoomQ 极限性能测试                                    ║");
         System.out.println("╚══════════════════════════════════════════════════════════════╝");
         System.out.println();
 
@@ -71,8 +71,6 @@ public class ExtremeBenchmark {
         System.out.println();
 
         // 测试结果收集
-        Map<String, Object> results = new LinkedHashMap<>();
-
         // 1. 各精度档位吞吐量测试
         System.out.println("══════════════════════════════════════════════════════════════");
         System.out.println("测试 1: 各精度档位峰值吞吐量 (10线程, 10秒)");
@@ -81,7 +79,6 @@ public class ExtremeBenchmark {
         for (PrecisionTier tier : PrecisionTier.values()) {
             TierResult result = testTierThroughput(tier, 10, TEST_DURATION_SEC);
             tierResults.put(tier, result);
-            results.put("tier_" + tier.name(), result);
         }
         printTierResults(tierResults);
         System.out.println();
@@ -103,7 +100,6 @@ public class ExtremeBenchmark {
         System.out.println("测试 3: 混合档位并发吞吐量 (20线程, 10秒)");
         System.out.println("══════════════════════════════════════════════════════════════");
         TierResult mixedResult = testMixedTierThroughput(20, TEST_DURATION_SEC);
-        results.put("mixed_tier", mixedResult);
         System.out.printf("混合档位 QPS: %.0f%n", mixedResult.qps);
         System.out.printf("平均延迟: %.2f ms%n", mixedResult.avgLatency);
         System.out.printf("P99 延迟: %d ms%n", mixedResult.p99);
@@ -114,7 +110,6 @@ public class ExtremeBenchmark {
         System.out.println("测试 4: 短延迟场景 (delay < precisionWindow)");
         System.out.println("══════════════════════════════════════════════════════════════");
         TierResult shortDelayResult = testShortDelay(10, 5);
-        results.put("short_delay", shortDelayResult);
         System.out.printf("短延迟 QPS: %.0f%n", shortDelayResult.qps);
         System.out.println();
 
@@ -123,7 +118,6 @@ public class ExtremeBenchmark {
         System.out.println("测试 5: 查询吞吐量");
         System.out.println("══════════════════════════════════════════════════════════════");
         long queryQps = testQueryThroughput(10, 5);
-        results.put("query_qps", queryQps);
         System.out.printf("查询 QPS: %d%n", queryQps);
         System.out.println();
 
@@ -141,7 +135,6 @@ public class ExtremeBenchmark {
         System.out.printf("创建 Intent 数: %d%n", intentCount);
         System.out.printf("内存增量: %.2f MB%n", (memAfter - memBefore) / 1024.0 / 1024.0);
         System.out.printf("每 Intent 内存: ~%d bytes%n", memPerIntent);
-        results.put("mem_per_intent", memPerIntent);
         System.out.println();
 
         // 汇总报告
@@ -560,7 +553,7 @@ public class ExtremeBenchmark {
         System.out.println();
 
         // 性能指标表格
-        System.out.println("### v0.7.0 Performance Metrics");
+        System.out.println("### Performance Metrics");
         System.out.println();
         System.out.println("| Metric | Value |");
         System.out.println("|--------|-------|");

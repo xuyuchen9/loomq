@@ -6,6 +6,8 @@ import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.spi.DefaultRedeliveryDecider;
+import com.loomq.spi.DeliveryHandler;
 import com.loomq.store.IntentStore;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -19,12 +21,20 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.EnumMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -36,7 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * @author loomq
  * @since v0.6.2
  */
-class SchedulerTriggerBenchmarkWithMockServer {
+public class SchedulerTriggerBenchmarkWithMockServer {
 
     private static final Logger logger = LoggerFactory.getLogger(SchedulerTriggerBenchmarkWithMockServer.class);
     private static final int WEBHOOK_PORT = 19999;
@@ -54,31 +64,95 @@ class SchedulerTriggerBenchmarkWithMockServer {
     private IntentStore intentStore;
     private MetricsCollector metrics;
     private HttpServer mockServer;
+    private ExecutorService mockServerExecutor;
+    private HttpClient deliveryClient;
 
     // 统计各档位接收到的 webhook 数量
     private final Map<PrecisionTier, AtomicInteger> webhookReceivedByTier = new ConcurrentHashMap<>();
+    private final Map<PrecisionTier, AtomicLong> firstWebhookTsMsByTier = new ConcurrentHashMap<>();
+    private final Map<PrecisionTier, AtomicLong> lastWebhookTsMsByTier = new ConcurrentHashMap<>();
     private final AtomicInteger totalWebhookReceived = new AtomicInteger(0);
+
+    public static void main(String[] args) throws Exception {
+        boolean quick = Boolean.getBoolean("loomq.benchmark.quick");
+        SchedulerTriggerBenchmarkWithMockServer benchmark = new SchedulerTriggerBenchmarkWithMockServer();
+        benchmark.setUp();
+        try {
+            BenchmarkSummary summary = benchmark.runBenchmarkMode(quick);
+            benchmark.printBenchmarkSummary(summary);
+        } finally {
+            benchmark.tearDown();
+        }
+    }
 
     @BeforeEach
     void setUp() throws IOException {
         // 启动 mock webhook 服务器
         startMockServer();
 
+        logger.info("Scheduler benchmark setup: creating scheduler components");
         intentStore = new IntentStore();
-        scheduler = new PrecisionScheduler(intentStore);
+        deliveryClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5))
+            .build();
+        DeliveryHandler deliveryHandler = createBenchmarkDeliveryHandler();
+        scheduler = new PrecisionScheduler(intentStore, deliveryHandler, new DefaultRedeliveryDecider());
         metrics = MetricsCollector.getInstance();
+        logger.info("Scheduler benchmark setup: starting scheduler");
         scheduler.start();
+        logger.info("Scheduler benchmark setup: scheduler started");
 
         // 初始化计数器
         for (PrecisionTier tier : PrecisionTier.values()) {
             webhookReceivedByTier.put(tier, new AtomicInteger(0));
+            firstWebhookTsMsByTier.put(tier, new AtomicLong(0));
+            lastWebhookTsMsByTier.put(tier, new AtomicLong(0));
         }
     }
 
     @AfterEach
     void tearDown() {
-        scheduler.stop();
+        if (scheduler != null) {
+            scheduler.stop();
+        }
+        deliveryClient = null;
         stopMockServer();
+    }
+
+    private DeliveryHandler createBenchmarkDeliveryHandler() {
+        return intent -> {
+            try {
+                String url = intent.getCallback() != null ? intent.getCallback().getUrl() : null;
+                if (url == null || url.isBlank()) {
+                    return DeliveryHandler.DeliveryResult.DEAD_LETTER;
+                }
+
+                String payload = "{\"intentId\":\"" + intent.getIntentId()
+                    + "\",\"precisionTier\":\"" + intent.getPrecisionTier().name() + "\"}";
+
+                HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(3))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(payload))
+                    .build();
+
+                HttpResponse<String> response = deliveryClient.send(request, HttpResponse.BodyHandlers.ofString());
+                int status = response.statusCode();
+                if (status >= 200 && status < 300) {
+                    return DeliveryHandler.DeliveryResult.SUCCESS;
+                }
+                if (status >= 500) {
+                    return DeliveryHandler.DeliveryResult.RETRY;
+                }
+                return DeliveryHandler.DeliveryResult.DEAD_LETTER;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return DeliveryHandler.DeliveryResult.DEAD_LETTER;
+            } catch (Exception e) {
+                return DeliveryHandler.DeliveryResult.RETRY;
+            }
+        };
     }
 
     /**
@@ -108,6 +182,7 @@ class SchedulerTriggerBenchmarkWithMockServer {
                         int delayMs = getDelayForTier(tier);
                         Thread.sleep(delayMs);
                         webhookReceivedByTier.get(tier).incrementAndGet();
+                        recordWebhookTimestamp(tier);
                     }
                     totalWebhookReceived.incrementAndGet();
 
@@ -125,7 +200,8 @@ class SchedulerTriggerBenchmarkWithMockServer {
             }
         });
 
-        mockServer.setExecutor(java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor());
+        mockServerExecutor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
+        mockServer.setExecutor(mockServerExecutor);
         mockServer.start();
         logger.info("Mock webhook server started on port {} (with tier-specific delays)", WEBHOOK_PORT);
     }
@@ -156,6 +232,7 @@ class SchedulerTriggerBenchmarkWithMockServer {
                 Thread.sleep(delayMs);
 
                 webhookReceivedByTier.get(tier).incrementAndGet();
+                recordWebhookTimestamp(tier);
                 totalWebhookReceived.incrementAndGet();
 
                 String response = "{\"status\":\"ok\",\"tier\":\"" + tier.name() + "\"}";
@@ -176,6 +253,31 @@ class SchedulerTriggerBenchmarkWithMockServer {
         if (mockServer != null) {
             mockServer.stop(0);
             logger.info("Mock webhook server stopped");
+        }
+
+        if (mockServerExecutor != null) {
+            mockServerExecutor.shutdownNow();
+            try {
+                if (!mockServerExecutor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                    logger.warn("Mock webhook executor did not terminate within timeout");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                mockServerExecutor = null;
+            }
+        }
+    }
+
+    private void recordWebhookTimestamp(PrecisionTier tier) {
+        long now = System.currentTimeMillis();
+        AtomicLong first = firstWebhookTsMsByTier.get(tier);
+        AtomicLong last = lastWebhookTsMsByTier.get(tier);
+        if (first != null) {
+            first.compareAndSet(0L, now);
+        }
+        if (last != null) {
+            last.set(now);
         }
     }
 
@@ -284,11 +386,12 @@ class SchedulerTriggerBenchmarkWithMockServer {
             int concurrency = tier.getMaxConcurrency();
 
             // 计算理论最大 QPS 和效率
-            double theoreticalMaxQps = metrics.calculateTheoreticalMaxQps(tier, avgLatencyMs);
-            double efficiency = metrics.calculateEfficiency(tier, qps, avgLatencyMs);
+            double theoreticalMaxQps = Math.max(0.0, metrics.calculateTheoreticalMaxQps(tier, avgLatencyMs));
+            double efficiencyRawPct = metrics.calculateEfficiency(tier, qps, avgLatencyMs) * 100.0;
+            double efficiencyPct = clampPercent(efficiencyRawPct);
 
             logger.info(String.format("%-10s %8d %10d %10.1f %14.1f %11.1f%% %10.1f",
-                tier.name(), concurrency, received, qps, theoreticalMaxQps, efficiency * 100, avgLatencyMs));
+                tier.name(), concurrency, received, qps, theoreticalMaxQps, efficiencyPct, avgLatencyMs));
         }
 
         // 验证档位间吞吐差距
@@ -568,4 +671,226 @@ class SchedulerTriggerBenchmarkWithMockServer {
         logger.info("所有档位是否都完成: {}", allCompleted);
         assertTrue(allCompleted, "所有档位都应独立完成处理");
     }
+
+    private BenchmarkSummary runBenchmarkMode(boolean quick) throws Exception {
+        webhookReceivedByTier.values().forEach(counter -> counter.set(0));
+        firstWebhookTsMsByTier.values().forEach(ts -> ts.set(0));
+        lastWebhookTsMsByTier.values().forEach(ts -> ts.set(0));
+        totalWebhookReceived.set(0);
+
+        int intentsPerTier = quick ? 40 : 1000;
+        Instant executeAt = Instant.now().plusMillis(quick ? 800 : 2000);
+        long maxWaitMs = quick ? 12000 : 60000;
+
+        Map<PrecisionTier, Long> initialBackpressure = snapshotBackpressure();
+
+        logger.info("=== Scheduler real webhook benchmark ===");
+        logger.info("Mode: {}", quick ? "QUICK" : "FULL");
+        logger.info("Intents per tier: {}", intentsPerTier);
+        logger.info("ExecuteAt: {}", executeAt);
+
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            for (int i = 0; i < intentsPerTier; i++) {
+                Intent intent = createTestIntent(
+                    String.format("real-%s-%04d", tier.name(), i),
+                    tier,
+                    executeAt
+                );
+                intent.transitionTo(IntentStatus.SCHEDULED);
+                intentStore.save(intent);
+                scheduler.schedule(intent);
+            }
+            logger.info("  {}: created {} intents", tier, intentsPerTier);
+        }
+
+        Thread.sleep(quick ? 500 : 1000);
+
+        long waitStart = System.currentTimeMillis();
+        int expected = intentsPerTier * PrecisionTier.values().length;
+        int lastReceived = 0;
+        int stableCount = 0;
+
+        while (System.currentTimeMillis() - waitStart < maxWaitMs) {
+            Thread.sleep(1000);
+
+            int received = totalWebhookReceived.get();
+            if (received >= expected) {
+                break;
+            }
+
+            if (received == lastReceived) {
+                stableCount++;
+                if (stableCount >= 3) {
+                    break;
+                }
+            } else {
+                stableCount = 0;
+                lastReceived = received;
+            }
+        }
+
+        long totalWaitMs = System.currentTimeMillis() - waitStart;
+        Map<PrecisionTier, Long> currentBackpressure = metrics.getBackpressureEventsByTier();
+        Map<PrecisionTier, BenchmarkTierResult> tierResults = new EnumMap<>(PrecisionTier.class);
+
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            int received = webhookReceivedByTier.get(tier).get();
+            double avgLatencyMs = getMockServerLatency(tier);
+            long firstTs = firstWebhookTsMsByTier.get(tier).get();
+            long lastTs = lastWebhookTsMsByTier.get(tier).get();
+            double qps;
+            if (received > 0 && firstTs > 0 && lastTs >= firstTs) {
+                double tierDurationSec = Math.max(0.001, (lastTs - firstTs + 1) / 1000.0);
+                qps = received / tierDurationSec;
+            } else {
+                qps = 0.0;
+            }
+            double theoreticalMaxQps = Math.max(0.0, metrics.calculateTheoreticalMaxQps(tier, avgLatencyMs));
+            double efficiencyRawPct = metrics.calculateEfficiency(tier, qps, avgLatencyMs) * 100.0;
+            double efficiencyPct = clampPercent(efficiencyRawPct);
+            long backpressureDelta = currentBackpressure.getOrDefault(tier, 0L)
+                - initialBackpressure.getOrDefault(tier, 0L);
+
+            tierResults.put(tier, new BenchmarkTierResult(
+                tier,
+                received,
+                qps,
+                avgLatencyMs,
+                theoreticalMaxQps,
+                efficiencyPct,
+                efficiencyRawPct,
+                tier.getMaxConcurrency(),
+                backpressureDelta
+            ));
+        }
+
+        int totalReceived = totalWebhookReceived.get();
+        return new BenchmarkSummary(tierResults, totalReceived, expected, totalWaitMs);
+    }
+
+    private Map<PrecisionTier, Long> snapshotBackpressure() {
+        Map<PrecisionTier, Long> snapshot = new EnumMap<>(PrecisionTier.class);
+        Map<PrecisionTier, Long> current = metrics.getBackpressureEventsByTier();
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            snapshot.put(tier, current.getOrDefault(tier, 0L));
+        }
+        return snapshot;
+    }
+
+    private static double clampPercent(double value) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            return 0.0;
+        }
+        return Math.max(0.0, Math.min(100.0, value));
+    }
+
+    private void printBenchmarkSummary(BenchmarkSummary summary) {
+        System.out.println();
+        System.out.println("=== 调度器真实触发结果 ===");
+        System.out.printf(Locale.ROOT, "%-10s %8s %10s %10s %14s %12s %12s%n",
+            "Tier", "并发", "接收", "QPS", "理论最大QPS", "效率", "延迟(ms)");
+        System.out.println("-".repeat(70));
+
+        BenchmarkTierResult peak = null;
+        BenchmarkTierResult worst = null;
+        BenchmarkTierResult bestEfficiency = null;
+        BenchmarkTierResult worstEfficiency = null;
+
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            BenchmarkTierResult result = summary.tierResults().get(tier);
+            if (result == null) {
+                continue;
+            }
+
+            System.out.printf(Locale.ROOT, "%-10s %8d %10d %10.1f %14.1f %11.1f%% %10.1f%n",
+                result.tier().name(),
+                result.concurrency(),
+                result.received(),
+                result.qps(),
+                result.theoreticalMaxQps(),
+                result.efficiencyPct(),
+                result.avgLatencyMs());
+            System.out.printf(Locale.ROOT,
+                "RESULT_ROW|tier=%s|concurrency=%d|received=%d|qps=%.1f|avg_latency_ms=%.1f|theoretical_qps=%.1f|efficiency=%.1f|backpressure=%d%n",
+                result.tier().name(),
+                result.concurrency(),
+                result.received(),
+                result.qps(),
+                result.avgLatencyMs(),
+                result.theoreticalMaxQps(),
+                result.efficiencyPct(),
+                result.backpressureEvents());
+
+            if (peak == null || result.qps() > peak.qps()) {
+                peak = result;
+            }
+            if (worst == null || result.qps() < worst.qps()) {
+                worst = result;
+            }
+            if (bestEfficiency == null || result.efficiencyPct() > bestEfficiency.efficiencyPct()) {
+                bestEfficiency = result;
+            }
+            if (worstEfficiency == null || result.efficiencyPct() < worstEfficiency.efficiencyPct()) {
+                worstEfficiency = result;
+            }
+        }
+
+        double completionRate = summary.expected() == 0 ? 0.0
+            : (double) summary.totalReceived() / summary.expected() * 100.0;
+        long clampedTierCount = summary.tierResults().values().stream()
+            .filter(r -> Math.abs(r.efficiencyRawPct() - r.efficiencyPct()) > 0.1)
+            .count();
+
+        System.out.println();
+        System.out.printf(Locale.ROOT, "总接收: %d / %d (%.1f%%)%n",
+            summary.totalReceived(), summary.expected(), completionRate);
+        System.out.printf(Locale.ROOT, "总等待: %d ms%n", summary.totalWaitMs());
+        if (clampedTierCount > 0) {
+            System.out.printf(Locale.ROOT,
+                "注意: %d 个档位原始效率超过 100%%（理论值受抖动影响），报告效率已封顶到 100%%。%n",
+                clampedTierCount);
+        }
+        System.out.println("解释: 这组结果反映的是调度器 + callback 投递 + webhook 响应的联合作用，不是纯创建接口。");
+
+        if (peak != null && worst != null && bestEfficiency != null && worstEfficiency != null) {
+            System.out.printf(Locale.ROOT, "峰值档位: %s @ %.1f QPS%n", peak.tier().name(), peak.qps());
+            System.out.printf(Locale.ROOT, "最弱档位: %s @ %.1f QPS%n", worst.tier().name(), worst.qps());
+            System.out.printf(Locale.ROOT, "最高效率: %s @ %.1f%%%n", bestEfficiency.tier().name(), bestEfficiency.efficiencyPct());
+            System.out.printf(Locale.ROOT, "最低效率: %s @ %.1f%%%n", worstEfficiency.tier().name(), worstEfficiency.efficiencyPct());
+            System.out.printf(Locale.ROOT,
+                "RESULT|peak_tier=%s|peak_qps=%.1f|worst_tier=%s|worst_qps=%.1f|best_efficiency_tier=%s|best_efficiency=%.1f|worst_efficiency_tier=%s|worst_efficiency=%.1f|completion_rate=%.1f|total_received=%d|total_expected=%d|total_wait_ms=%d|efficiency_clamped_tiers=%d%n",
+                peak.tier().name(),
+                peak.qps(),
+                worst.tier().name(),
+                worst.qps(),
+                bestEfficiency.tier().name(),
+                bestEfficiency.efficiencyPct(),
+                worstEfficiency.tier().name(),
+                worstEfficiency.efficiencyPct(),
+                completionRate,
+                summary.totalReceived(),
+                summary.expected(),
+                summary.totalWaitMs(),
+                clampedTierCount);
+        }
+    }
+
+    private record BenchmarkTierResult(
+        PrecisionTier tier,
+        int received,
+        double qps,
+        double avgLatencyMs,
+        double theoreticalMaxQps,
+        double efficiencyPct,
+        double efficiencyRawPct,
+        int concurrency,
+        long backpressureEvents
+    ) {}
+
+    private record BenchmarkSummary(
+        Map<PrecisionTier, BenchmarkTierResult> tierResults,
+        int totalReceived,
+        int expected,
+        long totalWaitMs
+    ) {}
 }

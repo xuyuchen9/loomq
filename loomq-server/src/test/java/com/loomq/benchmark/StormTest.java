@@ -4,6 +4,8 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -20,7 +22,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class StormTest {
 
-    private static final String BASE_URL = "http://localhost:8080/api/v1";
+    private static final String BASE_URL = "http://localhost:8080";
     private static final AtomicInteger intentIdCounter = new AtomicInteger(0);
 
     public static void main(String[] args) throws Exception {
@@ -263,6 +265,7 @@ public class StormTest {
                     String result = createIntent(delayMs);
                     if (result != null && !result.contains("error")) {
                         totalCreated.incrementAndGet();
+                        totalSuccess.incrementAndGet();
                     }
                 } catch (Exception e) {
                     // 忽略
@@ -295,12 +298,14 @@ public class StormTest {
 
     private static String createIntentWithTriggerTime(long delayMs) throws Exception {
         String intentId = "storm_" + System.nanoTime() + "_" + intentIdCounter.incrementAndGet();
+        Instant executeAt = Instant.now().plusMillis(Math.max(delayMs, 1_000L));
+        Instant deadline = executeAt.plus(10, ChronoUnit.MINUTES);
         String body = String.format(
-            "{\"bizKey\":\"%s\",\"delayMs\":%d,\"webhookUrl\":\"http://localhost:9999/webhook\"}",
-            intentId, delayMs
+            "{\"intentId\":\"%s\",\"executeAt\":\"%s\",\"deadline\":\"%s\",\"precisionTier\":\"STANDARD\",\"shardKey\":\"storm\",\"callback\":{\"url\":\"http://localhost:9999/webhook\"}}",
+            intentId, executeAt, deadline
         );
 
-        URL url = URI.create(BASE_URL + "/intents").toURL();
+        URL url = URI.create(BASE_URL + "/v1/intents").toURL();
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
@@ -320,7 +325,7 @@ public class StormTest {
 
     private static void printMetrics() {
         try {
-            URL url = URI.create(BASE_URL.replace("/api/v1", "") + "/metrics").toURL();
+            URL url = URI.create(BASE_URL + "/metrics").toURL();
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(5000);
@@ -333,13 +338,14 @@ public class StormTest {
                 String line;
                 StringBuilder sb = new StringBuilder();
                 while ((line = reader.readLine()) != null) {
-                    if (line.startsWith("loomq_intents_total") ||
+                    if (line.startsWith("loomq_intents_created_total") ||
                         line.startsWith("loomq_intents_pending") ||
                         line.startsWith("loomq_intents_scheduled") ||
-                        line.startsWith("loomq_wake_latency") ||
-                        line.startsWith("loomq_webhook_latency") ||
-                        line.startsWith("loomq_total_latency") ||
-                        line.startsWith("loomq_wal_size")) {
+                        line.startsWith("loomq_trigger_latency_ms_p95") ||
+                        line.startsWith("loomq_wake_latency_ms_p95") ||
+                        line.startsWith("loomq_webhook_latency_ms_p95") ||
+                        line.startsWith("loomq_total_latency_ms_p95") ||
+                        line.startsWith("loomq_wal_size_bytes")) {
                         sb.append(line).append("\n");
                     }
                 }

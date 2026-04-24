@@ -12,10 +12,10 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 激进压测 - 模拟 wrk/ab 级别的并发
@@ -32,7 +32,7 @@ public class AggressiveBenchmark {
         String[] tiers = {"ULTRA", "FAST", "HIGH", "STANDARD", "ECONOMY"};
 
         System.out.println("╔══════════════════════════════════════════════════════════════╗");
-        System.out.println("║         LoomQ v0.7.0 激进压测 (模拟 wrk)                     ║");
+        System.out.println("║         LoomQ 激进压测 (模拟 wrk)                             ║");
         System.out.println("╚══════════════════════════════════════════════════════════════╝");
         System.out.println();
 
@@ -119,7 +119,6 @@ public class AggressiveBenchmark {
         List<Long> latencies = Collections.synchronizedList(new ArrayList<>(1_000_000));
 
         CountDownLatch latch = new CountDownLatch(threads);
-        AtomicLong totalRequests = new AtomicLong(0);
         long startTime = System.currentTimeMillis();
         long endTime = startTime + durationSec * 1000L;
 
@@ -138,7 +137,6 @@ public class AggressiveBenchmark {
                         } catch (Exception e) {
                             fail.incrementAndGet();
                         }
-                        totalRequests.incrementAndGet();
                     }
                 } finally {
                     latch.countDown();
@@ -173,10 +171,11 @@ public class AggressiveBenchmark {
     private static void createIntent(HttpClient client, String tier) throws Exception {
         Instant executeAt = Instant.now().plus(1, ChronoUnit.HOURS);
         Instant deadline = executeAt.plus(1, ChronoUnit.HOURS);
+        String intentId = "bench-" + UUID.randomUUID();
 
         String body = String.format(
-            "{\"executeAt\":\"%s\",\"deadline\":\"%s\",\"precisionTier\":\"%s\",\"shardKey\":\"bench-%d\",\"callback\":{\"url\":\"http://localhost/webhook\"}}",
-            executeAt.toString(), deadline.toString(), tier, System.nanoTime()
+            "{\"intentId\":\"%s\",\"executeAt\":\"%s\",\"deadline\":\"%s\",\"precisionTier\":\"%s\",\"shardKey\":\"bench-%d\",\"callback\":{\"url\":\"http://localhost/webhook\"}}",
+            intentId, executeAt.toString(), deadline.toString(), tier, System.nanoTime()
         );
 
         HttpRequest request = HttpRequest.newBuilder()

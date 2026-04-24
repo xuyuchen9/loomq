@@ -52,7 +52,6 @@ trap {
     Write-Host "Stack Trace:" -ForegroundColor Gray
     Write-Host $_.ScriptStackTrace -ForegroundColor Gray
     Write-Host ""
-    Read-Host "Press Enter to exit"
     exit 1
 }
 
@@ -134,7 +133,6 @@ function Write-Info {
 
 function Wait-Exit {
     Write-Host ""
-    Read-Host "Press Enter to exit"
     exit 1
 }
 
@@ -207,8 +205,711 @@ function Test-Java {
     return $JavaHome
 }
 
+function Test-TcpPortOpen {
+    param(
+        [string]$Address = "127.0.0.1",
+        [int]$Port,
+        [int]$TimeoutMs = 500
+    )
+
+    $Client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $Async = $Client.BeginConnect($Address, $Port, $null, $null)
+        if (-not $Async.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
+            return $false
+        }
+
+        $Client.EndConnect($Async)
+        return $Client.Connected
+    } catch {
+        return $false
+    } finally {
+        $Client.Close()
+    }
+}
+
+function Get-LatestSummaryFile {
+    $SummaryDir = Join-Path $ProjectRoot "benchmark\results\reports"
+    if (-not (Test-Path $SummaryDir)) {
+        return $null
+    }
+
+    return Get-ChildItem -Path $SummaryDir -Filter "summary-*.txt" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+}
+
+function ConvertFrom-BenchmarkMarker {
+    param([string]$Marker)
+
+    $Result = @{}
+    if ([string]::IsNullOrWhiteSpace($Marker)) {
+        return $Result
+    }
+
+    $FirstPipe = $Marker.IndexOf('|')
+    if ($FirstPipe -lt 0 -or $FirstPipe -ge $Marker.Length - 1) {
+        return $Result
+    }
+
+    $Payload = $Marker.Substring($FirstPipe + 1)
+    foreach ($Part in $Payload.Split('|')) {
+        $Pair = $Part.Split('=', 2)
+        if ($Pair.Count -eq 2 -and -not [string]::IsNullOrWhiteSpace($Pair[0])) {
+            $Result[$Pair[0]] = $Pair[1]
+        }
+    }
+
+    return $Result
+}
+
+function Stop-OrphanBenchmarkServers {
+    param([string]$ProjectRoot)
+
+    $Killed = 0
+    try {
+        $Candidates = Get-CimInstance Win32_Process -Filter "Name='java.exe'" -ErrorAction SilentlyContinue |
+            Where-Object {
+                if (-not $_.CommandLine) { return $false }
+                $Cmd = $_.CommandLine
+                $IsBenchServer = $Cmd.Contains("-Dloomq.node.id=bench-") -and $Cmd.Contains("-jar") -and $Cmd.Contains("loomq-server")
+                $IsBenchmarkWorker = $Cmd.Contains("com.loomq.benchmark.") -or $Cmd.Contains("SchedulerTriggerBenchmarkWithMockServer")
+                $TouchesWorkspace = $Cmd.Contains($ProjectRoot)
+                return ($IsBenchServer -or $IsBenchmarkWorker) -and $TouchesWorkspace
+            }
+
+        foreach ($Proc in $Candidates) {
+            try {
+                Stop-ProcessTree -RootPid $Proc.ProcessId
+                $Killed++
+            } catch {
+            }
+        }
+    } catch {
+    }
+
+    if ($Killed -gt 0) {
+        Write-Warning "Cleaned $Killed orphan benchmark server process(es)."
+    }
+}
+
+function Stop-ProcessTree {
+    param([int]$RootPid)
+
+    if ($RootPid -le 0) {
+        return
+    }
+
+    $Children = @()
+    try {
+        $Children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$RootPid" -ErrorAction SilentlyContinue)
+    } catch {
+    }
+
+    foreach ($Child in $Children) {
+        Stop-ProcessTree -RootPid $Child.ProcessId
+    }
+
+    try {
+        Stop-Process -Id $RootPid -Force -ErrorAction SilentlyContinue
+    } catch {
+    }
+}
+
+function Invoke-BenchmarkScenario {
+    param(
+        [string]$Name,
+        [string]$ServerModuleDir,
+        [string]$MainClass,
+        [string]$ExecArgs = $null,
+        [string]$BenchmarkBaseUrl = $null,
+        [int]$TimeoutSec = 300,
+        [switch]$Quick
+    )
+
+    Write-Header $Name
+
+    $MvnArgs = @(
+        "exec:java",
+        "-Dexec.mainClass=$MainClass",
+        "-Dexec.classpathScope=test",
+        "-Dmaven.repo.local=$BenchmarkMavenRepo",
+        "-q"
+    )
+    if ($Quick) {
+        $MvnArgs += "-Dloomq.benchmark.quick=true"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($BenchmarkBaseUrl)) {
+        $MvnArgs += "-Dloomq.benchmark.baseUrl=$BenchmarkBaseUrl"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExecArgs)) {
+        $MvnArgs += "-Dexec.args=$ExecArgs"
+    }
+
+    $LogDir = Join-Path $ProjectRoot "benchmark\results\logs"
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    $SafeClass = ($MainClass -replace '[^A-Za-z0-9_.-]', '_')
+    $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $StdOutLog = Join-Path $LogDir ("scenario-$SafeClass-$Stamp.out.log")
+    $StdErrLog = Join-Path $LogDir ("scenario-$SafeClass-$Stamp.err.log")
+
+    $Process = $null
+    $TimedOut = $false
+    $StartTime = Get-Date
+    $NextPulse = $StartTime.AddSeconds(10)
+    try {
+        $Process = Start-Process -FilePath "mvn" -ArgumentList $MvnArgs -WorkingDirectory $ServerModuleDir -PassThru -WindowStyle Hidden -RedirectStandardOutput $StdOutLog -RedirectStandardError $StdErrLog
+
+        while (-not $Process.HasExited) {
+            $Now = Get-Date
+            $Elapsed = [int]($Now - $StartTime).TotalSeconds
+            if ($Now -ge $NextPulse) {
+                Write-Info "$Name running... ${Elapsed}s / ${TimeoutSec}s"
+                $NextPulse = $Now.AddSeconds(10)
+            }
+
+            if ($Elapsed -ge $TimeoutSec) {
+                $TimedOut = $true
+                Stop-ProcessTree -RootPid $Process.Id
+                break
+            }
+
+            Start-Sleep -Milliseconds 250
+        }
+    } catch {
+        throw
+    }
+
+    if ($null -ne $Process -and -not $TimedOut) {
+        try { $Process.WaitForExit() } catch {}
+    }
+
+    $StdOutLines = if (Test-Path $StdOutLog) { Get-Content $StdOutLog -Encoding UTF8 } else { @() }
+    $StdErrLines = if (Test-Path $StdErrLog) { Get-Content $StdErrLog -Encoding UTF8 } else { @() }
+    $Lines = New-Object System.Collections.Generic.List[string]
+    foreach ($Line in $StdOutLines) { [void]$Lines.Add($Line) }
+    foreach ($Line in $StdErrLines) { [void]$Lines.Add("[stderr] $Line") }
+
+    foreach ($Line in $Lines) {
+        if ($Line -match '^RESULT\|') {
+            Write-Host $Line -ForegroundColor Green
+        } elseif ($Line -match '^RESULT_ROW\|') {
+            Write-Host $Line -ForegroundColor DarkGray
+        } elseif ($Line -match '^╔|^╚|^║|^===|^---|^###|^测试配置|^峰值 QPS|^最佳 P99|^最差 P99|^失败率|^解释:') {
+            Write-Host $Line -ForegroundColor Cyan
+        } elseif ($Line -match '^\[stderr\] WARNING:|^\[stderr\] \[ERROR\]|^\[stderr\] \[INFO\]|^\[ERROR\]|^\[WARN\]|^\[INFO\]') {
+            Write-Host $Line
+        }
+    }
+
+    $ExitCode = -1
+    if ($TimedOut) {
+        $ExitCode = -1
+    } elseif ($null -ne $Process) {
+        try { $Process.Refresh() } catch {}
+        if ($null -ne $Process.ExitCode) {
+            $ExitCode = [int]$Process.ExitCode
+        } else {
+            $HasErrorLine = ($Lines | Where-Object { $_ -match '^\[ERROR\]|^\[stderr\]\s+\[ERROR\]' } | Select-Object -First 1)
+            $ExitCode = if ($null -ne $HasErrorLine) { 1 } else { 0 }
+        }
+    }
+    if ($TimedOut) {
+        $TailOut = $StdOutLines | Select-Object -Last 40
+        $TailErr = $StdErrLines | Select-Object -Last 40
+        throw "Scenario '$Name' timed out after ${TimeoutSec}s.`nstdout: $StdOutLog`nstderr: $StdErrLog`n--- stdout tail ---`n$($TailOut -join [Environment]::NewLine)`n--- stderr tail ---`n$($TailErr -join [Environment]::NewLine)"
+    }
+
+    $Marker = $Lines | Where-Object { $_ -like 'RESULT|*' } | Select-Object -Last 1
+    $Rows = @($Lines | Where-Object { $_ -like 'RESULT_ROW|*' })
+    $DurationSec = [math]::Round(((Get-Date) - $StartTime).TotalSeconds, 1)
+
+    return [pscustomobject]@{
+        Name = $Name
+        MainClass = $MainClass
+        ExitCode = $ExitCode
+        TimedOut = $TimedOut
+        DurationSec = $DurationSec
+        StdOutLog = $StdOutLog
+        StdErrLog = $StdErrLog
+        Lines = $Lines.ToArray()
+        Marker = $Marker
+        Rows = $Rows
+        Data = ConvertFrom-BenchmarkMarker $Marker
+    }
+}
+
+function Save-BenchmarkSummary {
+    param([string[]]$Lines)
+
+    $SummaryDir = Join-Path $ProjectRoot "benchmark\results\reports"
+    New-Item -ItemType Directory -Force -Path $SummaryDir | Out-Null
+
+    $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $SummaryFile = Join-Path $SummaryDir ("summary-" + $Timestamp + ".txt")
+    $LatestFile = Join-Path $SummaryDir "latest-summary.txt"
+
+    Set-Content -Path $SummaryFile -Value $Lines -Encoding UTF8
+    Set-Content -Path $LatestFile -Value $Lines -Encoding UTF8
+
+    return $SummaryFile
+}
+
+function Get-FreePort {
+    $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    try {
+        $Listener.Start()
+        return ([System.Net.IPEndPoint]$Listener.LocalEndpoint).Port
+    } finally {
+        $Listener.Stop()
+    }
+}
+
+function Get-ServerJarPath {
+    param([string]$ServerModuleDir)
+
+    $TargetDir = Join-Path $ServerModuleDir "target"
+    if (-not (Test-Path $TargetDir)) {
+        return $null
+    }
+
+    $Jar = Get-ChildItem -Path $TargetDir -Filter "loomq-server-*.jar" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike "original-*" } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+
+    if ($null -eq $Jar) {
+        return $null
+    }
+
+    return $Jar.FullName
+}
+
+function Ensure-ServerJar {
+    param(
+        [string]$ProjectRoot,
+        [string]$ServerModuleDir,
+        [switch]$AllowBuild
+    )
+
+    $JarPath = Get-ServerJarPath -ServerModuleDir $ServerModuleDir
+    if ($JarPath) {
+        return $JarPath
+    }
+
+    if (-not $AllowBuild) {
+        throw "Server jar not found. Run without -NoCompile once so the jar can be packaged."
+    }
+
+    Write-Header "Packaging Server Jar"
+    Write-Info "Building loomq-server shade jar for isolated HTTP benchmark"
+
+    $PreviousLocation = Get-Location
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        Set-Location $ProjectRoot
+        $PackageOutput = & mvn -pl loomq-server -am package -DskipTests "-Dmaven.repo.local=$BenchmarkMavenRepo" -q 2>&1
+        $PackageResult = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+        Set-Location $PreviousLocation
+    }
+
+    if ($PackageResult -ne 0) {
+        Write-Host ""
+        Write-Host "Packaging output:" -ForegroundColor Yellow
+        $PackageOutput | Select-Object -Last 40 | ForEach-Object { Write-Host "  $_" }
+        throw "Failed to package loomq-server"
+    }
+
+    $JarPath = Get-ServerJarPath -ServerModuleDir $ServerModuleDir
+    if (-not $JarPath) {
+        throw "Server jar packaging succeeded but no loomq-server-*.jar file was found."
+    }
+
+    return $JarPath
+}
+
+function Ensure-BenchmarkRepo {
+    param(
+        [string]$ProjectRoot,
+        [string]$RepoPath,
+        [switch]$ForceRefresh
+    )
+
+    New-Item -ItemType Directory -Force -Path $RepoPath | Out-Null
+
+    $ParentPom = Join-Path $RepoPath "com\loomq\loomq-parent\0.7.0-SNAPSHOT\loomq-parent-0.7.0-SNAPSHOT.pom"
+    $BomPom = Join-Path $RepoPath "com\loomq\loomq-bom\0.7.0-SNAPSHOT\loomq-bom-0.7.0-SNAPSHOT.pom"
+    $CoreJar = Join-Path $RepoPath "com\loomq\loomq-core\0.7.0-SNAPSHOT\loomq-core-0.7.0-SNAPSHOT.jar"
+    $ServerJar = Join-Path $RepoPath "com\loomq\loomq-server\0.7.0-SNAPSHOT\loomq-server-0.7.0-SNAPSHOT.jar"
+
+    $RepoReady = (Test-Path $ParentPom) -and (Test-Path $BomPom) -and (Test-Path $CoreJar) -and (Test-Path $ServerJar)
+    if (-not $ForceRefresh -and $RepoReady) {
+        return
+    }
+
+    Write-Header "Preparing Maven Repo"
+    Write-Info "Syncing reactor artifacts into isolated repo: $RepoPath"
+
+    $PreviousLocation = Get-Location
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        Set-Location $ProjectRoot
+        $InstallOutput = & mvn -DskipTests "-Dmaven.repo.local=$RepoPath" install -q 2>&1
+        $InstallResult = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+        Set-Location $PreviousLocation
+    }
+
+    if ($InstallResult -ne 0) {
+        Write-Host ""
+        Write-Host "Install output:" -ForegroundColor Yellow
+        $InstallOutput | Select-Object -Last 40 | ForEach-Object { Write-Host "  $_" }
+        throw "Failed to prepare isolated Maven repo"
+    }
+}
+
+function Start-BenchmarkServer {
+    param(
+        [string]$ProjectRoot,
+        [string]$JavaHome,
+        [string]$ServerJarPath,
+        [int]$Port,
+        [string]$DataDir,
+        [string]$NodeId
+    )
+
+    $LogDir = Join-Path $ProjectRoot "benchmark\results\logs"
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $StdOutLog = Join-Path $LogDir ("server-$Stamp.out.log")
+    $StdErrLog = Join-Path $LogDir ("server-$Stamp.err.log")
+    $Args = @(
+        "-Dserver.port=$Port",
+        "-Dloomq.data.dir=$DataDir",
+        "-Dloomq.node.id=$NodeId",
+        "-jar",
+        $ServerJarPath
+    )
+
+    $Process = Start-Process -FilePath "$JavaHome\bin\java.exe" -ArgumentList $Args -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput $StdOutLog -RedirectStandardError $StdErrLog
+
+    $BaseUrl = "http://127.0.0.1:$Port"
+    for ($i = 0; $i -lt 120; $i++) {
+        if (Test-TcpPortOpen -Port $Port) {
+            return [pscustomobject]@{
+                Process = $Process
+                BaseUrl = $BaseUrl
+                Port = $Port
+                DataDir = $DataDir
+                NodeId = $NodeId
+                StdOutLog = $StdOutLog
+                StdErrLog = $StdErrLog
+            }
+        }
+
+        if ($Process.HasExited) {
+            break
+        }
+
+        Start-Sleep -Seconds 1
+    }
+
+    $TailOut = if (Test-Path $StdOutLog) { Get-Content $StdOutLog -Tail 40 } else { @() }
+    $TailErr = if (Test-Path $StdErrLog) { Get-Content $StdErrLog -Tail 40 } else { @() }
+    throw "Server failed to start on $BaseUrl.`nstdout:`n$($TailOut -join [Environment]::NewLine)`nstderr:`n$($TailErr -join [Environment]::NewLine)"
+}
+
+function Stop-BenchmarkServer {
+    param($ServerHandle)
+
+    if ($null -ne $ServerHandle -and $ServerHandle.Process -and -not $ServerHandle.Process.HasExited) {
+        try {
+            Stop-Process -Id $ServerHandle.Process.Id -Force -ErrorAction SilentlyContinue
+        } catch {
+        }
+    }
+}
+
+function Get-ResultDouble {
+    param(
+        [hashtable]$Data,
+        [string]$Key,
+        [double]$Default = 0.0
+    )
+
+    if ($null -eq $Data -or -not $Data.ContainsKey($Key)) {
+        return $Default
+    }
+
+    $Value = $Data[$Key]
+    if ([string]::IsNullOrWhiteSpace([string]$Value)) {
+        return $Default
+    }
+
+    $Parsed = 0.0
+    if ([double]::TryParse([string]$Value, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$Parsed)) {
+        return $Parsed
+    }
+
+    return $Default
+}
+
+function Get-ResultInt {
+    param(
+        [hashtable]$Data,
+        [string]$Key,
+        [int]$Default = 0
+    )
+
+    if ($null -eq $Data -or -not $Data.ContainsKey($Key)) {
+        return $Default
+    }
+
+    $Value = $Data[$Key]
+    if ([string]::IsNullOrWhiteSpace([string]$Value)) {
+        return $Default
+    }
+
+    $Parsed = 0
+    if ([int]::TryParse([string]$Value, [ref]$Parsed)) {
+        return $Parsed
+    }
+
+    return $Default
+}
+
+function Get-BenchmarkRowData {
+    param([string[]]$Rows)
+
+    $ParsedRows = New-Object System.Collections.Generic.List[hashtable]
+    if ($null -eq $Rows) {
+        return @()
+    }
+
+    foreach ($Row in $Rows) {
+        $Data = ConvertFrom-BenchmarkMarker $Row
+        if ($null -ne $Data -and $Data.Count -gt 0) {
+            [void]$ParsedRows.Add($Data)
+        }
+    }
+
+    return $ParsedRows.ToArray()
+}
+
+function Get-DoubleSeriesStats {
+    param([double[]]$Values)
+
+    if ($null -eq $Values -or $Values.Count -eq 0) {
+        return [pscustomobject]@{
+            Count = 0
+            Mean = 0.0
+            StdDev = 0.0
+            CvPct = 0.0
+            Min = 0.0
+            Max = 0.0
+        }
+    }
+
+    $Count = $Values.Count
+    $Sum = 0.0
+    $Min = $Values[0]
+    $Max = $Values[0]
+    foreach ($Value in $Values) {
+        $Sum += $Value
+        if ($Value -lt $Min) { $Min = $Value }
+        if ($Value -gt $Max) { $Max = $Value }
+    }
+    $Mean = $Sum / $Count
+
+    $Variance = 0.0
+    if ($Count -gt 1) {
+        foreach ($Value in $Values) {
+            $Delta = $Value - $Mean
+            $Variance += $Delta * $Delta
+        }
+        $Variance = $Variance / ($Count - 1)
+    }
+
+    $StdDev = [math]::Sqrt([math]::Max(0.0, $Variance))
+    $CvPct = if ([math]::Abs($Mean) -gt 1e-9) {
+        ($StdDev / [math]::Abs($Mean)) * 100.0
+    } else {
+        0.0
+    }
+
+    return [pscustomobject]@{
+        Count = $Count
+        Mean = $Mean
+        StdDev = $StdDev
+        CvPct = $CvPct
+        Min = $Min
+        Max = $Max
+    }
+}
+
+function Build-BenchmarkSummary {
+    param(
+        [string]$ProjectRoot,
+        [string]$GitCommit,
+        [string]$GitVersion,
+        [string]$JavaHome,
+        [bool]$Quick,
+        $InternalResult,
+        $HttpResult,
+        $SchedulerResult
+    )
+
+    $Lines = New-Object System.Collections.Generic.List[string]
+    $Lines.Add("LoomQ Benchmark Summary")
+    $Lines.Add("Project root: $ProjectRoot")
+    $Lines.Add("Git: $GitCommit ($GitVersion)")
+    $Lines.Add("Java: $JavaHome")
+    $Lines.Add("Mode: " + $(if ($Quick) { "QUICK" } else { "FULL" }))
+    $Lines.Add("")
+
+    $InternalQps = 0.0
+    $HttpQps = 0.0
+    $HttpBestP99 = 0.0
+    $HttpWorstP99 = 0.0
+    $SchedulerPeakQps = 0.0
+    $SchedulerWorstQps = 0.0
+    $SchedulerCompletion = 0.0
+    $SchedulerBestEfficiency = 0.0
+    $SchedulerWorstEfficiency = 0.0
+    $HttpQpsCvPct = 0.0
+    $SchedulerQpsCvPct = 0.0
+    $SchedulerBackpressureTotal = 0
+    $SchedulerClampedTiers = 0
+
+    if ($InternalResult) {
+        $InternalQps = Get-ResultDouble $InternalResult.Data "direct_store_qps"
+        $Threads = Get-ResultInt $InternalResult.Data "direct_store_threads"
+        $Duration = Get-ResultInt $InternalResult.Data "direct_store_duration_sec"
+        $MemDelta = Get-ResultInt $InternalResult.Data "memory_delta_bytes"
+        $BytesPerIntent = Get-ResultDouble $InternalResult.Data "memory_bytes_per_intent"
+
+        $Lines.Add("1) In-process upper bound")
+        $Lines.Add(("   direct store: {0:n0} intents/s @ {1} threads for {2}s" -f $InternalQps, $Threads, $Duration))
+        $Lines.Add(("   retained memory: {0:n2} MB, {1:n0} bytes/intent" -f ($MemDelta / 1MB), $BytesPerIntent))
+        $Lines.Add(("   scenario runtime: {0:n1} s" -f $InternalResult.DurationSec))
+        $Lines.Add("   shortboard: this is the storage-side ceiling; HTTP and scheduler overhead are excluded.")
+        $Lines.Add("")
+    }
+
+    if ($HttpResult) {
+        $HttpQps = Get-ResultDouble $HttpResult.Data "peak_qps"
+        $HttpThreads = Get-ResultInt $HttpResult.Data "best_threads"
+        $HttpBestP99 = Get-ResultDouble $HttpResult.Data "best_p99_ms"
+        $HttpBestAvg = Get-ResultDouble $HttpResult.Data "best_avg_ms"
+        $HttpWorstP99 = Get-ResultDouble $HttpResult.Data "worst_p99_ms"
+        $HttpFailRate = Get-ResultDouble $HttpResult.Data "fail_rate"
+        $HttpRows = Get-BenchmarkRowData -Rows $HttpResult.Rows
+        $HttpQpsValues = @()
+        foreach ($Row in $HttpRows) {
+            $HttpQpsValues += Get-ResultDouble $Row "qps"
+        }
+        $HttpStats = Get-DoubleSeriesStats -Values ([double[]]$HttpQpsValues)
+        $HttpQpsCvPct = $HttpStats.CvPct
+
+        $Lines.Add("2) HTTP create path")
+        $Lines.Add(("   peak: {0:n0} intents/s @ {1} threads" -f $HttpQps, $HttpThreads))
+        $Lines.Add(("   latency: best p99 {0:n1} ms, best avg {1:n2} ms, worst p99 {2:n1} ms, fail rate {3:n2}%" -f $HttpBestP99, $HttpBestAvg, $HttpWorstP99, $HttpFailRate))
+        $Lines.Add(("   sample points: {0}, qps mean {1:n1}, stdev {2:n1}, cv {3:n1}%" -f $HttpStats.Count, $HttpStats.Mean, $HttpStats.StdDev, $HttpStats.CvPct))
+        $Lines.Add(("   scenario runtime: {0:n1} s" -f $HttpResult.DurationSec))
+        $Lines.Add("   shortboard: this is the HTTP/JSON/Netty ceiling, not the store ceiling.")
+        $Lines.Add("")
+    }
+
+    if ($SchedulerResult) {
+        $SchedulerPeakQps = Get-ResultDouble $SchedulerResult.Data "peak_qps"
+        $SchedulerPeakTier = [string]$SchedulerResult.Data["peak_tier"]
+        $SchedulerWorstQps = Get-ResultDouble $SchedulerResult.Data "worst_qps"
+        $SchedulerWorstTier = [string]$SchedulerResult.Data["worst_tier"]
+        $SchedulerBestEfficiency = Get-ResultDouble $SchedulerResult.Data "best_efficiency"
+        $SchedulerBestEfficiencyTier = [string]$SchedulerResult.Data["best_efficiency_tier"]
+        $SchedulerWorstEfficiency = Get-ResultDouble $SchedulerResult.Data "worst_efficiency"
+        $SchedulerWorstEfficiencyTier = [string]$SchedulerResult.Data["worst_efficiency_tier"]
+        $SchedulerCompletion = Get-ResultDouble $SchedulerResult.Data "completion_rate"
+        $SchedulerTotalReceived = Get-ResultInt $SchedulerResult.Data "total_received"
+        $SchedulerTotalExpected = Get-ResultInt $SchedulerResult.Data "total_expected"
+        $SchedulerWaitMs = Get-ResultInt $SchedulerResult.Data "total_wait_ms"
+        $SchedulerClampedTiers = Get-ResultInt $SchedulerResult.Data "efficiency_clamped_tiers"
+        $SchedulerRows = Get-BenchmarkRowData -Rows $SchedulerResult.Rows
+        $SchedulerQpsValues = @()
+        foreach ($Row in $SchedulerRows) {
+            $SchedulerQpsValues += Get-ResultDouble $Row "qps"
+            $SchedulerBackpressureTotal += Get-ResultInt $Row "backpressure"
+        }
+        $SchedulerStats = Get-DoubleSeriesStats -Values ([double[]]$SchedulerQpsValues)
+        $SchedulerQpsCvPct = $SchedulerStats.CvPct
+
+        $Lines.Add("3) Scheduler trigger path")
+        $Lines.Add(("   peak tier: {0} @ {1:n1} QPS" -f $SchedulerPeakTier, $SchedulerPeakQps))
+        $Lines.Add(("   worst tier: {0} @ {1:n1} QPS" -f $SchedulerWorstTier, $SchedulerWorstQps))
+        $Lines.Add(("   efficiency span: best {0} ({1:n1}%), worst {2} ({3:n1}%), completion {4:n1}% ({5}/{6}), wait {7} ms" -f
+            $SchedulerBestEfficiencyTier,
+            $SchedulerBestEfficiency,
+            $SchedulerWorstEfficiencyTier,
+            $SchedulerWorstEfficiency,
+            $SchedulerCompletion,
+            $SchedulerTotalReceived,
+            $SchedulerTotalExpected,
+            $SchedulerWaitMs))
+        $Lines.Add(("   sample points: {0} tiers, qps mean {1:n1}, stdev {2:n1}, cv {3:n1}%, backpressure {4}" -f
+            $SchedulerStats.Count,
+            $SchedulerStats.Mean,
+            $SchedulerStats.StdDev,
+            $SchedulerStats.CvPct,
+            $SchedulerBackpressureTotal))
+        if ($SchedulerClampedTiers -gt 0) {
+            $Lines.Add(("   note: efficiency for {0} tier(s) exceeded theoretical estimate and was capped to 100%." -f $SchedulerClampedTiers))
+        }
+        $Lines.Add(("   scenario runtime: {0:n1} s" -f $SchedulerResult.DurationSec))
+        $Lines.Add("   shortboard: this is the real调度 + callback + webhook path, where tier differences and downstream latency show up.")
+        $Lines.Add("")
+    }
+
+    $Lines.Add("Derived observations")
+    if ($InternalQps -gt 0 -and $HttpQps -gt 0) {
+        $HttpLoss = $InternalQps / $HttpQps
+        $Lines.Add(("   - HTTP path is about {0:n1}x slower than the in-process upper bound." -f $HttpLoss))
+    }
+
+    if ($HttpBestP99 -gt 0 -and $HttpWorstP99 -gt 0) {
+        $Lines.Add(("   - HTTP p99 spreads by {0:n1} ms across concurrency points." -f ($HttpWorstP99 - $HttpBestP99)))
+    }
+    if ($HttpQpsCvPct -gt 0) {
+        $Lines.Add(("   - HTTP throughput variation across sampled points: CV {0:n1}%." -f $HttpQpsCvPct))
+    }
+
+    if ($SchedulerPeakQps -gt 0 -and $SchedulerWorstQps -gt 0) {
+        $Lines.Add(("   - Scheduler real-trigger throughput spreads by {0:n1}x between best and worst tiers." -f ($SchedulerPeakQps / $SchedulerWorstQps)))
+    }
+    if ($SchedulerQpsCvPct -gt 0) {
+        $Lines.Add(("   - Scheduler tier throughput variation across sampled points: CV {0:n1}%." -f $SchedulerQpsCvPct))
+    }
+
+    if ($SchedulerBestEfficiency -gt 0 -and $SchedulerWorstEfficiency -gt 0) {
+        $Lines.Add(("   - Scheduler efficiency ranges from {0:n1}% to {1:n1}% of theoretical ceiling." -f $SchedulerWorstEfficiency, $SchedulerBestEfficiency))
+    }
+    if ($SchedulerBackpressureTotal -gt 0) {
+        $Lines.Add(("   - Scheduler recorded {0} backpressure event(s) during this run." -f $SchedulerBackpressureTotal))
+    }
+
+    if ($SchedulerCompletion -gt 0 -and $SchedulerCompletion -lt 100) {
+        $Lines.Add("   - Completion rate did not reach 100%; real trigger path still has drop or timeout risk.")
+    }
+
+    return $Lines.ToArray()
+}
+
 # ============================================================
-#  主程序
+#  新主程序
 # ============================================================
 
 # 显示帮助
@@ -234,7 +935,6 @@ Examples:
   .\benchmark.ps1 -Save            # Auto save results
   .\benchmark.ps1 -NoSave          # Preview mode
 "@
-    Read-Host "`nPress Enter to exit"
     exit 0
 }
 
@@ -261,11 +961,19 @@ if (-not (Test-Path "$ProjectRoot\pom.xml")) {
 
 Set-Location $ProjectRoot
 Write-Info "Project root: $ProjectRoot"
+$BenchmarkMavenRepo = Join-Path $ProjectRoot "benchmark\results\m2repo"
+New-Item -ItemType Directory -Force -Path $BenchmarkMavenRepo | Out-Null
 
 # 检查 Java
 Write-Header "Environment Check"
 $JavaHome = Test-Java
-$JavaVersion = & "$JavaHome\bin\java" -version 2>&1 | Select-Object -First 1
+ $PreviousErrorActionPreference = $ErrorActionPreference
+ $ErrorActionPreference = "Continue"
+ try {
+     $JavaVersion = & "$JavaHome\bin\java.exe" -version 2>&1 | Select-Object -First 1
+ } finally {
+     $ErrorActionPreference = $PreviousErrorActionPreference
+ }
 Write-Info "Using Java: $JavaHome"
 Write-Host "   Version: $JavaVersion" -ForegroundColor Gray
 
@@ -286,27 +994,14 @@ Write-Host "   Git: $GitCommit ($GitVersion)" -ForegroundColor Gray
 
 # 显示历史对比
 if ($Compare) {
-    Write-Header "History Comparison"
-    $HistoryFile = "benchmark\results\history.csv"
-    if (Test-Path $HistoryFile) {
-        $lines = Get-Content $HistoryFile
-        $header = $true
-        foreach ($line in $lines) {
-            if ($header) {
-                Write-Host $line -ForegroundColor Gray
-                $header = $false
-            } elseif ($line -match "UP") {
-                Write-Host $line -ForegroundColor Green
-            } elseif ($line -match "DOWN") {
-                Write-Host $line -ForegroundColor Red
-            } else {
-                Write-Host $line
-            }
-        }
+    Write-Header "Latest Summary"
+    $LatestSummary = Get-LatestSummaryFile
+    if ($LatestSummary) {
+        Write-Info "Summary: $($LatestSummary.FullName)"
+        Get-Content $LatestSummary.FullName | ForEach-Object { Write-Host $_ }
     } else {
-        Write-Warning "No history records found."
+        Write-Warning "No benchmark summary found yet."
     }
-    Read-Host "`nPress Enter to exit"
     exit 0
 }
 
@@ -315,9 +1010,15 @@ if (-not $NoCompile) {
     Write-Header "Compiling Project"
     $CompileStart = Get-Date
 
-    Write-Host "Running: mvn compile test-compile -q" -ForegroundColor Gray
+    Write-Host "Running: mvn compile test-compile -Dmaven.repo.local=<benchmark repo> -q" -ForegroundColor Gray
 
-    $CompileOutput = & mvn compile test-compile -q 2>&1
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $CompileOutput = & mvn compile test-compile "-Dmaven.repo.local=$BenchmarkMavenRepo" -q 2>&1
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
     $CompileResult = $LASTEXITCODE
 
     if ($CompileResult -ne 0) {
@@ -334,152 +1035,119 @@ if (-not $NoCompile) {
     Write-Success "Compilation completed ($CompileTime seconds)"
 }
 
-# 检查服务器状态
-Write-Header "Checking Server Status"
-$ServerRunning = $false
+Ensure-BenchmarkRepo `
+    -ProjectRoot $ProjectRoot `
+    -RepoPath $BenchmarkMavenRepo `
+    -ForceRefresh:(-not $NoCompile)
+
+Write-Header "Running Benchmark Scenarios"
+Stop-OrphanBenchmarkServers -ProjectRoot $ProjectRoot
+
+$ServerModuleDir = Join-Path $ProjectRoot "loomq-server"
+$TempServerHandle = $null
+$InternalResult = $null
+$HttpResult = $null
+$SchedulerResult = $null
+
 try {
-    $Response = Invoke-WebRequest -Uri "http://localhost:8080/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
-    if ($Response.StatusCode -eq 200) {
-        $ServerRunning = $true
-        Write-Success "Server is running: http://localhost:8080"
+    $InternalResult = Invoke-BenchmarkScenario `
+        -Name "1) In-process upper bound" `
+        -ServerModuleDir $ServerModuleDir `
+        -MainClass "com.loomq.benchmark.InternalBenchmark" `
+        -TimeoutSec $(if ($Quick) { 120 } else { 240 }) `
+        -Quick:$Quick
+
+    if ($InternalResult.ExitCode -ne 0) {
+        throw "Internal benchmark failed with exit code $($InternalResult.ExitCode)"
     }
-} catch {
-    # Server not running
-}
 
-if (-not $ServerRunning) {
-    Write-Warning "Server not running. Running internal tests only."
-    Write-Host "   Start server: java -jar loomq-server\target\loomq-server-0.7.0-SNAPSHOT.jar" -ForegroundColor Gray
-    $InternalOnly = $true
-}
+    if (-not $InternalOnly) {
+        $ServerJarPath = Ensure-ServerJar -ProjectRoot $ProjectRoot -ServerModuleDir $ServerModuleDir -AllowBuild:(-not $NoCompile)
+        $TempServerPort = Get-FreePort
+        $TempDataDir = Join-Path $ProjectRoot ("benchmark\results\runtime\data-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+        New-Item -ItemType Directory -Force -Path $TempDataDir | Out-Null
+        $TempNodeId = "bench-" + (Get-Date -Format "yyyyMMddHHmmss")
 
-# 跟踪是否保存
-$ShouldSave = $false
-$VersionChanged = $false
+        Write-Info "Starting isolated server on http://127.0.0.1:$TempServerPort"
+        Write-Info "Data dir: $TempDataDir"
+        Write-Info "Node id:  $TempNodeId"
 
-# 检查版本变化
-if (-not $NoSave) {
-    $CurrentCommit = Get-GitCommit
-    $CurrentVersion = Get-GitVersion
-    $VersionChanged = Test-VersionChanged
-    Write-Host ""
-    Write-Host "Current commit: $CurrentCommit (version: $CurrentVersion)" -ForegroundColor Gray
-    if ($VersionChanged) {
-        Write-Warning "Version changed since last benchmark!"
-        Write-Host "   It is recommended to save results for comparison." -ForegroundColor Yellow
-    }
-}
+        $TempServerHandle = Start-BenchmarkServer `
+            -ProjectRoot $ProjectRoot `
+            -JavaHome $JavaHome `
+            -ServerJarPath $ServerJarPath `
+            -Port $TempServerPort `
+            -DataDir $TempDataDir `
+            -NodeId $TempNodeId
 
-# 运行基准测试
-Write-Header "Running Benchmark Tests"
-Write-Host ""
+        try {
+            $HttpResult = Invoke-BenchmarkScenario `
+                -Name "2) HTTP create path" `
+                -ServerModuleDir $ServerModuleDir `
+                -MainClass "com.loomq.benchmark.HttpVirtualThreadBenchmark" `
+                -BenchmarkBaseUrl $TempServerHandle.BaseUrl `
+                -TimeoutSec $(if ($Quick) { 180 } else { 420 }) `
+                -Quick:$Quick
 
-$TestStart = Get-Date
-if ($Quick) {
-    $env:BENCHMARK_QUICK = "true"
-}
-
-# 构建命令
-$MvnArgs = @(
-    "exec:java",
-    "-Dexec.mainClass=com.loomq.benchmark.BenchmarkTest",
-    "-Dexec.classpathScope=test",
-    "-q"
-)
-
-# 运行测试并实时输出
-& mvn @MvnArgs 2>&1 | ForEach-Object {
-    $line = $_
-    if ($line -match "^Running:") {
-        Write-Host "  $line" -ForegroundColor Gray
-    } elseif ($line -match "^>>>") {
-        Write-Host ""
-        Write-Host $line -ForegroundColor Cyan
-    } elseif ($line -match "^==") {
-        Write-Host $line -ForegroundColor Cyan
-    } elseif ($line -match "UP") {
-        Write-Host $line -ForegroundColor Green
-    } elseif ($line -match "DOWN") {
-        Write-Host $line -ForegroundColor Red
-    } elseif ($line -match "^\|") {
-        Write-Host $line
-    } elseif ($line -match "^##") {
-        Write-Host ""
-        Write-Host $line -ForegroundColor Yellow
-    } elseif ($line -match "^-") {
-        Write-Host $line
-    } else {
-        Write-Host $line
-    }
-}
-
-$TestTime = [math]::Round(((Get-Date) - $TestStart).TotalSeconds, 1)
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host ""
-    Write-Header "Test Completed"
-    Write-Success "Total time: $TestTime seconds"
-
-    # 显示报告位置
-    $ReportFiles = Get-ChildItem "benchmark\results\reports\report-*.md" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-    $HistoryFile = "benchmark\results\history.csv"
-
-    # 询问是否保存
-    if (-not $NoSave -and -not $Save) {
-        Write-Host ""
-        Write-Host "==============================================================" -ForegroundColor Yellow
-        Write-Host "  Save Results?" -ForegroundColor Yellow
-        Write-Host "==============================================================" -ForegroundColor Yellow
-        Write-Host ""
-        if ($VersionChanged) {
-            Write-Host "  [!] Version changed - Recommended to save for comparison" -ForegroundColor Yellow
-        } else {
-            Write-Host "  [i] Same version as last benchmark" -ForegroundColor Gray
-        }
-        Write-Host ""
-        Write-Host "  [Y] Yes - Save results to history"
-        Write-Host "  [N] No  - Discard results (preview mode)"
-        Write-Host "  [V] View - View report before deciding"
-        Write-Host ""
-        $Choice = Read-Host "  Save results? [Y/N/V]"
-        switch ($Choice.ToUpper()) {
-            "Y" { $ShouldSave = $true }
-            "V" {
-                if ($ReportFiles) {
-                    Get-Content $ReportFiles[0].FullName | Write-Host
-                }
-                Write-Host ""
-                $Confirm = Read-Host "  Save results? [Y/N]"
-                if ($Confirm.ToUpper() -eq "Y") {
-                    $ShouldSave = $true
-                }
+            if ($HttpResult.ExitCode -ne 0) {
+                throw "HTTP benchmark failed with exit code $($HttpResult.ExitCode)"
             }
-            default { $ShouldSave = $false }
+
+            $SchedulerResult = Invoke-BenchmarkScenario `
+                -Name "3) Scheduler trigger path" `
+                -ServerModuleDir $ServerModuleDir `
+                -MainClass "com.loomq.scheduler.SchedulerTriggerBenchmarkWithMockServer" `
+                -TimeoutSec $(if ($Quick) { 180 } else { 420 }) `
+                -Quick:$Quick
+
+            if ($SchedulerResult.ExitCode -ne 0) {
+                throw "Scheduler benchmark failed with exit code $($SchedulerResult.ExitCode)"
+            }
+
+            $SchedulerCompletionRate = Get-ResultDouble $SchedulerResult.Data "completion_rate" -Default -1
+            if ($SchedulerCompletionRate -lt 1) {
+                throw "Scheduler benchmark completed but produced invalid completion rate ($SchedulerCompletionRate%). Check callback delivery path."
+            }
+        } finally {
+            Stop-BenchmarkServer -ServerHandle $TempServerHandle
         }
-    } elseif ($Save) {
-        $ShouldSave = $true
     }
 
-    if ($ShouldSave) {
+    $SummaryLines = Build-BenchmarkSummary `
+        -ProjectRoot $ProjectRoot `
+        -GitCommit $GitCommit `
+        -GitVersion $GitVersion `
+        -JavaHome $JavaHome `
+        -Quick ([bool]$Quick) `
+        -InternalResult $InternalResult `
+        -HttpResult $HttpResult `
+        -SchedulerResult $SchedulerResult
+
+    Write-Header "Summary"
+    $SummaryLines | ForEach-Object { Write-Host $_ }
+
+    if (-not $NoSave) {
+        $SummaryFile = Save-BenchmarkSummary -Lines $SummaryLines
         Write-Host ""
-        Write-Success "Results saved to history!"
-        if ($ReportFiles) {
-            Write-Info "Report: $($ReportFiles[0].FullName)"
+        Write-Success "Summary saved"
+        Write-Info "Report: $SummaryFile"
+        $Latest = Get-LatestSummaryFile
+        if ($Latest) {
+            Write-Info "Latest: $($Latest.FullName)"
         }
-        Write-Info "History: $HistoryFile"
     } else {
         Write-Host ""
-        Write-Info "Results NOT saved (preview mode)"
-        if ($ReportFiles) {
-            Write-Info "Report: $($ReportFiles[0].FullName)"
-        }
+        Write-Info "Preview mode: summary not saved"
     }
 
     Write-Host ""
-    Write-Host "Tip: Use -Compare to view history comparison" -ForegroundColor Gray
-    Write-Host "Tip: Use -Save to auto-save, -NoSave to preview without saving" -ForegroundColor Gray
-    Read-Host "`nPress Enter to exit"
-} else {
-    Write-Error "Test failed!"
-    Wait-Exit
+    Write-Host "Tip: use -Compare to show the latest saved summary." -ForegroundColor Gray
+    exit 0
+} catch {
+    Write-Error "Benchmark run failed!"
+    throw
+} finally {
+    if ($TempServerHandle) {
+        Stop-BenchmarkServer -ServerHandle $TempServerHandle
+    }
 }
