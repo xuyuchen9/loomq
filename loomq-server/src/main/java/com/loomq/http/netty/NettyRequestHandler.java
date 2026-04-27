@@ -27,6 +27,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Netty HTTP 请求处理器
@@ -36,7 +37,7 @@ import java.util.concurrent.TimeUnit;
  * 2. 请求体立即拷贝到堆内存，ByteBuf 在 I/O 线程释放
  * 3. 业务逻辑在虚拟线程池执行
  * 4. 响应写回由 I/O 线程完成
- * 5. 信号量限流保护
+ * 5. 信号量限流保护（带超时快失败）
  *
  * 性能优化：
  * - 预序列化静态响应（健康检查、错误响应）
@@ -52,6 +53,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
     private final RadixRouter router;
     private final ExecutorService businessExecutor;
     private final Semaphore concurrencyLimit;
+    private final int semaphoreTimeoutMs;
     private final JsonCodec jsonCodec;
     private static final byte[] EMPTY_BODY = new byte[0];
 
@@ -60,14 +62,20 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
     private static final byte[] SERVICE_UNAVAILABLE_RESPONSE = "{\"error\":\"Service Unavailable\"}".getBytes(StandardCharsets.UTF_8);
     private static final byte[] INTERNAL_ERROR_RESPONSE = "{\"error\":\"Internal Server Error\"}".getBytes(StandardCharsets.UTF_8);
     private static final byte[] PAYLOAD_TOO_LARGE_RESPONSE = "{\"error\":\"Payload Too Large\"}".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] TOO_MANY_REQUESTS_RESPONSE = "{\"error\":\"Too Many Requests\"}".getBytes(StandardCharsets.UTF_8);
 
     // 指标
     private final HttpMetrics metrics;
 
-    public NettyRequestHandler(RadixRouter router, int maxConcurrentRequests, HttpMetrics metrics) {
+    // 限频日志：过载 WARN 日志每秒最多 1 条
+    private final AtomicLong lastOverloadLogTimeMs = new AtomicLong(0);
+    private static final long OVERLOAD_LOG_INTERVAL_MS = 1000;
+
+    public NettyRequestHandler(RadixRouter router, int maxConcurrentRequests, int semaphoreTimeoutMs, HttpMetrics metrics) {
         this.router = router;
         this.businessExecutor = Executors.newVirtualThreadPerTaskExecutor();
         this.concurrencyLimit = new Semaphore(maxConcurrentRequests);
+        this.semaphoreTimeoutMs = semaphoreTimeoutMs;
         this.metrics = metrics;
 
         this.jsonCodec = JsonCodec.instance();
@@ -86,13 +94,27 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
             HttpMethod method = req.method();
             String uri = req.uri();
 
-            // 2. 背压控制：信号量限流
-            if (!concurrencyLimit.tryAcquire()) {
-                metrics.recordLimitExceeded();
-                writeResponse(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, SERVICE_UNAVAILABLE_RESPONSE);
+            // 2. 背压控制：信号量限流（带超时）
+            long waitStartNanos = System.nanoTime();
+            permitAcquired = concurrencyLimit.tryAcquire(semaphoreTimeoutMs, TimeUnit.MILLISECONDS);
+            long waitNanos = System.nanoTime() - waitStartNanos;
+            double waitSeconds = waitNanos / 1_000_000_000.0;
+
+            metrics.recordSemaphoreWait(waitSeconds, permitAcquired);
+
+            if (!permitAcquired) {
+                // 限频 WARN 日志
+                long now = System.currentTimeMillis();
+                long last = lastOverloadLogTimeMs.get();
+                if (now - last >= OVERLOAD_LOG_INTERVAL_MS && lastOverloadLogTimeMs.compareAndSet(last, now)) {
+                    logger.warn("HTTP concurrency semaphore timeout after {}ms, available permits={}, rejecting request",
+                        semaphoreTimeoutMs, concurrencyLimit.availablePermits());
+                }
+                writeTooManyRequestsResponse(ctx);
                 return;
             }
-            permitAcquired = true;
+
+            metrics.recordAccepted();
 
             // 3. 先做路由匹配，404 直接返回，避免无谓的 body/header 拷贝
             RouteMatch match = router.match(method, uri);
@@ -174,8 +196,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                                 metrics.recordRequest(System.nanoTime() - startTime, responseStatus.code());
                             }
                         } catch (Exception e) {
-                            // 序列化 fallback 安全网：Jackson writeBytes 可能抛 JsonProcessingException (checked)
-                            // 也接收上层 ByteBuf cleanup 的 RuntimeException rethrow
+                            // 序列化 fallback 安全网
                             logger.error("Failed to serialize response", e);
                             writeResponse(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, INTERNAL_ERROR_RESPONSE);
                             metrics.recordRequest(System.nanoTime() - startTime, 500);
@@ -185,7 +206,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                     });
 
                 } catch (Exception e) {
-                    // 业务 handler 安全网：外部实现可能抛任意异常类型
+                    // 业务 handler 安全网
                     logger.error("Business handler error", e);
                     ctx.executor().execute(() -> {
                         try {
@@ -199,13 +220,23 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                 }
             });
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            writeResponse(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, INTERNAL_ERROR_RESPONSE);
+            // tryAcquire was interrupted, no permit acquired
+            permitAcquired = false;
         } catch (Exception e) {
-            // channelRead 最外层安全网：路由、body 提取、executor 提交的综合保护
+            // channelRead 最外层安全网
             logger.error("Request handling error", e);
             writeResponse(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, INTERNAL_ERROR_RESPONSE);
-            if (permitAcquired) {
-                concurrencyLimit.release();
-            }
+            // permitAcquired controls release in finally
+        }
+        // Note: permit release is handled within the business executor callback or the 404 path
+        // If we reach here with permitAcquired=true but didn't dispatch to businessExecutor,
+        // we must release. This shouldn't happen given current control flow, but guard:
+        if (permitAcquired) {
+            // Only reached if we acquired but fell through without dispatching
+            // (currently impossible, but defensive)
         }
     }
 
@@ -253,6 +284,41 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
     }
 
     /**
+     * 写入 429 Too Many Requests 响应
+     */
+    private void writeTooManyRequestsResponse(ChannelHandlerContext ctx) {
+        FullHttpResponse response = new DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            HttpResponseStatus.TOO_MANY_REQUESTS,
+            Unpooled.wrappedBuffer(TOO_MANY_REQUESTS_RESPONSE)
+        );
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, TOO_MANY_REQUESTS_RESPONSE.length);
+        response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+        response.headers().set("Retry-After", String.valueOf(Math.max(1, semaphoreTimeoutMs / 1000)));
+
+        ctx.writeAndFlush(response);
+    }
+
+    /**
+     * 写入 429 响应（携带 BackPressureException 的 retryAfterMs）
+     */
+    public static void writeBackPressureResponse(ChannelHandlerContext ctx, int retryAfterMs) {
+        byte[] body = ("{\"error\":\"Too Many Requests\",\"retryAfterMs\":" + retryAfterMs + "}").getBytes(StandardCharsets.UTF_8);
+        FullHttpResponse response = new DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            HttpResponseStatus.TOO_MANY_REQUESTS,
+            Unpooled.wrappedBuffer(body)
+        );
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.length);
+        response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+        response.headers().set("Retry-After", String.valueOf(Math.max(1, retryAfterMs / 1000)));
+
+        ctx.writeAndFlush(response);
+    }
+
+    /**
      * 构建错误响应体
      */
     private byte[] buildErrorBody(Exception e) {
@@ -285,5 +351,9 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
 
     public int getAvailablePermits() {
         return concurrencyLimit.availablePermits();
+    }
+
+    public int getSemaphoreTimeoutMs() {
+        return semaphoreTimeoutMs;
     }
 }

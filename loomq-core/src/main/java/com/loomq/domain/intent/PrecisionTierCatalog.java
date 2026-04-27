@@ -69,6 +69,10 @@ public final class PrecisionTierCatalog {
         return profile(tier).consumerCount();
     }
 
+    public int dispatchQueueCapacity(PrecisionTier tier) {
+        return profile(tier).dispatchQueueCapacity();
+    }
+
     public boolean isBatchEnabled(PrecisionTier tier) {
         return profile(tier).isBatchEnabled();
     }
@@ -94,8 +98,8 @@ public final class PrecisionTierCatalog {
 
     private static PrecisionTierCatalog createDefault() {
         EnumMap<PrecisionTier, PrecisionTierProfile> profiles = new EnumMap<>(PrecisionTier.class);
-        profiles.put(PrecisionTier.ULTRA, new PrecisionTierProfile(10, 50, 1, 0, 8));
-        profiles.put(PrecisionTier.FAST, new PrecisionTierProfile(50, 50, 1, 0, 6));
+        profiles.put(PrecisionTier.ULTRA, new PrecisionTierProfile(10, 200, 1, 5, 16));
+        profiles.put(PrecisionTier.FAST, new PrecisionTierProfile(50, 150, 1, 10, 12));
         profiles.put(PrecisionTier.HIGH, new PrecisionTierProfile(100, 50, 5, 50, 4));
         profiles.put(PrecisionTier.STANDARD, new PrecisionTierProfile(500, 50, 20, 100, 3));
         profiles.put(PrecisionTier.ECONOMY, new PrecisionTierProfile(1000, 50, 25, 300, 2));

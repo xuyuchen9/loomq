@@ -8,6 +8,7 @@ import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
 import io.netty.handler.codec.http.HttpMethod;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -23,6 +24,7 @@ import java.util.Properties;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag("integration")
 class NettyServerSmokeTest {
 
     @Test

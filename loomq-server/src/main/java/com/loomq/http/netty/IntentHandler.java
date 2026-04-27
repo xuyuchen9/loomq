@@ -8,6 +8,7 @@ import com.loomq.api.IntentResponse;
 import com.loomq.api.IntentValidator;
 import com.loomq.api.PatchIntentRequest;
 import com.loomq.api.ValidationResult;
+import com.loomq.common.exception.BackPressureException;
 import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
@@ -24,6 +25,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletionException;
 
 /**
  * Intent API handler for the Netty stack.
@@ -114,7 +116,18 @@ public class IntentHandler {
         intent.setTags(request.tags());
 
         AckMode ackMode = toAckMode(intent.getAckLevel());
-        engine.createIntent(intent, ackMode).join();
+        try {
+            engine.createIntent(intent, ackMode).join();
+        } catch (CompletionException e) {
+            if (e.getCause() instanceof BackPressureException bpe) {
+                return new HttpErrorResponse(429, ErrorResponse.of(
+                    "42900",
+                    "Backpressure: " + bpe.getMessage(),
+                    Map.of("retryAfterMs", (Object) bpe.getRetryAfterMs())
+                ));
+            }
+            throw e;
+        }
 
         logger.info("Intent created: id={}, executeAt={}, ackLevel={}",
             intent.getIntentId(), intent.getExecuteAt(), intent.getAckLevel());

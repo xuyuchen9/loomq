@@ -120,7 +120,7 @@ public class LoomqServerApplication {
     private static void logRuntimeConfiguration(LoomqConfig config, String nodeId, String dataDir, WalConfig walConfig) {
         ServerConfig serverConfig = config.getServerConfig();
         logger.info(
-            "Runtime config: nodeId={}, dataDir={}, server={}:{} backlog={} virtualThreads={} maxRequestSize={} threadPoolSize={}, netty={}:{} epoll={} pooledAllocator={} maxConnections={} maxConcurrentRequests={}, walDir={}, walEngine={}, walFlushStrategy={}, walFlushThresholdKb={}, walStripeCount={}, schedulerMaxPendingIntents={}, recoveryBatchSize={}, retryInitialDelayMs={}, retryMaxDelayMs={}",
+            "Runtime config: nodeId={}, dataDir={}, server={}:{} backlog={} virtualThreads={} maxRequestSize={} threadPoolSize={}, netty={}:{} epoll={} pooledAllocator={} maxConnections={} maxConcurrentRequests={} httpSemaphoreTimeoutMs={}, walDir={}, walEngine={}, walFlushStrategy={}, walFlushThresholdKb={}, walStripeCount={}, schedulerMaxPendingIntents={}, recoveryBatchSize={}, retryInitialDelayMs={}, retryMaxDelayMs={}",
             nodeId,
             dataDir,
             serverConfig.host(),
@@ -135,6 +135,7 @@ public class LoomqServerApplication {
             serverConfig.pooledAllocator(),
             serverConfig.maxConnections(),
             serverConfig.maxConcurrentBusinessRequests(),
+            serverConfig.httpSemaphoreTimeoutMs(),
             walConfig.dataDir(),
             walConfig.engine(),
             walConfig.flushStrategy(),

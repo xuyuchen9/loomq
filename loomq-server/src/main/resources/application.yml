@@ -31,7 +31,8 @@ netty:
   maxConnections: 10000
   writeBufferHighWaterMark: 1048576
   writeBufferLowWaterMark: 524288
-  maxConcurrentBusinessRequests: 50000
+  maxConcurrentBusinessRequests: 2000
+  httpSemaphoreTimeoutMs: 500
   gracefulShutdownTimeoutMs: 30000
 
 # -----------------------------------------------------

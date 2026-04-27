@@ -27,6 +27,7 @@ public record ServerConfig(
         int writeBufferHighWaterMark,
         int writeBufferLowWaterMark,
         int maxConcurrentBusinessRequests,
+        int httpSemaphoreTimeoutMs,
         long gracefulShutdownTimeoutMs
 ) {
 
@@ -51,6 +52,7 @@ public record ServerConfig(
             throw new IllegalArgumentException("writeBufferLowWaterMark must be <= writeBufferHighWaterMark");
         }
         requirePositive(maxConcurrentBusinessRequests, "maxConcurrentBusinessRequests");
+        requirePositive(httpSemaphoreTimeoutMs, "httpSemaphoreTimeoutMs");
         requirePositive(gracefulShutdownTimeoutMs, "gracefulShutdownTimeoutMs");
     }
 
@@ -81,7 +83,8 @@ public record ServerConfig(
                 ConfigSupport.intValue(source, 10000, "netty.maxConnections", "netty.max_connections", "maxConnections"),
                 ConfigSupport.intValue(source, 1048576, "netty.writeBufferHighWaterMark", "netty.write_buffer_high_water_mark", "writeBufferHighWaterMark"),
                 ConfigSupport.intValue(source, 524288, "netty.writeBufferLowWaterMark", "netty.write_buffer_low_water_mark", "writeBufferLowWaterMark"),
-                ConfigSupport.intValue(source, 50000, "netty.maxConcurrentBusinessRequests", "netty.max_concurrent_business_requests", "maxConcurrentBusinessRequests"),
+                ConfigSupport.intValue(source, 2000, "netty.maxConcurrentBusinessRequests", "netty.max_concurrent_business_requests", "maxConcurrentBusinessRequests"),
+                ConfigSupport.intValue(source, 500, "netty.httpSemaphoreTimeoutMs", "netty.http_semaphore_timeout_ms", "httpSemaphoreTimeoutMs"),
                 ConfigSupport.longValue(source, 30000, "netty.gracefulShutdownTimeoutMs", "netty.graceful_shutdown_timeout_ms", "gracefulShutdownTimeoutMs")
         );
     }

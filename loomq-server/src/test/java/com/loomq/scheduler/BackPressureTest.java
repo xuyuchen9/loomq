@@ -9,6 +9,7 @@ import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.store.IntentStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * @author loomq
  * @since v0.6.2
  */
+@Tag("slow")
 class BackPressureTest {
 
     private PrecisionScheduler scheduler;
@@ -58,8 +60,8 @@ class BackPressureTest {
      */
     @Test
     void testTierConcurrencyConfig() {
-        assertEquals(50, PrecisionTier.ULTRA.getMaxConcurrency(), "ULTRA should have 50 max concurrency");
-        assertEquals(50, PrecisionTier.FAST.getMaxConcurrency(), "FAST should have 50 max concurrency");
+        assertEquals(200, PrecisionTier.ULTRA.getMaxConcurrency(), "ULTRA should have 200 max concurrency");
+        assertEquals(150, PrecisionTier.FAST.getMaxConcurrency(), "FAST should have 150 max concurrency");
         assertEquals(50, PrecisionTier.HIGH.getMaxConcurrency(), "HIGH should have 50 max concurrency");
         assertEquals(50, PrecisionTier.STANDARD.getMaxConcurrency(), "STANDARD should have 50 max concurrency");
         assertEquals(50, PrecisionTier.ECONOMY.getMaxConcurrency(), "ECONOMY should have 50 max concurrency");
@@ -164,8 +166,8 @@ class BackPressureTest {
      */
     @Test
     void testConsumerCountConfig() {
-        assertEquals(8, PrecisionTier.ULTRA.getConsumerCount(), "ULTRA should have 8 consumers");
-        assertEquals(6, PrecisionTier.FAST.getConsumerCount(), "FAST should have 6 consumers");
+        assertEquals(16, PrecisionTier.ULTRA.getConsumerCount(), "ULTRA should have 16 consumers");
+        assertEquals(12, PrecisionTier.FAST.getConsumerCount(), "FAST should have 12 consumers");
         assertEquals(4, PrecisionTier.HIGH.getConsumerCount(), "HIGH should have 4 consumers");
         assertEquals(3, PrecisionTier.STANDARD.getConsumerCount(), "STANDARD should have 3 consumers");
         assertEquals(2, PrecisionTier.ECONOMY.getConsumerCount(), "ECONOMY should have 2 consumers");
@@ -176,8 +178,8 @@ class BackPressureTest {
      */
     @Test
     void testBatchWindowConfig() {
-        assertEquals(0, PrecisionTier.ULTRA.getBatchWindowMs(), "ULTRA should have 0 batch window");
-        assertEquals(0, PrecisionTier.FAST.getBatchWindowMs(), "FAST should have 0 batch window");
+        assertEquals(5, PrecisionTier.ULTRA.getBatchWindowMs(), "ULTRA should have 5ms batch window (defensive default)");
+        assertEquals(10, PrecisionTier.FAST.getBatchWindowMs(), "FAST should have 10ms batch window (defensive default)");
         assertEquals(50, PrecisionTier.HIGH.getBatchWindowMs(), "HIGH batch window should be 50ms");
         assertEquals(100, PrecisionTier.STANDARD.getBatchWindowMs(), "STANDARD batch window should be 100ms");
         assertEquals(300, PrecisionTier.ECONOMY.getBatchWindowMs(), "ECONOMY batch window should be 300ms");

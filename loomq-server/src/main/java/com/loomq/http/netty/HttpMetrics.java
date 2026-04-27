@@ -48,6 +48,31 @@ public class HttpMetrics {
         .help("Total connection errors")
         .register();
 
+    // 信号量可用许可数
+    private final Gauge semaphoreAvailablePermits = Gauge.build()
+        .name("loomq_http_semaphore_available_permits")
+        .help("Available permits in the HTTP concurrency semaphore")
+        .register();
+
+    // 信号量等待耗时（含被拒绝样本）
+    private final Histogram semaphoreWaitDuration = Histogram.build()
+        .name("loomq_http_semaphore_wait_seconds")
+        .help("Time spent waiting to acquire the HTTP concurrency semaphore")
+        .buckets(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
+        .register();
+
+    // 因排队超时被拒绝的请求数
+    private final Counter rejectedTimeoutTotal = Counter.build()
+        .name("loomq_http_rejected_timeout_total")
+        .help("Total requests rejected due to semaphore wait timeout")
+        .register();
+
+    // 成功获取信号量并进入处理的请求数
+    private final Counter acceptedTotal = Counter.build()
+        .name("loomq_http_accepted_total")
+        .help("Total requests accepted after acquiring semaphore permit")
+        .register();
+
     private HttpMetrics() {}
 
     public static HttpMetrics getInstance() {
@@ -79,6 +104,21 @@ public class HttpMetrics {
         connectionErrorsTotal.inc();
     }
 
+    public void recordSemaphoreWait(double waitSeconds, boolean acquired) {
+        semaphoreWaitDuration.observe(waitSeconds);
+        if (!acquired) {
+            rejectedTimeoutTotal.inc();
+        }
+    }
+
+    public void recordAccepted() {
+        acceptedTotal.inc();
+    }
+
+    public void setSemaphoreAvailablePermits(int permits) {
+        semaphoreAvailablePermits.set(permits);
+    }
+
     // Getters for Prometheus scraping
     public Counter getRequestsTotal() {
         return requestsTotal;
@@ -102,5 +142,21 @@ public class HttpMetrics {
 
     public Counter getConnectionErrorsTotal() {
         return connectionErrorsTotal;
+    }
+
+    public Gauge getSemaphoreAvailablePermits() {
+        return semaphoreAvailablePermits;
+    }
+
+    public Histogram getSemaphoreWaitDuration() {
+        return semaphoreWaitDuration;
+    }
+
+    public Counter getRejectedTimeoutTotal() {
+        return rejectedTimeoutTotal;
+    }
+
+    public Counter getAcceptedTotal() {
+        return acceptedTotal;
     }
 }

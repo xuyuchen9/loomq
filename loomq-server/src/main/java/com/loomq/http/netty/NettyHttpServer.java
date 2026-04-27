@@ -86,6 +86,7 @@ public class NettyHttpServer {
         requestHandler = new NettyRequestHandler(
             router,
             config.maxConcurrentBusinessRequests(),
+            config.httpSemaphoreTimeoutMs(),
             HttpMetrics.getInstance()
         );
 

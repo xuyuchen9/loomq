@@ -3,6 +3,7 @@ package com.loomq;
 import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -13,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag("integration")
 class LoomqEngineRecoveryTest {
 
     @TempDir

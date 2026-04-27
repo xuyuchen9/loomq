@@ -11,7 +11,8 @@ public record PrecisionTierProfile(
     int maxConcurrency,
     int batchSize,
     int batchWindowMs,
-    int consumerCount
+    int consumerCount,
+    int dispatchQueueCapacity
 ) {
     public PrecisionTierProfile {
         if (precisionWindowMs <= 0) {
@@ -29,6 +30,17 @@ public record PrecisionTierProfile(
         if (consumerCount <= 0) {
             throw new IllegalArgumentException("consumerCount must be positive");
         }
+        if (dispatchQueueCapacity <= 0) {
+            throw new IllegalArgumentException("dispatchQueueCapacity must be positive");
+        }
+    }
+
+    /**
+     * 5-argument convenience constructor using default dispatchQueueCapacity = maxConcurrency * 16.
+     */
+    public PrecisionTierProfile(long precisionWindowMs, int maxConcurrency, int batchSize,
+                                int batchWindowMs, int consumerCount) {
+        this(precisionWindowMs, maxConcurrency, batchSize, batchWindowMs, consumerCount, maxConcurrency * 16);
     }
 
     public boolean isBatchEnabled() {

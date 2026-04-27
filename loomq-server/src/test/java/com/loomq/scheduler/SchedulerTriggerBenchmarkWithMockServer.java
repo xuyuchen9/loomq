@@ -94,6 +94,7 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         intentStore = new IntentStore();
         deliveryClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
+            .version(HttpClient.Version.HTTP_1_1)
             .build();
         DeliveryHandler deliveryHandler = createBenchmarkDeliveryHandler();
         scheduler = new PrecisionScheduler(intentStore, deliveryHandler, new DefaultRedeliveryDecider());

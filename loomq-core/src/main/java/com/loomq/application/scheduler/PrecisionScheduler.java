@@ -8,7 +8,6 @@ import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.spi.DefaultRedeliveryDecider;
-import com.loomq.spi.DeliveryContext;
 import com.loomq.spi.RedeliveryDecider;
 import com.loomq.store.IntentStore;
 import org.slf4j.Logger;
@@ -16,22 +15,20 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * 精度调度器。
@@ -45,6 +42,8 @@ public class PrecisionScheduler {
 
     private static final Logger logger = LoggerFactory.getLogger(PrecisionScheduler.class);
 
+    private static final long BACKPRESSURE_LOG_INTERVAL_MS = 1000;
+
     private final IntentStore intentStore;
     private final PrecisionTierCatalog precisionTierCatalog;
     private final BucketGroupManager bucketGroupManager;
@@ -57,12 +56,21 @@ public class PrecisionScheduler {
     // 档位级并发控制（信号量）
     private final Map<PrecisionTier, Semaphore> tierSemaphores;
 
-    // 档位级批量队列（使用LinkedBlockingDeque支持队首插入和阻塞操作）
-    private final Map<PrecisionTier, LinkedBlockingDeque<Intent>> tierDispatchQueues;
+    // 档位级无锁队列（fire-and-forget 模式下 semaphore 硬限并发，队列自然受控）
+    private final Map<PrecisionTier, ConcurrentLinkedDeque<Intent>> tierDispatchQueues;
 
     // 按精度档位的扫描调度器
     private final Map<PrecisionTier, ScheduledExecutorService> scanSchedulers;
     private final Map<PrecisionTier, ScheduledFuture<?>> scanFutures;
+
+    // due→dispatch lag 追踪（key=intentId, value=enqueueTimeNanos）
+    private final ConcurrentHashMap<String, Long> enqueueTimeNanos = new ConcurrentHashMap<>();
+
+    // 过期检查分频计数器
+    private final Map<PrecisionTier, AtomicLong> expiredCheckCounters;
+
+    // 限频日志时间戳
+    private final AtomicLong lastBackpressureLogTimeMs = new AtomicLong(0);
 
     private volatile boolean running = false;
     private volatile boolean paused = false;
@@ -142,10 +150,12 @@ public class PrecisionScheduler {
         // 初始化档位级信号量和队列
         this.tierSemaphores = new EnumMap<>(PrecisionTier.class);
         this.tierDispatchQueues = new EnumMap<>(PrecisionTier.class);
+        this.expiredCheckCounters = new EnumMap<>(PrecisionTier.class);
 
         for (PrecisionTier tier : this.precisionTierCatalog.supportedTiers()) {
             tierSemaphores.put(tier, new Semaphore(this.precisionTierCatalog.maxConcurrency(tier)));
-            tierDispatchQueues.put(tier, new LinkedBlockingDeque<>());
+            tierDispatchQueues.put(tier, new ConcurrentLinkedDeque<>());
+            expiredCheckCounters.put(tier, new AtomicLong(0));
         }
 
         if (this.deliveryHandler == null) {
@@ -233,6 +243,22 @@ public class PrecisionScheduler {
             scheduler.shutdown();
         }
         scanSchedulers.clear();
+
+        // 排空 in-flight dispatch: 获取全部 permit 证明所有投递已完成
+        for (Map.Entry<PrecisionTier, Semaphore> entry : tierSemaphores.entrySet()) {
+            PrecisionTier tier = entry.getKey();
+            Semaphore sem = entry.getValue();
+            int max = precisionTierCatalog.maxConcurrency(tier);
+            try {
+                if (!sem.tryAcquire(max, 5, TimeUnit.SECONDS)) {
+                    logger.warn("Tier {} has {} intents still in-flight after drain timeout",
+                        tier, max - sem.availablePermits());
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
 
         // 关闭共享虚拟线程池
         sharedExecutor.shutdown();
@@ -384,11 +410,25 @@ public class PrecisionScheduler {
                     // 记录唤醒延迟
                     recordWakeupLatency(intent, now);
 
-                    // 提交到档位队列
-                    LinkedBlockingDeque<Intent> queue = tierDispatchQueues.get(tier);
-                    if (!queue.offerLast(intent)) {
+                    // 追踪入队时间（用于 due→dispatch lag 计算）
+                    enqueueTimeNanos.put(intent.getIntentId(), System.nanoTime());
+
+                    // 提交到档位队列（有界，带短重试）
+                    ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
+                    boolean offered = false;
+                    int offerRetries = 0;
+                    while (!offered && offerRetries < 3) {
+                        offered = queue.offerLast(intent);
+                        if (!offered) {
+                            offerRetries++;
+                            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+                        }
+                    }
+                    if (!offered) {
+                        metrics.incrementDispatchQueueOfferFailed(tier);
                         metrics.incrementBackpressureEvent(tier);
-                        logger.warn("Backpressure triggered for tier {}: queue full", tier);
+                        logRateLimited("Backpressure: dispatch queue full for tier {}, dropping intent {} after retries",
+                            tier, intent.getIntentId());
                     }
                 }
             }
@@ -396,8 +436,14 @@ public class PrecisionScheduler {
             // 更新桶大小指标
             metrics.updateBucketSizeByTier(tier, group.getPendingCount());
 
-            // 检查过期任务
-            checkExpiredIntents(tier);
+            // 更新队列深度指标
+            ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
+            metrics.updateDispatchQueueSizeByTier(tier, queue.size());
+
+            // 检查过期任务（分频）
+            if (shouldCheckExpired(tier)) {
+                checkExpiredIntents(tier);
+            }
 
         } catch (Exception e) {
             // 扫描循环安全网：单个 tier 的异常不应杀死整个扫描线程
@@ -410,93 +456,84 @@ public class PrecisionScheduler {
     }
 
     /**
-     * 批量消费者循环
+     * 限频日志：每秒最多 1 条，避免 I/O 阻塞扫描线程
+     */
+    private void logRateLimited(String format, Object... args) {
+        long now = System.currentTimeMillis();
+        long last = lastBackpressureLogTimeMs.get();
+        if (now - last >= BACKPRESSURE_LOG_INTERVAL_MS && lastBackpressureLogTimeMs.compareAndSet(last, now)) {
+            logger.warn(format, args);
+        }
+    }
+
+    /**
+     * 判断当前 scan cycle 是否需要执行过期检查（分频策略）
+     *
+     * ULTRA/FAST: 每 cycle（延迟敏感）
+     * HIGH: 每 3 cycle（最大过期延迟 400ms）
+     * STANDARD: 每 5 cycle（最大过期延迟 3000ms）
+     * ECONOMY: 每 10 cycle（最大过期延迟 11000ms）
+     */
+    private boolean shouldCheckExpired(PrecisionTier tier) {
+        long count = expiredCheckCounters.get(tier).incrementAndGet();
+        int interval = switch (tier) {
+            case ULTRA, FAST -> 1;
+            case HIGH -> 3;
+            case STANDARD -> 5;
+            case ECONOMY -> 10;
+        };
+        return count % interval == 0;
+    }
+
+    /**
+     * 投递消费者循环 (fire-and-forget 模式)。
+     *
+     * Semaphore 是唯一的并发控制器。消费者先获取 permit，
+     * 然后从队列取 intent 异步投递，permit 在 HTTP 回调中释放。
+     * 吞吐上限 = maxConcurrency / avgDownstreamLatency。
      */
     private void runBatchConsumer(PrecisionTier tier) {
-        LinkedBlockingDeque<Intent> queue = tierDispatchQueues.get(tier);
+        ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
         Semaphore semaphore = tierSemaphores.get(tier);
-        int batchSize = precisionTierCatalog.batchSize(tier);
-        int batchWindowMs = precisionTierCatalog.batchWindowMs(tier);
 
         while (running) {
             try {
-                Intent first = queue.poll(batchWindowMs, TimeUnit.MILLISECONDS);
-                if (first == null) continue;
-
-                // 批量攒批
-                List<Intent> batch = new ArrayList<>(batchSize);
-                batch.add(first);
-                for (int i = 1; i < batchSize; i++) {
-                    Intent next = queue.pollFirst();
-                    if (next == null) break;
-                    batch.add(next);
-                }
-
-                // 申请信号量
-                int permitsToAcquire = batch.size();
-                boolean acquired = false;
-
-                while (permitsToAcquire > 0) {
-                    acquired = semaphore.tryAcquire(permitsToAcquire);
-                    if (acquired) break;
-                    permitsToAcquire--;
-                }
-
-                if (!acquired) {
-                    metrics.incrementBackpressureEvent(tier);
-                    logger.warn("Backpressure for tier {}: semaphore exhausted, batch {} intents dropped",
-                        tier, batch.size());
-                    Thread.sleep(100);
-                    continue;
-                }
-
-                // 退回多余任务
-                if (permitsToAcquire < batch.size()) {
-                    List<Intent> toDispatch = new ArrayList<>(batch.subList(0, permitsToAcquire));
-                    List<Intent> toReturn = batch.subList(permitsToAcquire, batch.size());
-
-                    for (int i = toReturn.size() - 1; i >= 0; i--) {
-                        Intent intent = toReturn.get(i);
-                        if (!queue.offerFirst(intent)) {
-                            logger.debug("Failed to put intent {} back to queue", intent.getIntentId());
-                        }
-                    }
-                    batch = toDispatch;
-                }
-
-                // 并行发送批次
-                final List<Intent> finalBatch = batch;
-
-                List<CompletableFuture<Void>> futures = finalBatch.stream()
-                    .map(intent -> CompletableFuture.runAsync(() -> {
-                        try {
-                            dispatchWithMetrics(intent, tier);
-                        } catch (Exception e) {
-                            // 单条 dispatch 失败不应影响同批次其他 intent
-                            logger.error("Dispatch failed for intent {}: {}",
-                                intent.getIntentId(), e.getMessage(), e);
-                        } finally {
-                            semaphore.release();
-                        }
-                    }, sharedExecutor))
-                    .toList();
-
-                // 等待整批完成
-                try {
-                    CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                        .orTimeout(30, TimeUnit.SECONDS)
-                        .join();
-                } catch (CompletionException | CancellationException e) {
-                    logger.warn("Batch dispatch timeout or error for tier {}: {}", tier, e.getMessage());
-                }
-
+                semaphore.acquire();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
-            } catch (Exception e) {
-                // 批量消费循环安全网：单次批次异常不应杀死消费者线程
-                logger.error("Error in batch consumer for tier {}", tier, e);
             }
+
+            Intent intent = queue.pollFirst();
+            if (intent == null) {
+                semaphore.release();
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+                continue;
+            }
+
+            recordDispatchQueueLag(intent, tier);
+
+            sharedExecutor.submit(() -> {
+                try {
+                    dispatchWithMetrics(intent, tier);
+                } catch (Exception e) {
+                    logger.error("Dispatch failed for intent {}: {}",
+                        intent.getIntentId(), e.getMessage(), e);
+                } finally {
+                    semaphore.release();
+                }
+            });
+        }
+    }
+
+    /**
+     * 记录 due→dispatch lag
+     */
+    private void recordDispatchQueueLag(Intent intent, PrecisionTier tier) {
+        Long enqueueNanos = enqueueTimeNanos.remove(intent.getIntentId());
+        if (enqueueNanos != null) {
+            long lagMs = (System.nanoTime() - enqueueNanos) / 1_000_000;
+            metrics.recordDispatchQueueLagByTier(tier, lagMs);
         }
     }
 
@@ -510,22 +547,31 @@ public class PrecisionScheduler {
     }
 
     /**
-     * 检查过期任务
+     * 检查过期任务。
+     *
+     * 扫描所有非终态且已过期的 intent（包括未入队的 SCHEDULED），
+     * 适配轻量级 dispatch() 中中间态不持久化的设计。
      */
     private void checkExpiredIntents(PrecisionTier tier) {
         for (Intent intent : intentStore.getAllIntents().values()) {
             if (intent.getPrecisionTier() != tier) continue;
+            if (!intent.isExpired()) continue;
+            if (intent.getStatus().isTerminal()) continue;
 
-            if ((intent.getStatus() == IntentStatus.DUE ||
-                 intent.getStatus() == IntentStatus.DELIVERED) &&
-                intent.isExpired()) {
+            if (intent.getStatus() == IntentStatus.DUE ||
+                intent.getStatus() == IntentStatus.DELIVERED ||
+                intent.getStatus() == IntentStatus.SCHEDULED ||
+                intent.getStatus() == IntentStatus.DISPATCHING) {
                 handleExpired(intent);
             }
         }
     }
 
     /**
-     * 投递 Intent
+     * 投递 Intent (轻量级内存状态流 + 终态单次持久化)。
+     *
+     * 中间态 (DUE→DISPATCHING→DELIVERED) 仅在内存中流过，
+     * 只在终态做一次 intentStore.update()，消除双重 CHM.compute 开销。
      */
     private void dispatch(Intent intent) {
         if (deliveryHandler == null) {
@@ -537,27 +583,34 @@ public class PrecisionScheduler {
         int attempt = intent.getAttempts() + 1;
 
         try {
+            // 内存中状态转换（不持久化 — 终态才做一次 upsert）
             intent.transitionTo(IntentStatus.DUE);
             intent.transitionTo(IntentStatus.DISPATCHING);
             intent.incrementAttempts();
             intent.setLastDeliveryId(deliveryId);
-            intentStore.update(intent);
 
-            // 使用 SPI 接口投递
             DeliveryResult result = deliveryHandler.deliver(intent);
 
             switch (result) {
                 case SUCCESS:
                     intent.transitionTo(IntentStatus.DELIVERED);
-                    intentStore.update(intent);
                     intent.transitionTo(IntentStatus.ACKED);
                     intentStore.update(intent);
                     logger.debug("Intent {} delivered successfully", intent.getIntentId());
                     break;
 
-                case RETRY:
-                    scheduleRedelivery(intent);
+                case RETRY: {
+                    long delayMs = intent.getRedelivery() != null
+                        ? intent.getRedelivery().calculateDelay(intent.getAttempts())
+                        : 5000;
+                    logger.info("Scheduling redelivery for intent={}, attempt={}, delay={}ms",
+                        intent.getIntentId(), intent.getAttempts(), delayMs);
+                    intent.setExecuteAt(Instant.now().plusMillis(delayMs));
+                    intent.transitionTo(IntentStatus.SCHEDULED);
+                    intentStore.update(intent);
+                    schedule(intent);
                     break;
+                }
 
                 case DEAD_LETTER:
                     intent.transitionTo(IntentStatus.DEAD_LETTERED);
@@ -588,24 +641,6 @@ public class PrecisionScheduler {
         long durationMs = (System.nanoTime() - startTime) / 1_000_000;
         metrics.recordWebhookLatency(durationMs);
         metrics.incrementIntentByTier(tier);
-    }
-
-    /**
-     * 调度重投
-     */
-    private void scheduleRedelivery(Intent intent) {
-        long delayMs = intent.getRedelivery() != null
-            ? intent.getRedelivery().calculateDelay(intent.getAttempts())
-            : 5000;
-
-        logger.info("Scheduling redelivery for intent={}, attempt={}, delay={}ms",
-            intent.getIntentId(), intent.getAttempts(), delayMs);
-
-        intent.setExecuteAt(Instant.now().plusMillis(delayMs));
-        intent.transitionTo(IntentStatus.SCHEDULED);
-        intentStore.update(intent);
-
-        schedule(intent);
     }
 
     /**
@@ -654,7 +689,7 @@ public class PrecisionScheduler {
      */
     public boolean isTierUnderBackpressure(PrecisionTier tier) {
         Semaphore semaphore = tierSemaphores.get(tier);
-        LinkedBlockingDeque<Intent> queue = tierDispatchQueues.get(tier);
+        ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
 
         boolean semaphoreExhausted = semaphore.availablePermits() == 0;
         boolean queueBackedUp = queue.size() >= precisionTierCatalog.maxConcurrency(tier) * 2;
@@ -670,7 +705,7 @@ public class PrecisionScheduler {
 
         for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
             Semaphore semaphore = tierSemaphores.get(tier);
-            LinkedBlockingDeque<Intent> queue = tierDispatchQueues.get(tier);
+            ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
 
             int availablePermits = semaphore.availablePermits();
             int queueSize = queue.size();

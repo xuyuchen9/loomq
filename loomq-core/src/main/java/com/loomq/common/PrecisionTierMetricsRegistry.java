@@ -26,6 +26,18 @@ final class PrecisionTierMetricsRegistry {
     private final Map<PrecisionTier, ConcurrentHashMap<Integer, AtomicLong>> wakeupLatencyByTier = new EnumMap<>(PrecisionTier.class);
     private final Map<PrecisionTier, AtomicLong> wakeupLatencySampleCountByTier = new EnumMap<>(PrecisionTier.class);
 
+    // 三级漏斗：offer_failed → backpressure_events → abandoned
+    private final Map<PrecisionTier, AtomicLong> dispatchQueueOfferFailedByTier = new EnumMap<>(PrecisionTier.class);
+    private final Map<PrecisionTier, AtomicLong> dispatchQueueRetryByTier = new EnumMap<>(PrecisionTier.class);
+    private final Map<PrecisionTier, AtomicLong> dispatchQueueAbandonedByTier = new EnumMap<>(PrecisionTier.class);
+
+    // 队列深度 gauge
+    private final Map<PrecisionTier, AtomicLong> dispatchQueueSizeByTier = new EnumMap<>(PrecisionTier.class);
+
+    // due→dispatch lag histogram
+    private final Map<PrecisionTier, ConcurrentHashMap<Integer, AtomicLong>> dispatchQueueLagByTier = new EnumMap<>(PrecisionTier.class);
+    private final Map<PrecisionTier, AtomicLong> dispatchQueueLagSampleCountByTier = new EnumMap<>(PrecisionTier.class);
+
     PrecisionTierMetricsRegistry(PrecisionTierCatalog precisionTierCatalog) {
         this.precisionTierCatalog = precisionTierCatalog;
 
@@ -38,9 +50,21 @@ final class PrecisionTierMetricsRegistry {
             wakeupLatencyByTier.put(tier, new ConcurrentHashMap<>());
             wakeupLatencySampleCountByTier.put(tier, new AtomicLong(0));
 
-            ConcurrentHashMap<Integer, AtomicLong> tierBuckets = wakeupLatencyByTier.get(tier);
+            dispatchQueueOfferFailedByTier.put(tier, new AtomicLong(0));
+            dispatchQueueRetryByTier.put(tier, new AtomicLong(0));
+            dispatchQueueAbandonedByTier.put(tier, new AtomicLong(0));
+            dispatchQueueSizeByTier.put(tier, new AtomicLong(0));
+            dispatchQueueLagByTier.put(tier, new ConcurrentHashMap<>());
+            dispatchQueueLagSampleCountByTier.put(tier, new AtomicLong(0));
+
+            ConcurrentHashMap<Integer, AtomicLong> wakeupBuckets = wakeupLatencyByTier.get(tier);
             for (int i = 0; i < LATENCY_BOUNDS.length; i++) {
-                tierBuckets.put(i, new AtomicLong(0));
+                wakeupBuckets.put(i, new AtomicLong(0));
+            }
+
+            ConcurrentHashMap<Integer, AtomicLong> lagBuckets = dispatchQueueLagByTier.get(tier);
+            for (int i = 0; i < LATENCY_BOUNDS.length; i++) {
+                lagBuckets.put(i, new AtomicLong(0));
             }
         }
     }
@@ -76,6 +100,29 @@ final class PrecisionTierMetricsRegistry {
         resolveCounter(backpressureEventsByTier, tier).incrementAndGet();
     }
 
+    void incrementDispatchQueueOfferFailed(PrecisionTier tier) {
+        resolveCounter(dispatchQueueOfferFailedByTier, tier).incrementAndGet();
+    }
+
+    void incrementDispatchQueueRetry(PrecisionTier tier) {
+        resolveCounter(dispatchQueueRetryByTier, tier).incrementAndGet();
+    }
+
+    void incrementDispatchQueueAbandoned(PrecisionTier tier) {
+        resolveCounter(dispatchQueueAbandonedByTier, tier).incrementAndGet();
+    }
+
+    void updateDispatchQueueSizeByTier(PrecisionTier tier, long size) {
+        resolveCounter(dispatchQueueSizeByTier, tier).set(size);
+    }
+
+    void recordDispatchQueueLagByTier(PrecisionTier tier, long lagMs) {
+        PrecisionTier resolvedTier = resolveTier(tier);
+        dispatchQueueLagSampleCountByTier.get(resolvedTier).incrementAndGet();
+        int bucketIndex = findBucket(lagMs);
+        dispatchQueueLagByTier.get(resolvedTier).get(bucketIndex).incrementAndGet();
+    }
+
     Map<PrecisionTier, Long> getBackpressureEventsByTier() {
         Map<PrecisionTier, Long> result = new EnumMap<>(PrecisionTier.class);
         backpressureEventsByTier.forEach((tier, count) -> result.put(tier, count.get()));
@@ -101,6 +148,13 @@ final class PrecisionTierMetricsRegistry {
         ConcurrentHashMap<Integer, AtomicLong> buckets = wakeupLatencyByTier.get(resolvedTier);
         long totalSamples = wakeupLatencySampleCountByTier.get(resolvedTier).get();
         return calculatePercentile(buckets, totalSamples, 0.999);
+    }
+
+    private long calculateP95DispatchQueueLagByTier(PrecisionTier tier) {
+        PrecisionTier resolvedTier = resolveTier(tier);
+        ConcurrentHashMap<Integer, AtomicLong> buckets = dispatchQueueLagByTier.get(resolvedTier);
+        long totalSamples = dispatchQueueLagSampleCountByTier.get(resolvedTier).get();
+        return calculateP95(buckets, totalSamples);
     }
 
     Map<PrecisionTier, Long> getIntentCountsByTier() {
@@ -178,6 +232,75 @@ final class PrecisionTierMetricsRegistry {
               .append(tier.name().toLowerCase())
               .append("\"} ")
               .append(calculateP999WakeupLatencyByTier(tier))
+              .append("\n");
+        }
+        sb.append("\n");
+
+        // 三级漏斗：backpressure 指标
+        sb.append("# HELP loomq_dispatch_queue_offer_failed_total Dispatch queue offer failures (queue full) by precision tier\n");
+        sb.append("# TYPE loomq_dispatch_queue_offer_failed_total counter\n");
+        for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
+            sb.append("loomq_dispatch_queue_offer_failed_total{precision_tier=\"")
+              .append(tier.name().toLowerCase())
+              .append("\"} ")
+              .append(resolveCounter(dispatchQueueOfferFailedByTier, tier).get())
+              .append("\n");
+        }
+        sb.append("\n");
+
+        sb.append("# HELP loomq_backpressure_events_total Backpressure events by precision tier\n");
+        sb.append("# TYPE loomq_backpressure_events_total counter\n");
+        for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
+            sb.append("loomq_backpressure_events_total{precision_tier=\"")
+              .append(tier.name().toLowerCase())
+              .append("\"} ")
+              .append(resolveCounter(backpressureEventsByTier, tier).get())
+              .append("\n");
+        }
+        sb.append("\n");
+
+        sb.append("# HELP loomq_dispatch_queue_retry_total Semaphore acquisition retries by precision tier\n");
+        sb.append("# TYPE loomq_dispatch_queue_retry_total counter\n");
+        for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
+            sb.append("loomq_dispatch_queue_retry_total{precision_tier=\"")
+              .append(tier.name().toLowerCase())
+              .append("\"} ")
+              .append(resolveCounter(dispatchQueueRetryByTier, tier).get())
+              .append("\n");
+        }
+        sb.append("\n");
+
+        sb.append("# HELP loomq_dispatch_queue_abandoned_total Batches abandoned after max retries by precision tier\n");
+        sb.append("# TYPE loomq_dispatch_queue_abandoned_total counter\n");
+        for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
+            sb.append("loomq_dispatch_queue_abandoned_total{precision_tier=\"")
+              .append(tier.name().toLowerCase())
+              .append("\"} ")
+              .append(resolveCounter(dispatchQueueAbandonedByTier, tier).get())
+              .append("\n");
+        }
+        sb.append("\n");
+
+        // dispatch 队列深度
+        sb.append("# HELP loomq_dispatch_queue_size Current dispatch queue size by precision tier\n");
+        sb.append("# TYPE loomq_dispatch_queue_size gauge\n");
+        for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
+            sb.append("loomq_dispatch_queue_size{precision_tier=\"")
+              .append(tier.name().toLowerCase())
+              .append("\"} ")
+              .append(resolveCounter(dispatchQueueSizeByTier, tier).get())
+              .append("\n");
+        }
+        sb.append("\n");
+
+        // due→dispatch lag
+        sb.append("# HELP loomq_dispatch_queue_lag_ms_p95 P95 due-to-dispatch queue lag by precision tier\n");
+        sb.append("# TYPE loomq_dispatch_queue_lag_ms_p95 gauge\n");
+        for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
+            sb.append("loomq_dispatch_queue_lag_ms_p95{precision_tier=\"")
+              .append(tier.name().toLowerCase())
+              .append("\"} ")
+              .append(calculateP95DispatchQueueLagByTier(tier))
               .append("\n");
         }
         sb.append("\n");

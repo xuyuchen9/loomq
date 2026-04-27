@@ -35,6 +35,7 @@ public class HttpDeliveryHandler implements DeliveryHandler {
     public HttpDeliveryHandler() {
         this.httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
+            .version(HttpClient.Version.HTTP_1_1)
             .build();
 
         ServiceLoader<RedeliveryDecider> loader = ServiceLoader.load(RedeliveryDecider.class);

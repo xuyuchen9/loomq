@@ -9,6 +9,7 @@ import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.store.IntentStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * @author loomq
  * @since v0.6.2
  */
+@Tag("benchmark")
 class SchedulerTriggerBenchmark {
 
     private static final Logger logger = LoggerFactory.getLogger(SchedulerTriggerBenchmark.class);
