@@ -7,6 +7,7 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.replication.AckLevel;
+import com.loomq.spi.DeliveryHandler;
 import com.loomq.store.IntentStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,7 +74,9 @@ public class EmbeddedDemo {
         logger.info("[1/3] IntentStore initialized");
 
         // 2. 创建调度器
-        scheduler = new PrecisionScheduler(intentStore);
+        scheduler = new PrecisionScheduler(intentStore,
+            intent -> CompletableFuture.completedFuture(DeliveryHandler.DeliveryResult.DEAD_LETTER),
+            null);
         scheduler.start();
         logger.info("[2/3] PrecisionScheduler started with {} tiers", PrecisionTier.values().length);
 

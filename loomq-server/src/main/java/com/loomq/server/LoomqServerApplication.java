@@ -2,7 +2,7 @@ package com.loomq.server;
 
 import com.loomq.LoomqEngine;
 import com.loomq.callback.HttpCallbackHandler;
-import com.loomq.callback.HttpDeliveryHandler;
+import com.loomq.callback.NettyHttpDeliveryHandler;
 import com.loomq.config.LoomqConfig;
 import com.loomq.config.WalConfig;
 import com.loomq.config.ServerConfig;
@@ -52,7 +52,7 @@ public class LoomqServerApplication {
             .walDir(Path.of(dataDir))
             .walConfig(walConfig)
             .callbackHandler(callbackHandler)
-            .deliveryHandler(new HttpDeliveryHandler())
+            .deliveryHandler(new NettyHttpDeliveryHandler())
             .build();
 
         RadixRouter router = new RadixRouter();

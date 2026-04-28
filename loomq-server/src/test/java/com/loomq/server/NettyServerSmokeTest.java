@@ -1,7 +1,7 @@
 package com.loomq.server;
 
 import com.loomq.LoomqEngine;
-import com.loomq.callback.HttpDeliveryHandler;
+import com.loomq.callback.NettyHttpDeliveryHandler;
 import com.loomq.config.ServerConfig;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;
@@ -35,7 +35,7 @@ class NettyServerSmokeTest {
         LoomqEngine engine = LoomqEngine.builder()
             .nodeId("smoke-node")
             .walDir(walDir)
-            .deliveryHandler(new HttpDeliveryHandler())
+            .deliveryHandler(new NettyHttpDeliveryHandler())
             .build();
 
         NettyHttpServer server = null;

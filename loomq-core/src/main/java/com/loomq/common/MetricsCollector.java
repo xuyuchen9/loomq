@@ -195,6 +195,66 @@ public class MetricsCollector {
         return tierMetrics.calculateP999WakeupLatencyByTier(tier);
     }
 
+    public long calculateP50WakeupLatencyByTier(PrecisionTier tier) {
+        return tierMetrics.calculateP50WakeupLatencyByTier(tier);
+    }
+
+    public long calculateP75WakeupLatencyByTier(PrecisionTier tier) {
+        return tierMetrics.calculateP75WakeupLatencyByTier(tier);
+    }
+
+    public long calculateP90WakeupLatencyByTier(PrecisionTier tier) {
+        return tierMetrics.calculateP90WakeupLatencyByTier(tier);
+    }
+
+    public long calculateMaxWakeupLatencyByTier(PrecisionTier tier) {
+        return tierMetrics.calculateMaxWakeupLatencyByTier(tier);
+    }
+
+    public long calculateMeanWakeupLatencyByTier(PrecisionTier tier) {
+        return tierMetrics.calculateMeanWakeupLatencyByTier(tier);
+    }
+
+    public long getWakeupLatencySampleCountByTier(PrecisionTier tier) {
+        return tierMetrics.getWakeupLatencySampleCountByTier(tier);
+    }
+
+    public long getDispatchQueueOfferFailed(PrecisionTier tier) {
+        return tierMetrics.getDispatchQueueOfferFailed(tier);
+    }
+
+    public long getDispatchQueueRetry(PrecisionTier tier) {
+        return tierMetrics.getDispatchQueueRetry(tier);
+    }
+
+    public long getDispatchQueueAbandoned(PrecisionTier tier) {
+        return tierMetrics.getDispatchQueueAbandoned(tier);
+    }
+
+    public long getDispatchQueueSize(PrecisionTier tier) {
+        return tierMetrics.getDispatchQueueSize(tier);
+    }
+
+    /**
+     * 获取完整的延迟快照（所有分位数），用于压测报告展示。
+     */
+    public LatencySnapshot getWakeupLatencySnapshot(PrecisionTier tier) {
+        return new LatencySnapshot(
+            calculateP50WakeupLatencyByTier(tier),
+            calculateP75WakeupLatencyByTier(tier),
+            calculateP90WakeupLatencyByTier(tier),
+            calculateP95WakeupLatencyByTier(tier),
+            calculateP99WakeupLatencyByTier(tier),
+            calculateP999WakeupLatencyByTier(tier),
+            calculateMaxWakeupLatencyByTier(tier),
+            calculateMeanWakeupLatencyByTier(tier),
+            getWakeupLatencySampleCountByTier(tier)
+        );
+    }
+
+    public record LatencySnapshot(long p50, long p75, long p90, long p95, long p99, long p999,
+                                  long max, long mean, long sampleCount) {}
+
     /**
      * 计算指定档位的理论最大 QPS
      * 理论最大 QPS = 并发数 × (1000ms / 平均HTTP响应延迟)

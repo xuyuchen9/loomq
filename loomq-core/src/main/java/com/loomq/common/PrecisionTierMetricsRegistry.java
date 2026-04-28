@@ -129,6 +129,22 @@ final class PrecisionTierMetricsRegistry {
         return result;
     }
 
+    long getDispatchQueueOfferFailed(PrecisionTier tier) {
+        return resolveCounter(dispatchQueueOfferFailedByTier, tier).get();
+    }
+
+    long getDispatchQueueRetry(PrecisionTier tier) {
+        return resolveCounter(dispatchQueueRetryByTier, tier).get();
+    }
+
+    long getDispatchQueueAbandoned(PrecisionTier tier) {
+        return resolveCounter(dispatchQueueAbandonedByTier, tier).get();
+    }
+
+    long getDispatchQueueSize(PrecisionTier tier) {
+        return resolveCounter(dispatchQueueSizeByTier, tier).get();
+    }
+
     long calculateP95WakeupLatencyByTier(PrecisionTier tier) {
         PrecisionTier resolvedTier = resolveTier(tier);
         ConcurrentHashMap<Integer, AtomicLong> buckets = wakeupLatencyByTier.get(resolvedTier);
@@ -136,18 +152,68 @@ final class PrecisionTierMetricsRegistry {
         return calculateP95(buckets, totalSamples);
     }
 
+    long calculateP50WakeupLatencyByTier(PrecisionTier tier) {
+        return percentileForTier(tier, 0.50);
+    }
+
+    long calculateP75WakeupLatencyByTier(PrecisionTier tier) {
+        return percentileForTier(tier, 0.75);
+    }
+
+    long calculateP90WakeupLatencyByTier(PrecisionTier tier) {
+        return percentileForTier(tier, 0.90);
+    }
+
     long calculateP99WakeupLatencyByTier(PrecisionTier tier) {
-        PrecisionTier resolvedTier = resolveTier(tier);
-        ConcurrentHashMap<Integer, AtomicLong> buckets = wakeupLatencyByTier.get(resolvedTier);
-        long totalSamples = wakeupLatencySampleCountByTier.get(resolvedTier).get();
-        return calculatePercentile(buckets, totalSamples, 0.99);
+        return percentileForTier(tier, 0.99);
     }
 
     long calculateP999WakeupLatencyByTier(PrecisionTier tier) {
+        return percentileForTier(tier, 0.999);
+    }
+
+    long calculateMaxWakeupLatencyByTier(PrecisionTier tier) {
+        return maxOfBucket(tier, wakeupLatencyByTier);
+    }
+
+    long calculateMeanWakeupLatencyByTier(PrecisionTier tier) {
+        return meanOfBuckets(tier, wakeupLatencyByTier, wakeupLatencySampleCountByTier);
+    }
+
+    long getWakeupLatencySampleCountByTier(PrecisionTier tier) {
+        PrecisionTier resolvedTier = resolveTier(tier);
+        return wakeupLatencySampleCountByTier.get(resolvedTier).get();
+    }
+
+    private long percentileForTier(PrecisionTier tier, double p) {
         PrecisionTier resolvedTier = resolveTier(tier);
         ConcurrentHashMap<Integer, AtomicLong> buckets = wakeupLatencyByTier.get(resolvedTier);
         long totalSamples = wakeupLatencySampleCountByTier.get(resolvedTier).get();
-        return calculatePercentile(buckets, totalSamples, 0.999);
+        return calculatePercentile(buckets, totalSamples, p);
+    }
+
+    private long maxOfBucket(PrecisionTier tier, Map<PrecisionTier, ConcurrentHashMap<Integer, AtomicLong>> histogram) {
+        PrecisionTier resolvedTier = resolveTier(tier);
+        ConcurrentHashMap<Integer, AtomicLong> buckets = histogram.get(resolvedTier);
+        for (int i = LATENCY_BOUNDS.length - 1; i >= 0; i--) {
+            if (buckets.get(i).get() > 0) {
+                return LATENCY_BOUNDS[i];
+            }
+        }
+        return 0;
+    }
+
+    private long meanOfBuckets(PrecisionTier tier, Map<PrecisionTier, ConcurrentHashMap<Integer, AtomicLong>> histogram,
+                               Map<PrecisionTier, AtomicLong> sampleCounts) {
+        PrecisionTier resolvedTier = resolveTier(tier);
+        ConcurrentHashMap<Integer, AtomicLong> buckets = histogram.get(resolvedTier);
+        long totalSamples = sampleCounts.get(resolvedTier).get();
+        if (totalSamples == 0) return 0;
+        long sum = 0;
+        for (int i = 0; i < LATENCY_BOUNDS.length; i++) {
+            sum += LATENCY_BOUNDS[i] * buckets.get(i).get();
+        }
+        return sum / totalSamples;
     }
 
     private long calculateP95DispatchQueueLagByTier(PrecisionTier tier) {

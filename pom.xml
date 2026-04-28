@@ -78,10 +78,24 @@
 
     <profiles>
         <profile>
+            <id>fast-tests</id>
+            <properties>
+                <!-- CI 快测：排除慢测、压测和集成测试 -->
+                <test.excludedGroups>slow,benchmark,integration</test.excludedGroups>
+            </properties>
+        </profile>
+        <profile>
+            <id>slow-tests</id>
+            <properties>
+                <test.groups>slow</test.groups>
+                <test.excludedGroups></test.excludedGroups>
+            </properties>
+        </profile>
+        <profile>
             <id>balanced-tests</id>
             <properties>
-                <!-- CI 快速测试：排除耗时测试 -->
-                <test.excludedGroups>benchmark,slow,integration</test.excludedGroups>
+                <!-- 向后兼容，等价于 fast-tests -->
+                <test.excludedGroups>slow,benchmark,integration</test.excludedGroups>
             </properties>
         </profile>
         <profile>

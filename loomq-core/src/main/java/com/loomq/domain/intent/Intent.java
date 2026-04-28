@@ -255,7 +255,7 @@ public class Intent {
             case CREATED -> to == IntentStatus.SCHEDULED;
             case SCHEDULED -> to == IntentStatus.DUE || to == IntentStatus.CANCELED;
             case DUE -> to == IntentStatus.DISPATCHING || to == IntentStatus.CANCELED;
-            case DISPATCHING -> to == IntentStatus.DELIVERED || to == IntentStatus.DEAD_LETTERED || to == IntentStatus.SCHEDULED;
+            case DISPATCHING -> to == IntentStatus.DELIVERED || to == IntentStatus.DEAD_LETTERED || to == IntentStatus.SCHEDULED || to == IntentStatus.EXPIRED;
             case DELIVERED -> to == IntentStatus.ACKED || to == IntentStatus.EXPIRED;
             default -> false;
         };

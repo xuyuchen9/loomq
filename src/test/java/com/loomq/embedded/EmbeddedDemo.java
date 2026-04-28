@@ -73,7 +73,9 @@ public class EmbeddedDemo {
         logger.info("[1/3] IntentStore initialized");
 
         // 2. 创建调度器
-        scheduler = new PrecisionScheduler(intentStore);
+        scheduler = new PrecisionScheduler(intentStore,
+            intent -> java.util.concurrent.CompletableFuture.completedFuture(com.loomq.spi.DeliveryHandler.DeliveryResult.DEAD_LETTER),
+            null);
         scheduler.start();
         logger.info("[2/3] PrecisionScheduler started with {} tiers", PrecisionTier.values().length);
 

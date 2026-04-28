@@ -6,6 +6,7 @@ import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.spi.DeliveryHandler;
 import com.loomq.store.IntentStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -41,11 +43,13 @@ class BackPressureTest {
     private PrecisionScheduler scheduler;
     private IntentStore intentStore;
     private MetricsCollector metrics;
+    private final DeliveryHandler mockHandler =
+        intent -> CompletableFuture.completedFuture(DeliveryHandler.DeliveryResult.DEAD_LETTER);
 
     @BeforeEach
     void setUp() {
         intentStore = new IntentStore();
-        scheduler = new PrecisionScheduler(intentStore);
+        scheduler = new PrecisionScheduler(intentStore, mockHandler, null);
         metrics = MetricsCollector.getInstance();
         scheduler.start();
     }

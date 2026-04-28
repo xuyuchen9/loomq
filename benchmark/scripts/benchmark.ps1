@@ -34,6 +34,12 @@
 
 .PARAMETER VerboseOutput
     Show full scenario logs instead of condensed output
+
+.PARAMETER Workload
+    Workload distribution profile: uniform, prod-typical, burst-ultra, mixed-heavy (default: uniform)
+
+.PARAMETER OutputJson
+    Also write results as JSON file alongside the text summary
 #>
 
 param(
@@ -46,7 +52,9 @@ param(
     [switch]$Help,
     [switch]$KeepOpen,
     [switch]$NoPause,
-    [switch]$VerboseOutput
+    [switch]$VerboseOutput,
+    [string]$Workload = "uniform",
+    [switch]$OutputJson
 )
 
 # ============================================================
@@ -517,6 +525,110 @@ function Save-BenchmarkSummary {
     return $SummaryFile
 }
 
+function Write-BenchmarkHistoryCsv {
+    param(
+        $InternalResult,
+        $HttpResult,
+        $SchedulerResult
+    )
+
+    $HistoryFile = Join-Path $ProjectRoot "benchmark\results\history.csv"
+    $Timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
+    $Commit = Get-GitCommit
+    $Branch = try { git rev-parse --abbrev-ref HEAD 2>$null } catch { "unknown" }
+
+    if (-not (Test-Path $HistoryFile)) {
+        "timestamp,commit,branch,scenario,tier,qps,p50_ms,p95_ms,p99_ms,utilization_pct,completion_pct,backpressure_events" |
+            Out-File -FilePath $HistoryFile -Encoding UTF8
+    }
+
+    if ($SchedulerResult) {
+        $SchedulerRows = Get-BenchmarkRowData -Rows $SchedulerResult.Rows
+        foreach ($Row in $SchedulerRows) {
+            $Tier = [string]$Row["tier"]
+            $Qps = Get-ResultDouble $Row "qps"
+            $Latency = Get-ResultDouble $Row "avg_latency_ms"
+            $Concurrency = Get-ResultInt $Row "concurrency"
+            $Backpressure = Get-ResultInt $Row "backpressure"
+            $Completion = Get-ResultDouble $SchedulerResult.Data "completion_rate" -Default 0
+            $Utilization = if ($Concurrency -gt 0 -and $Latency -gt 0) {
+                [math]::Round(($Qps * $Latency / 1000.0) / $Concurrency * 100, 1)
+            } else { 0 }
+
+            "$Timestamp,$Commit,$Branch,scheduler,$Tier,$Qps,N/A,$Latency,N/A,$Utilization,$Completion,$Backpressure" |
+                Out-File -FilePath $HistoryFile -Encoding UTF8 -Append
+        }
+    }
+
+    if ($HttpResult) {
+        "$Timestamp,$Commit,$Branch,http,ALL,$(Get-ResultDouble $HttpResult.Data 'peak_qps'),N/A,$(Get-ResultDouble $HttpResult.Data 'best_p99_ms'),$(Get-ResultDouble $HttpResult.Data 'worst_p99_ms'),N/A,N/A,N/A" |
+            Out-File -FilePath $HistoryFile -Encoding UTF8 -Append
+    }
+
+    Write-Info "History appended to: $HistoryFile"
+}
+
+function Write-BenchmarkJson {
+    param(
+        $InternalResult,
+        $HttpResult,
+        $SchedulerResult
+    )
+
+    $JsonDir = Join-Path $ProjectRoot "benchmark\results\reports"
+    New-Item -ItemType Directory -Force -Path $JsonDir | Out-Null
+    $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $JsonFile = Join-Path $JsonDir ("benchmark-" + $Timestamp + ".json")
+
+    $Output = [ordered]@{
+        timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+        commit = Get-GitCommit
+        branch = try { git rev-parse --abbrev-ref HEAD 2>$null } catch { "unknown" }
+        scenarios = @{}
+    }
+
+    if ($SchedulerResult) {
+        $Tiers = @()
+        $SchedulerRows = Get-BenchmarkRowData -Rows $SchedulerResult.Rows
+        foreach ($Row in $SchedulerRows) {
+            $Tiers += [ordered]@{
+                tier = [string]$Row["tier"]
+                qps = Get-ResultDouble $Row "qps"
+                avg_latency_ms = Get-ResultDouble $Row "avg_latency_ms"
+                concurrency = Get-ResultInt $Row "concurrency"
+                backpressure = Get-ResultInt $Row "backpressure"
+            }
+        }
+        $Output.scenarios["scheduler"] = [ordered]@{
+            peak_tier = [string]$SchedulerResult.Data["peak_tier"]
+            peak_qps = Get-ResultDouble $SchedulerResult.Data "peak_qps"
+            completion_rate = Get-ResultDouble $SchedulerResult.Data "completion_rate"
+            tiers = $Tiers
+        }
+    }
+
+    if ($HttpResult) {
+        $Output.scenarios["http"] = [ordered]@{
+            peak_qps = Get-ResultDouble $HttpResult.Data "peak_qps"
+            best_p99_ms = Get-ResultDouble $HttpResult.Data "best_p99_ms"
+            worst_p99_ms = Get-ResultDouble $HttpResult.Data "worst_p99_ms"
+            fail_rate = Get-ResultDouble $HttpResult.Data "fail_rate"
+        }
+    }
+
+    if ($InternalResult) {
+        $Output.scenarios["internal"] = [ordered]@{
+            qps = Get-ResultDouble $InternalResult.Data "direct_store_qps"
+            threads = Get-ResultInt $InternalResult.Data "direct_store_threads"
+            bytes_per_intent = Get-ResultDouble $InternalResult.Data "memory_bytes_per_intent"
+        }
+    }
+
+    $Output | ConvertTo-Json -Depth 4 | Out-File -FilePath $JsonFile -Encoding UTF8
+    Write-Info "JSON report: $JsonFile"
+    return $JsonFile
+}
+
 function Get-FreePort {
     $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
     try {
@@ -934,6 +1046,36 @@ function Build-BenchmarkSummary {
         $Lines.Add(("   scenario runtime: {0:n1} s" -f $SchedulerResult.DurationSec))
         $Lines.Add("   shortboard: this is the real调度 + callback + webhook path, where tier differences and downstream latency show up.")
         $Lines.Add("")
+
+        # SLO validation per tier
+        $SloSpecs = @{
+            "ULTRA"    = @{ p95 = 15;  p99 = 25  }
+            "FAST"     = @{ p95 = 60;  p99 = 90  }
+            "HIGH"     = @{ p95 = 120; p99 = 180 }
+            "STANDARD" = @{ p95 = 550; p99 = 800 }
+            "ECONOMY"   = @{ p95 = 1100; p99 = 1500 }
+        }
+        $Lines.Add("4) SLO Validation (wakeup latency per tier)")
+        foreach ($Row in $SchedulerRows) {
+            $TierName = [string]$Row["tier"]
+            $TierQps = Get-ResultDouble $Row "qps"
+            $TierLatency = Get-ResultDouble $Row "avg_latency_ms"
+            $Slo = $SloSpecs[$TierName.ToUpper()]
+            if ($null -ne $Slo) {
+                $P95Limit = $Slo["p95"]
+                $P99Limit = $Slo["p99"]
+                $P95Pass = $TierLatency -le $P95Limit
+                $P99Pass = $TierLatency -le $P99Limit
+                $VerdictP95 = if ($P95Pass) { "${C.Green}PASS${C.Reset}" } else { "${C.Red}FAIL${C.Reset}" }
+                $VerdictP99 = if ($P99Pass) { "${C.Green}PASS${C.Reset}" } else { "${C.Red}FAIL${C.Reset}" }
+                $Lines.Add(("   {0,-10} QPS={1,6:n0}  avg_lat={2,5:n0}ms  p95<={3,4}ms {4}  p99<={5,4}ms {6}" -f
+                    $TierName, $TierQps, $TierLatency, $P95Limit, $VerdictP95, $P99Limit, $VerdictP99))
+            } else {
+                $Lines.Add(("   {0,-10} QPS={1,6:n0}  avg_lat={2,5:n0}ms  (no SLO defined)" -f
+                    $TierName, $TierQps, $TierLatency))
+            }
+        }
+        $Lines.Add("")
     }
 
     $Lines.Add("Derived observations")
@@ -994,6 +1136,8 @@ Options:
   -KeepOpen        Keep console window open after finish
   -NoPause         Never pause on exit (for scripted runs)
   -VerboseOutput   Show full scenario logs
+  -Workload <name> Workload distribution: uniform, prod-typical, burst-ultra, mixed-heavy (default: uniform)
+  -OutputJson      Also write results as JSON file
   -Help            Show this help
 
 Examples:
@@ -1169,6 +1313,7 @@ try {
                 -Name "3) Scheduler trigger path" `
                 -ServerModuleDir $ServerModuleDir `
                 -MainClass "com.loomq.scheduler.SchedulerTriggerBenchmarkWithMockServer" `
+                -ExecArgs "-Dloomq.benchmark.workload=$Workload" `
                 -TimeoutSec $(if ($Quick) { 180 } else { 420 }) `
                 -Quick:$Quick `
                 -VerboseOutput:$script:VerboseScenarioOutput
@@ -1204,6 +1349,14 @@ try {
         Write-Host ""
         Write-Success "Summary saved"
         Write-Info "Report: $SummaryFile"
+
+        # Always write CSV history when saving
+        Write-BenchmarkHistoryCsv -InternalResult $InternalResult -HttpResult $HttpResult -SchedulerResult $SchedulerResult
+
+        if ($OutputJson) {
+            Write-BenchmarkJson -InternalResult $InternalResult -HttpResult $HttpResult -SchedulerResult $SchedulerResult
+        }
+
         $Latest = Get-LatestSummaryFile
         if ($Latest) {
             Write-Info "Latest: $($Latest.FullName)"

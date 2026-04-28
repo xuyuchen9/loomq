@@ -250,8 +250,10 @@ public class BatchDispatcher implements AutoCloseable {
             intent.incrementAttempts();
             intent.setLastDeliveryId(deliveryId);
 
-            // 使用 SPI 接口投递
-            DeliveryResult result = deliveryHandler.deliver(intent);
+            // 使用 SPI 异步接口投递
+            DeliveryResult result = deliveryHandler.deliverAsync(intent)
+                .orTimeout(30, TimeUnit.SECONDS)
+                .join();
 
             switch (result) {
                 case SUCCESS:

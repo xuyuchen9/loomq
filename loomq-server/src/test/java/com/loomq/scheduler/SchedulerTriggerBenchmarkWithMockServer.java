@@ -20,6 +20,8 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import com.sun.management.OperatingSystemMXBean;
+import java.lang.management.ManagementFactory;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -28,11 +30,16 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -95,8 +102,33 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         deliveryClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
             .version(HttpClient.Version.HTTP_1_1)
+            .executor(Executors.newVirtualThreadPerTaskExecutor())
             .build();
-        DeliveryHandler deliveryHandler = createBenchmarkDeliveryHandler();
+        DeliveryHandler deliveryHandler = intent -> {
+            String url = intent.getCallback() != null ? intent.getCallback().getUrl() : null;
+            if (url == null || url.isBlank()) {
+                return CompletableFuture.completedFuture(DeliveryHandler.DeliveryResult.DEAD_LETTER);
+            }
+
+            String payload = "{\"intentId\":\"" + intent.getIntentId()
+                + "\",\"precisionTier\":\"" + intent.getPrecisionTier().name() + "\"}";
+
+            HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(3))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(payload))
+                .build();
+
+            return deliveryClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> {
+                    int status = response.statusCode();
+                    if (status >= 200 && status < 300) return DeliveryHandler.DeliveryResult.SUCCESS;
+                    if (status >= 500) return DeliveryHandler.DeliveryResult.RETRY;
+                    return DeliveryHandler.DeliveryResult.DEAD_LETTER;
+                })
+                .exceptionally(ex -> DeliveryHandler.DeliveryResult.RETRY);
+        };
         scheduler = new PrecisionScheduler(intentStore, deliveryHandler, new DefaultRedeliveryDecider());
         metrics = MetricsCollector.getInstance();
         logger.info("Scheduler benchmark setup: starting scheduler");
@@ -118,42 +150,6 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         }
         deliveryClient = null;
         stopMockServer();
-    }
-
-    private DeliveryHandler createBenchmarkDeliveryHandler() {
-        return intent -> {
-            try {
-                String url = intent.getCallback() != null ? intent.getCallback().getUrl() : null;
-                if (url == null || url.isBlank()) {
-                    return DeliveryHandler.DeliveryResult.DEAD_LETTER;
-                }
-
-                String payload = "{\"intentId\":\"" + intent.getIntentId()
-                    + "\",\"precisionTier\":\"" + intent.getPrecisionTier().name() + "\"}";
-
-                HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(3))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(payload))
-                    .build();
-
-                HttpResponse<String> response = deliveryClient.send(request, HttpResponse.BodyHandlers.ofString());
-                int status = response.statusCode();
-                if (status >= 200 && status < 300) {
-                    return DeliveryHandler.DeliveryResult.SUCCESS;
-                }
-                if (status >= 500) {
-                    return DeliveryHandler.DeliveryResult.RETRY;
-                }
-                return DeliveryHandler.DeliveryResult.DEAD_LETTER;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return DeliveryHandler.DeliveryResult.DEAD_LETTER;
-            } catch (Exception e) {
-                return DeliveryHandler.DeliveryResult.RETRY;
-            }
-        };
     }
 
     /**
@@ -683,6 +679,28 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         Instant executeAt = Instant.now().plusMillis(quick ? 800 : 2000);
         long maxWaitMs = quick ? 12000 : 60000;
 
+        // --- Environment marker ---
+        String mode = quick ? "QUICK" : "FULL";
+        System.out.printf(Locale.ROOT,
+            "RESULT_ENV|java_version=%s|java_vendor=%s|os_name=%s|os_arch=%s|cpu_cores=%d|max_heap_mb=%d|mode=%s%n",
+            System.getProperty("java.version"),
+            System.getProperty("java.vendor"),
+            System.getProperty("os.name") + " " + System.getProperty("os.version"),
+            System.getProperty("os.arch"),
+            Runtime.getRuntime().availableProcessors(),
+            Runtime.getRuntime().maxMemory() / (1024 * 1024),
+            mode);
+
+        // --- Test parameters marker ---
+        System.out.printf(Locale.ROOT,
+            "RESULT_PARAMS|intents_per_tier=%d|execute_at_delay_ms=%d|max_wait_ms=%d%n",
+            intentsPerTier,
+            java.time.Duration.between(Instant.now(), executeAt).toMillis(),
+            maxWaitMs);
+        System.out.printf(Locale.ROOT,
+            "RESULT_PARAMS|mock_delay_ULTRA=%d|mock_delay_FAST=%d|mock_delay_HIGH=%d|mock_delay_STANDARD=%d|mock_delay_ECONOMY=%d%n",
+            ULTRA_DELAY_MS, FAST_DELAY_MS, HIGH_DELAY_MS, STANDARD_DELAY_MS, ECONOMY_DELAY_MS);
+
         Map<PrecisionTier, Long> initialBackpressure = snapshotBackpressure();
 
         logger.info("=== Scheduler real webhook benchmark ===");
@@ -710,9 +728,20 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         int expected = intentsPerTier * PrecisionTier.values().length;
         int lastReceived = 0;
         int stableCount = 0;
+        List<SystemSample> systemSamples = new ArrayList<>();
+        OperatingSystemMXBean osBean = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
+        long lastSampleTs = 0;
 
         while (System.currentTimeMillis() - waitStart < maxWaitMs) {
             Thread.sleep(1000);
+
+            // System resource sampling (every 2s)
+            if (System.currentTimeMillis() - lastSampleTs >= 2000) {
+                double cpu = osBean.getProcessCpuLoad();
+                long heapMb = Runtime.getRuntime().totalMemory() / (1024 * 1024);
+                systemSamples.add(new SystemSample(System.currentTimeMillis() - waitStart, cpu, heapMb));
+                lastSampleTs = System.currentTimeMillis();
+            }
 
             int received = totalWebhookReceived.get();
             if (received >= expected) {
@@ -734,6 +763,8 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         Map<PrecisionTier, Long> currentBackpressure = metrics.getBackpressureEventsByTier();
         Map<PrecisionTier, BenchmarkTierResult> tierResults = new EnumMap<>(PrecisionTier.class);
 
+        var backpressureStatus = scheduler.getBackpressureStatus();
+
         for (PrecisionTier tier : PrecisionTier.values()) {
             int received = webhookReceivedByTier.get(tier).get();
             double avgLatencyMs = getMockServerLatency(tier);
@@ -752,6 +783,28 @@ public class SchedulerTriggerBenchmarkWithMockServer {
             long backpressureDelta = currentBackpressure.getOrDefault(tier, 0L)
                 - initialBackpressure.getOrDefault(tier, 0L);
 
+            // 维度 1: 延迟分布
+            MetricsCollector.LatencySnapshot latency = metrics.getWakeupLatencySnapshot(tier);
+
+            // 维度 2: 信号量利用率
+            var bp = backpressureStatus.get(tier);
+            int activeDispatches = bp != null ? bp.activeDispatches() : 0;
+            double semaphoreUtil = bp != null ? bp.utilizationPct() : 0.0;
+
+            // 维度 3: 队列压力
+            long queueSize = metrics.getDispatchQueueSize(tier);
+            long offerFailed = metrics.getDispatchQueueOfferFailed(tier);
+            long retryCount = metrics.getDispatchQueueRetry(tier);
+            long abandoned = metrics.getDispatchQueueAbandoned(tier);
+
+            // 维度 4: Intent 生命周期
+            Map<IntentStatus, Long> lifecycle = new HashMap<>();
+            for (Intent intent : intentStore.getAllIntents().values()) {
+                if (intent.getPrecisionTier() == tier) {
+                    lifecycle.merge(intent.getStatus(), 1L, Long::sum);
+                }
+            }
+
             tierResults.put(tier, new BenchmarkTierResult(
                 tier,
                 received,
@@ -761,12 +814,20 @@ public class SchedulerTriggerBenchmarkWithMockServer {
                 efficiencyPct,
                 efficiencyRawPct,
                 tier.getMaxConcurrency(),
-                backpressureDelta
+                backpressureDelta,
+                latency,
+                activeDispatches,
+                semaphoreUtil,
+                queueSize,
+                offerFailed,
+                retryCount,
+                abandoned,
+                lifecycle
             ));
         }
 
         int totalReceived = totalWebhookReceived.get();
-        return new BenchmarkSummary(tierResults, totalReceived, expected, totalWaitMs);
+        return new BenchmarkSummary(tierResults, totalReceived, expected, totalWaitMs, systemSamples);
     }
 
     private Map<PrecisionTier, Long> snapshotBackpressure() {
@@ -822,6 +883,45 @@ public class SchedulerTriggerBenchmarkWithMockServer {
                 result.efficiencyPct(),
                 result.backpressureEvents());
 
+            // 维度 1: 延迟分布
+            var lat = result.latencySnapshot();
+            System.out.printf(Locale.ROOT,
+                "RESULT_LATENCY|tier=%s|type=wakeup|p50=%d|p75=%d|p90=%d|p95=%d|p99=%d|p999=%d|max=%d|mean=%d|samples=%d%n",
+                result.tier().name(), lat.p50(), lat.p75(), lat.p90(),
+                lat.p95(), lat.p99(), lat.p999(), lat.max(), lat.mean(), lat.sampleCount());
+
+            // 维度 2: 信号量
+            System.out.printf(Locale.ROOT,
+                "RESULT_SEMAPHORE|tier=%s|max=%d|active=%d|utilization_pct=%.1f%n",
+                result.tier().name(), result.concurrency(),
+                result.activeDispatches(), result.semaphoreUtilizationPct());
+
+            // 维度 3: 队列
+            System.out.printf(Locale.ROOT,
+                "RESULT_QUEUE|tier=%s|size=%d|offer_failed=%d|retry=%d|abandoned=%d%n",
+                result.tier().name(), result.queueSize(),
+                result.queueOfferFailed(), result.queueRetry(), result.queueAbandoned());
+
+            // 维度 4: 生命周期
+            var lc = result.lifecycleBreakdown();
+            long acked = lc.getOrDefault(IntentStatus.ACKED, 0L);
+            long dl = lc.getOrDefault(IntentStatus.DEAD_LETTERED, 0L);
+            long expired = lc.getOrDefault(IntentStatus.EXPIRED, 0L);
+            long cancelled = lc.getOrDefault(IntentStatus.CANCELED, 0L);
+            long other = lc.values().stream().mapToLong(Long::longValue).sum() - acked - dl - expired - cancelled;
+            System.out.printf(Locale.ROOT,
+                "RESULT_LIFECYCLE|tier=%s|total=%d|acked=%d|dead_letter=%d|expired=%d|cancelled=%d|other=%d%n",
+                result.tier().name(), result.received() + (int) other, acked, dl, expired, cancelled, other);
+
+            // 维度 5: 完整配置
+            var catalog = com.loomq.domain.intent.PrecisionTierCatalog.defaultCatalog();
+            var p = catalog.profile(result.tier());
+            System.out.printf(Locale.ROOT,
+                "RESULT_PROFILE|tier=%s|precision_window_ms=%d|max_concurrency=%d|batch_size=%d|batch_window_ms=%d|consumer_count=%d|dispatch_queue_capacity=%d%n",
+                result.tier().name(),
+                p.precisionWindowMs(), p.maxConcurrency(), p.batchSize(),
+                p.batchWindowMs(), p.consumerCount(), p.dispatchQueueCapacity());
+
             if (peak == null || result.qps() > peak.qps()) {
                 peak = result;
             }
@@ -842,6 +942,19 @@ public class SchedulerTriggerBenchmarkWithMockServer {
             .filter(r -> Math.abs(r.efficiencyRawPct() - r.efficiencyPct()) > 0.1)
             .count();
 
+        // 维度 6: 全局延迟
+        System.out.printf(Locale.ROOT,
+            "RESULT_GLOBAL_LATENCY|p95_trigger=%d|p95_wake=%d|p95_webhook=%d|p95_total=%d%n",
+            metrics.calculateP95Latency(), metrics.calculateP95WakeLatency(),
+            metrics.calculateP95WebhookLatency(), metrics.calculateP95TotalLatency());
+
+        // System resource samples
+        for (SystemSample s : summary.systemSamples()) {
+            System.out.printf(Locale.ROOT,
+                "RESULT_SYSTEM|ts=%d|cpu=%.2f|heap_mb=%d%n",
+                s.tsMs(), s.cpuLoad(), s.heapMb());
+        }
+
         System.out.println();
         System.out.printf(Locale.ROOT, "总接收: %d / %d (%.1f%%)%n",
             summary.totalReceived(), summary.expected(), completionRate);
@@ -850,6 +963,28 @@ public class SchedulerTriggerBenchmarkWithMockServer {
             System.out.printf(Locale.ROOT,
                 "注意: %d 个档位原始效率超过 100%%（理论值受抖动影响），报告效率已封顶到 100%%。%n",
                 clampedTierCount);
+        }
+
+        // SLO Validation (using actual scheduler wakeup latency, not mock delay)
+        System.out.println();
+        System.out.println("=== SLO Validation (scheduler wakeup latency) ===");
+        Map<String, long[]> slo = Map.of(
+            "ULTRA",    new long[]{15, 25},
+            "FAST",     new long[]{60, 90},
+            "HIGH",     new long[]{120, 180},
+            "STANDARD", new long[]{550, 800},
+            "ECONOMY",  new long[]{1100, 1500}
+        );
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            BenchmarkTierResult result = summary.tierResults().get(tier);
+            if (result == null) continue;
+            var lat = result.latencySnapshot();
+            long[] limits = slo.getOrDefault(tier.name(), new long[]{9999, 9999});
+            boolean p95ok = lat.p95() <= limits[0];
+            boolean p99ok = lat.p99() <= limits[1];
+            System.out.printf(Locale.ROOT, "  %-10s p95=%d <= %d %s | p99=%d <= %d %s%n",
+                tier.name(), lat.p95(), limits[0], p95ok ? "PASS" : "FAIL",
+                lat.p99(), limits[1], p99ok ? "PASS" : "FAIL");
         }
         System.out.println("解释: 这组结果反映的是调度器 + callback 投递 + webhook 响应的联合作用，不是纯创建接口。");
 
@@ -885,13 +1020,25 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         double efficiencyPct,
         double efficiencyRawPct,
         int concurrency,
-        long backpressureEvents
+        long backpressureEvents,
+        // 维度 1-5: 完整数据剖面
+        MetricsCollector.LatencySnapshot latencySnapshot,
+        int activeDispatches,
+        double semaphoreUtilizationPct,
+        long queueSize,
+        long queueOfferFailed,
+        long queueRetry,
+        long queueAbandoned,
+        Map<IntentStatus, Long> lifecycleBreakdown
     ) {}
 
     private record BenchmarkSummary(
         Map<PrecisionTier, BenchmarkTierResult> tierResults,
         int totalReceived,
         int expected,
-        long totalWaitMs
+        long totalWaitMs,
+        List<SystemSample> systemSamples
     ) {}
+
+    private record SystemSample(long tsMs, double cpuLoad, long heapMb) {}
 }
