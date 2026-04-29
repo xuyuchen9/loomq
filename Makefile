@@ -4,8 +4,8 @@
 .PHONY: help build test clean run docker-build docker-run docker-compose-up docker-compose-down
 
 # Variables
-JAR_FILE := loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar
-DOCKER_IMAGE := loomq:0.7.0-SNAPSHOT
+JAR_FILE := loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
+DOCKER_IMAGE := loomq:0.8.0-SNAPSHOT
 DOCKER_COMPOSE := docker-compose
 
 # Default target

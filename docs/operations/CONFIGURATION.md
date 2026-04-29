@@ -47,7 +47,8 @@ LoomQ 当前使用两层配置来源：
 | `netty.maxConnections` | `10000` | 最大连接数 | 按机器规格设置 |
 | `netty.writeBufferHighWaterMark` | `1048576` | 写缓冲高水位，字节 | 视响应体大小调整 |
 | `netty.writeBufferLowWaterMark` | `524288` | 写缓冲低水位，字节 | 应小于 high water mark |
-| `netty.maxConcurrentBusinessRequests` | `50000` | 业务并发上限 | 保护下游 callback 路径 |
+| `netty.maxConcurrentBusinessRequests` | `2000` | 业务并发上限 | 保护下游 callback 路径 |
+| `netty.httpSemaphoreTimeoutMs` | `500` | 获取业务信号量超时，毫秒 | 超时返回 429 |
 | `netty.gracefulShutdownTimeoutMs` | `30000` | 优雅停机等待时间，毫秒 | 与运维停机窗口对齐 |
 
 ### WAL / 持久化
@@ -78,6 +79,24 @@ LoomQ 当前使用两层配置来源：
 | Key | 默认值 | 作用 | 生产建议 |
 |-----|--------|------|----------|
 | `scheduler.max_pending_intents` | `1000000` | 最大待处理 Intent 数 | 按 heap 和恢复时长评估 |
+
+精度档位默认参数（在 `PrecisionTierCatalog` 中硬编码，暂不支持外部配置）：
+
+| 档位 | 窗口 | 最大并发 | 批量 | 消费者数 | WAL 模式 |
+|------|------|---------|------|---------|----------|
+| ULTRA | 10ms | 200 | 1×5ms | 16 | ASYNC |
+| FAST | 50ms | 150 | 1×10ms | 12 | ASYNC |
+| HIGH | 100ms | 50 | 5×50ms | 4 | BATCH_DEFERRED |
+| STANDARD | 500ms | 50 | 20×100ms | 3 | DURABLE |
+| ECONOMY | 1000ms | 50 | 25×300ms | 2 | DURABLE |
+
+AdapTBF 跨层借用约束（当前硬编码）：
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `MAX_LEND_RATIO` | 0.5 | 每档位最多借出 50% slot |
+| 借用超时 | 100ms | `tryAcquire` 超时，超时后尝试下一档位 |
+| 回退策略 | `acquire()` 阻塞 | 所有档位均无法借用时阻塞在自身信号量上 |
 
 ### Dispatcher / Retry / Recovery
 

@@ -61,6 +61,7 @@ public class SimpleWalWriter implements AutoCloseable {
     // ========== 写入状态 ==========
     private final AtomicLong writePosition = new AtomicLong(0);
     private volatile long flushedPosition = 0;
+    private volatile long lastFsyncTimestampMs = 0;
 
     // ========== 刷盘协调 ==========
     private final StripedCondition flushConditions;
@@ -145,6 +146,7 @@ public class SimpleWalWriter implements AutoCloseable {
         this.mappedSize = initialSize;
         this.writePosition.set(0);
         this.flushedPosition = 0;
+        this.lastFsyncTimestampMs = System.currentTimeMillis();
 
         logger.info("Opened WAL file: {}", walPath);
     }
@@ -347,6 +349,7 @@ public class SimpleWalWriter implements AutoCloseable {
 
                     // 更新刷盘位置
                     flushedPosition = currentWritePos;
+                    lastFsyncTimestampMs = System.currentTimeMillis();
 
                     stats.recordFlush(elapsedNs);
 
@@ -388,6 +391,31 @@ public class SimpleWalWriter implements AutoCloseable {
 
     public Stats getStats() {
         return stats;
+    }
+
+    /** Unflushed bytes at risk on crash. */
+    public long getUnflushedBytes() {
+        return writePosition.get() - flushedPosition;
+    }
+
+    /** Milliseconds since last fsync completed. */
+    public long getLastFsyncMsAgo() {
+        long last = lastFsyncTimestampMs;
+        return last > 0 ? System.currentTimeMillis() - last : 0;
+    }
+
+    /**
+     * WAL health status.
+     * OK: unflushed < threshold, fsync within 2x flush interval
+     * WARNING: unflushed 1-3x threshold or fsync delayed
+     * CRITICAL: unflushed > 3x threshold
+     */
+    public String getWalHealth() {
+        long unflushed = getUnflushedBytes();
+        long ago = getLastFsyncMsAgo();
+        if (unflushed > flushThreshold * 3 || ago > 5000) return "CRITICAL";
+        if (unflushed > flushThreshold || ago > flushIntervalNs / 1_000_000 * 3) return "WARNING";
+        return "OK";
     }
 
     // ========== 关闭 ==========

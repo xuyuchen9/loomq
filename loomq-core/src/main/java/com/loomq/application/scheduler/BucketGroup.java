@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.NavigableMap;
 import java.util.concurrent.ConcurrentHashMap;
@@ -165,8 +166,16 @@ public class BucketGroup {
             }
         }
 
-        if (!dueIntents.isEmpty() && logger.isDebugEnabled()) {
-            logger.debug("Scanned {} due intents from tier {} buckets", dueIntents.size(), tier);
+        if (!dueIntents.isEmpty()) {
+            if (dueIntents.size() > 1) {
+                dueIntents.sort(Comparator
+                    .comparing(Intent::getExecuteAt)
+                    .thenComparing(Intent::getCreatedAt)
+                    .thenComparing(Intent::getIntentId));
+            }
+            if (logger.isDebugEnabled()) {
+                logger.debug("Scanned {} due intents from tier {} buckets", dueIntents.size(), tier);
+            }
         }
 
         return dueIntents;

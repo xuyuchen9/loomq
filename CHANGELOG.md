@@ -4,6 +4,53 @@ All notable changes to LoomQ are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.0] - 2026-04-29
+
+### Added
+
+- **CohortManager**: CSA-inspired batched wakeup for long-delay intents
+  - Groups intents by cohort key (floor to precision window)
+  - Single daemon thread (`cohort-waker`) wakes thousands of intents
+  - Replaces per-intent virtual-thread sleep for delays > precision window
+  - Tracks `totalRegistered`, `totalFlushed`, `wakeEventCount`
+
+- **Arrow Cross-Tier Slot Borrowing**: Burst absorption across precision tiers
+  - `acquireWithBorrow()` in PrecisionScheduler: try own tier → borrow from lower tiers → block
+  - 100ms timeout on borrowed `tryAcquire`
+  - `BorrowStats`: `own_direct`, `own_blocking`, `borrowed`, `borrow_timeouts`, `borrow_rate`
+
+- **AdapTBF Lending Constraints**: Bounded cross-tier borrowing
+  - `MAX_LEND_RATIO = 0.5`: each tier lends at most 50% of its slots
+  - `ResizableSemaphore.borrowedCount` tracks active lends per tier
+  - Prevents high-priority tiers from starving low-priority tiers
+
+- **ResizableSemaphore**: Runtime-resizable concurrency control
+  - `extends Semaphore` for zero-overhead acquire/tryAcquire (inherited from AQS)
+  - Only `release()` overridden: fast path checks `currentMax <= targetMax`
+  - Increase: `resize()` calls `super.release(delta)` — immediate
+  - Decrease: sets `targetMax`, then `release()` silently discards excess permits
+  - No background threads, no contention with normal acquire
+
+- **RTT Metrics**: Per-tier delivery latency tracking
+  - `RESULT_RTT` marker in benchmark output: dequeue→webhook-received
+  - p50/p95/p99 per tier, independent of scheduling precision
+  - Parsed by `run-all.ps1` into JSON report
+
+### Changed
+
+- **PrecisionScheduler**: Replaced `Semaphore` with `ResizableSemaphore`
+- **PrecisionScheduler**: Replaced per-intent VT sleep with `CohortManager.register()`
+- **PrecisionScheduler**: `runBatchConsumer` now uses `acquireWithBorrow()` instead of `semaphore.acquire()`
+- **CLAUDE.md**: Updated architecture diagram and key design decisions
+- **README.md / README.zh.md**: Complete rewrite for v0.8.0 accuracy
+
+### Architecture
+
+```
+v0.7.1: loomq-core (storage + WAL + scheduler) | loomq-server (HTTP delivery)
+v0.8.0: loomq-core (+ CohortManager + ResizableSemaphore + Arrow/AdapTBF) | loomq-server (HTTP delivery)
+```
+
 ## [0.7.1] - 2026-04-17
 
 ### Added

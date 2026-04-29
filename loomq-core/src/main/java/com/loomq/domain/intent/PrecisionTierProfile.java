@@ -12,8 +12,19 @@ public record PrecisionTierProfile(
     int batchSize,
     int batchWindowMs,
     int consumerCount,
-    int dispatchQueueCapacity
+    int dispatchQueueCapacity,
+    WalTierMode walTierMode
 ) {
+    /** Per-tier WAL durability strategy — "FP4 quantization" applied to persistence. */
+    public enum WalTierMode {
+        /** Memory-mapped write only, no fsync wait. Lowest latency, crash-lose window = flush interval. */
+        ASYNC,
+        /** Async write with periodic batch fsync. Middle ground for medium-precision tiers. */
+        BATCH_DEFERRED,
+        /** Full fsync before returning. Strongest durability, highest latency. */
+        DURABLE
+    }
+
     public PrecisionTierProfile {
         if (precisionWindowMs <= 0) {
             throw new IllegalArgumentException("precisionWindowMs must be positive");
@@ -33,14 +44,28 @@ public record PrecisionTierProfile(
         if (dispatchQueueCapacity <= 0) {
             throw new IllegalArgumentException("dispatchQueueCapacity must be positive");
         }
+        if (walTierMode == null) {
+            throw new IllegalArgumentException("walTierMode must not be null");
+        }
     }
 
     /**
-     * 5-argument convenience constructor using default dispatchQueueCapacity = maxConcurrency * 16.
+     * 5-argument convenience constructor using default dispatchQueueCapacity = maxConcurrency * 16
+     * and default WalTierMode = DURABLE.
      */
     public PrecisionTierProfile(long precisionWindowMs, int maxConcurrency, int batchSize,
                                 int batchWindowMs, int consumerCount) {
-        this(precisionWindowMs, maxConcurrency, batchSize, batchWindowMs, consumerCount, maxConcurrency * 16);
+        this(precisionWindowMs, maxConcurrency, batchSize, batchWindowMs, consumerCount,
+             maxConcurrency * 16, WalTierMode.DURABLE);
+    }
+
+    /**
+     * 6-argument convenience constructor using default WalTierMode = DURABLE.
+     */
+    public PrecisionTierProfile(long precisionWindowMs, int maxConcurrency, int batchSize,
+                                int batchWindowMs, int consumerCount, int dispatchQueueCapacity) {
+        this(precisionWindowMs, maxConcurrency, batchSize, batchWindowMs, consumerCount,
+             dispatchQueueCapacity, WalTierMode.DURABLE);
     }
 
     public boolean isBatchEnabled() {

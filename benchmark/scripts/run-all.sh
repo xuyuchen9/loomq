@@ -129,9 +129,11 @@ COLS="timestamp,commit,branch,mode,total_tests,total_failed"
 for T in $TIERS; do
     COLS="$COLS,${T}_qps,${T}_p50_ms,${T}_p95_ms,${T}_p99_ms,${T}_mean_ms,${T}_max_ms,${T}_samples"
     COLS="$COLS,${T}_util_pct,${T}_active_dispatch,${T}_queue_size,${T}_queue_offer_failed,${T}_queue_retry"
-    COLS="$COLS,${T}_acked,${T}_dead_letter,${T}_expired"
+    COLS="$COLS,${T}_acked,${T}_dead_letter,${T}_expired,${T}_wal_mode"
 done
 COLS="$COLS,global_p95_trigger,global_p95_wake,global_p95_webhook,global_p95_total"
+COLS="$COLS,cohort_registered,cohort_flushed,cohort_wake_events,cohort_active,cohort_pending"
+COLS="$COLS,vt_reduction_pct,vts_saved"
 
 if [ ! -f "$CSV_FILE" ]; then
     echo "$COLS" > "$CSV_FILE"

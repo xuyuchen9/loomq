@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -72,6 +73,25 @@ public class BucketGroupManager {
         }
 
         group.add(intent, intent.getExecuteAt());
+    }
+
+    /**
+     * Batch-add intents from a cohort flush. Groups by tier first to avoid
+     * redundant catalog lookups per intent.
+     *
+     * @param intents intents to add
+     */
+    public void addAll(Collection<Intent> intents) {
+        if (intents.isEmpty()) return;
+
+        for (Intent intent : intents) {
+            PrecisionTier tier = intent.getPrecisionTier();
+            BucketGroup group = bucketGroups.get(tier);
+            if (group == null) {
+                group = bucketGroups.get(precisionTierCatalog.defaultTier());
+            }
+            group.add(intent, intent.getExecuteAt());
+        }
     }
 
     /**

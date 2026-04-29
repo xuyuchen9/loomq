@@ -4,7 +4,7 @@
 FROM eclipse-temurin:25-jdk-alpine
 
 LABEL maintainer="loomq"
-LABEL version="0.7.0-SNAPSHOT"
+LABEL version="0.8.0-SNAPSHOT"
 LABEL description="LoomQ Delayed Intent Queue Engine"
 
 # Install necessary tools
@@ -17,7 +17,7 @@ WORKDIR /app
 RUN mkdir -p /app/data/wal
 
 # Copy the shaded JAR
-COPY loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar app.jar
+COPY loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar app.jar
 
 # Copy default configuration
 COPY loomq-server/src/main/resources/application.yml config/application.yml

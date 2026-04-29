@@ -73,6 +73,10 @@ public final class PrecisionTierCatalog {
         return profile(tier).dispatchQueueCapacity();
     }
 
+    public PrecisionTierProfile.WalTierMode walTierMode(PrecisionTier tier) {
+        return profile(tier).walTierMode();
+    }
+
     public boolean isBatchEnabled(PrecisionTier tier) {
         return profile(tier).isBatchEnabled();
     }
@@ -98,11 +102,16 @@ public final class PrecisionTierCatalog {
 
     private static PrecisionTierCatalog createDefault() {
         EnumMap<PrecisionTier, PrecisionTierProfile> profiles = new EnumMap<>(PrecisionTier.class);
-        profiles.put(PrecisionTier.ULTRA, new PrecisionTierProfile(10, 200, 1, 5, 16));
-        profiles.put(PrecisionTier.FAST, new PrecisionTierProfile(50, 150, 1, 10, 12));
-        profiles.put(PrecisionTier.HIGH, new PrecisionTierProfile(100, 50, 5, 50, 4));
-        profiles.put(PrecisionTier.STANDARD, new PrecisionTierProfile(500, 50, 20, 100, 3));
-        profiles.put(PrecisionTier.ECONOMY, new PrecisionTierProfile(1000, 50, 25, 300, 2));
+        profiles.put(PrecisionTier.ULTRA, new PrecisionTierProfile(10, 200, 1, 5, 16, 200 * 16,
+            PrecisionTierProfile.WalTierMode.ASYNC));
+        profiles.put(PrecisionTier.FAST, new PrecisionTierProfile(50, 150, 1, 10, 12, 150 * 16,
+            PrecisionTierProfile.WalTierMode.ASYNC));
+        profiles.put(PrecisionTier.HIGH, new PrecisionTierProfile(100, 50, 5, 50, 4, 50 * 16,
+            PrecisionTierProfile.WalTierMode.BATCH_DEFERRED));
+        profiles.put(PrecisionTier.STANDARD, new PrecisionTierProfile(500, 50, 20, 100, 3, 50 * 16,
+            PrecisionTierProfile.WalTierMode.DURABLE));
+        profiles.put(PrecisionTier.ECONOMY, new PrecisionTierProfile(1000, 50, 25, 300, 2, 50 * 16,
+            PrecisionTierProfile.WalTierMode.DURABLE));
         return new PrecisionTierCatalog(profiles, PrecisionTier.STANDARD);
     }
 }

@@ -22,7 +22,7 @@ mvn test -Dtest=ClassName      # single test class
 mvn test -Dtest=ClassName#methodName  # single test method
 
 # Run
-java -jar loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar
+java -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
 make run-jar                   # Makefile shortcut
 
 # Docker
@@ -37,26 +37,32 @@ loomq-server (Netty HTTP + JSON + webhook delivery)
     │
     └── loomq-core (embeddable kernel, zero HTTP/JSON deps)
             │
-            ├── LoomqEngine          — builder-pattern entry point
-            ├── PrecisionScheduler   — time-wheel buckets, per-tier scan threads
-            ├── IntentStore          — in-memory ConcurrentHashMap storage
-            ├── SimpleWalWriter      — binary WAL (~100ns/record, IntentBinaryCodec)
-            ├── RecoveryPipeline     — snapshot + WAL replay on restart
-            └── SPI interfaces       — DeliveryHandler, CallbackHandler, RedeliveryDecider
+            ├── LoomqEngine           — builder-pattern entry point
+            ├── PrecisionScheduler    — time-wheel buckets, per-tier scan + batch consumers
+            │   ├── CohortManager     — CSA-style batched wakeup (replaces per-intent VT sleep)
+            │   ├── BucketGroupManager — per-tier time-bucket storage
+            │   └── ResizableSemaphore — extends Semaphore, runtime-resizable permits
+            ├── IntentStore           — in-memory ConcurrentHashMap storage
+            ├── SimpleWalWriter       — memory-mapped WAL with FFM API (~100ns/record)
+            ├── RecoveryPipeline      — snapshot + WAL replay on restart
+            └── SPI interfaces        — DeliveryHandler, CallbackHandler, RedeliveryDecider
 ```
 
 **Intent lifecycle:** CREATED → SCHEDULED → DUE → DISPATCHING → DELIVERED → ACKED (branches: CANCELLED, EXPIRED, DEAD_LETTERED)
 
-**Five precision tiers:** ULTRA(10ms), FAST(50ms), HIGH(100ms default), STANDARD(500ms), ECONOMY(1000ms) — each has dedicated scan threads and batch consumers using virtual threads.
+**Five precision tiers:** ULTRA(10ms, 200 slots), FAST(50ms, 150 slots), HIGH(100ms, 50 slots), STANDARD(500ms, 50 slots), ECONOMY(1000ms, 50 slots).
 
 ## Key Design Decisions
 
 - **"Intent" is the public model** — older docs/code may use legacy terminology; always use "Intent" in new code.
 - **Core has zero HTTP/JSON dependencies** — `loomq-core` depends only on SLF4J, Owner, SnakeYAML, HdrHistogram. All transport concerns live in `loomq-server`.
 - **DeliveryHandler SPI** — the scheduler in core delegates delivery through this interface; `loomq-server` provides `HttpDeliveryHandler`. Embedders supply their own.
-- **Virtual threads everywhere** — `Executors.newVirtualThreadPerTaskExecutor()` for intent sleep/dispatch; no traditional thread pool tuning.
-- **IntentStore is in-memory only** — ~10M intents ≈ ~8GB heap. Pluggable storage planned for v0.8.0.
-- **Cluster/replication is Beta** — `ClusterManager`, `ShardRouter`, `LeaseCoordinator` exist but are experimental; Raft consensus is on the v0.8.0 roadmap.
+- **Virtual threads everywhere** — `Executors.newVirtualThreadPerTaskExecutor()` for batch consumers; no traditional thread pool tuning.
+- **Cohort-based wakeup (CSA-inspired)** — intents with delay > precision window are grouped by cohort key; one daemon thread wakes thousands, replacing per-intent VT sleep.
+- **Arrow cross-tier borrowing** — when a tier's semaphore is full, consumers borrow slots from lower-priority tiers via `tryAcquire(100ms)`. AdapTBF bounds lending to 50% of a tier's slots to prevent starvation.
+- **ResizableSemaphore extends Semaphore** — zero-overhead acquire/tryAcquire (inherited); only release() is overridden for gradual shrink via permit discarding. Tracks `borrowedCount` per tier.
+- **IntentStore is in-memory only** — ~10M intents ≈ ~8GB heap. Pluggable storage planned for v0.9.0.
+- **Cluster/replication is Beta** — `ClusterManager`, `ShardRouter`, `FailoverController` exist but are experimental; Raft consensus is on the v0.9.0 roadmap.
 
 ## REST API
 

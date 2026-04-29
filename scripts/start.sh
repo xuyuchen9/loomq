@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Default configuration
-JAR_FILE="loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar"
+JAR_FILE="loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar"
 JVM_XMS="${JVM_XMS:-2g}"
 JVM_XMX="${JVM_XMX:-2g}"
 JVM_GC="${JVM_GC:-ZGC}"

@@ -58,7 +58,7 @@ public class ExtremeBenchmark {
 
         // 健康检查
         if (!healthCheck()) {
-            System.err.println("❌ 服务不可用，请先启动 LoomQ: java -jar loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar");
+            System.err.println("❌ 服务不可用，请先启动 LoomQ: java -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar");
             return;
         }
         System.out.println("✅ 服务健康检查通过");

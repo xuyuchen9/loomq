@@ -7,7 +7,7 @@ RUN apk add --no-cache wrk curl
 WORKDIR /app
 
 # 复制 jar 文件
-COPY loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar /app/loomq.jar
+COPY loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar /app/loomq.jar
 
 # 暴露端口
 EXPOSE 8080

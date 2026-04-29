@@ -714,10 +714,10 @@ function Ensure-BenchmarkRepo {
 
     New-Item -ItemType Directory -Force -Path $RepoPath | Out-Null
 
-    $ParentPom = Join-Path $RepoPath "com\loomq\loomq-parent\0.7.0-SNAPSHOT\loomq-parent-0.7.0-SNAPSHOT.pom"
-    $BomPom = Join-Path $RepoPath "com\loomq\loomq-bom\0.7.0-SNAPSHOT\loomq-bom-0.7.0-SNAPSHOT.pom"
-    $CoreJar = Join-Path $RepoPath "com\loomq\loomq-core\0.7.0-SNAPSHOT\loomq-core-0.7.0-SNAPSHOT.jar"
-    $ServerJar = Join-Path $RepoPath "com\loomq\loomq-server\0.7.0-SNAPSHOT\loomq-server-0.7.0-SNAPSHOT.jar"
+    $ParentPom = Join-Path $RepoPath "com\loomq\loomq-parent\0.8.0-SNAPSHOT\loomq-parent-0.8.0-SNAPSHOT.pom"
+    $BomPom = Join-Path $RepoPath "com\loomq\loomq-bom\0.8.0-SNAPSHOT\loomq-bom-0.8.0-SNAPSHOT.pom"
+    $CoreJar = Join-Path $RepoPath "com\loomq\loomq-core\0.8.0-SNAPSHOT\loomq-core-0.8.0-SNAPSHOT.jar"
+    $ServerJar = Join-Path $RepoPath "com\loomq\loomq-server\0.8.0-SNAPSHOT\loomq-server-0.8.0-SNAPSHOT.jar"
 
     $RepoReady = (Test-Path $ParentPom) -and (Test-Path $BomPom) -and (Test-Path $CoreJar) -and (Test-Path $ServerJar)
     if (-not $ForceRefresh -and $RepoReady) {

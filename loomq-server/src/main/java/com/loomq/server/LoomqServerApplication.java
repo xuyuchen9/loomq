@@ -185,7 +185,7 @@ public class LoomqServerApplication {
         logger.info("╚══════╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝ ╚══▀▀═╝ ");
         logger.info("");
         logger.info(" Event Infrastructure for Delayed Execution");
-        logger.info("              Version 0.7.0-SNAPSHOT");
+        logger.info("              Version 0.8.0-SNAPSHOT");
         logger.info("              Mode: Server (Netty)");
         logger.info("");
     }

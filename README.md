@@ -1,75 +1,35 @@
-# LoomQ - Durable Time Kernel for Future Events
+# LoomQ — Durable Time Kernel for Future Events
 
 [![JDK](https://img.shields.io/badge/JDK-25%2B-green.svg)](https://openjdk.org/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-0.7.x-blue.svg)](https://central.sonatype.com/)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-0.8.x-blue.svg)](https://central.sonatype.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/Tests-367%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-471%20passed-brightgreen.svg)]()
 
 **Making future events happen reliably, powered by Java 25 Virtual Threads.**
 
-LoomQ is a durable time kernel for distributed systems. It focuses on scheduling, rescheduling, expiry, recovery, retry orchestration, and deadline handling.
-
-> **Note:** `Intent` is the public model. Some historical docs still use legacy terminology, but new material should prefer `Intent`.
+LoomQ is a durable time kernel for distributed systems — scheduling, persistence, recovery, retry orchestration, and deadline handling. Embed it as a library or run it as a standalone server.
 
 ## What LoomQ Is / Isn't
 
 **LoomQ is:**
 
-- a durable scheduling kernel for future events
-- a recovery-friendly time layer for embedded or standalone use
-- a shell-friendly core with SPI hooks for delivery and callbacks
+- a durable scheduling kernel for future events (called **Intents**)
+- embeddable (`loomq-core`, zero HTTP/JSON deps) or standalone (`loomq-server`, Netty HTTP)
+- extensible via SPI hooks for delivery, callbacks, and retry decisions
 
 **LoomQ is not:**
 
 - a general-purpose message queue
 - a workflow engine
-- a lock or lease product baked into the core
+- a lock or lease service (those belong in layers above the kernel)
 
 ## Capability Maturity
 
 | Category | Examples |
 |----------|----------|
-| **Stable** | durable delayed execution, persistence + recovery, scheduling, retry orchestration, metrics baseline |
-| **Beta** | cluster plumbing, storage plugin surface, replication-related experiments |
-| **Not yet committed** | distributed coordination primitives, lock / lease semantics, leader election |
-
----
-
-## Core Features
-
-| Feature | Description |
-|---------|-------------|
-| **Five Precision Tiers** | ULTRA (10ms), FAST (50ms), HIGH (100ms), STANDARD (500ms), ECONOMY (1000ms) — choose the right precision for your use case |
-| **Durable Persistence** | ASYNC mode for <100ms RPO, DURABLE mode for zero data loss |
-| **Virtual Threads Native** | Zero thread pool tuning, handle millions of concurrent intents effortlessly |
-| **O(1) Expiration** | Time-wheel bucket expiration with constant time complexity |
-| **Netty HTTP Layer** | High-performance HTTP server with memory-mapped zero-copy WAL |
-| **Observability** | Prometheus metrics + HdrHistogram high-precision latency statistics |
-
----
-
-## Performance Benchmarks
-
-**Test Environment:** JDK 25, NVMe SSD, 16 cores, localhost
-
-### Write Throughput
-
-| Mode | QPS | Description |
-|------|-----|-------------|
-| ASYNC | **424,077** | Returns immediately after publish, RPO < 100ms |
-| DURABLE | **>150,000** | Returns after WAL fsync, RPO = 0 |
-
-### End-to-End Trigger Performance (50 concurrent threads)
-
-| Tier | Window | QPS | Efficiency | P99 Latency | Use Case |
-|------|--------|-----|------------|-------------|----------|
-| ULTRA | 10ms | 45,949 | 2.5% | ≤15ms | High-frequency heartbeats / short deadlines |
-| FAST | 50ms | 44,718 | 5% | ≤60ms | Message retry, backoff |
-| HIGH | 100ms | 40,710 | 10% | ≤120ms | Default tier |
-| STANDARD | 500ms | 39,974 | 25% | ≤550ms | **Recommended**, order timeout |
-| ECONOMY | 1000ms | 42,295 | 25% | ≤1100ms | Massive long-delay intents |
-
-**Key Insight:** ECONOMY tier achieves 10x per-thread efficiency compared to ULTRA, making it ideal for massive long-delay intents.
+| **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics |
+| **Beta** | cluster plumbing, replication, shard routing, failover |
+| **Not yet committed** | distributed coordination primitives, lock/lease semantics, leader election |
 
 ---
 
@@ -77,7 +37,7 @@ LoomQ is a durable time kernel for distributed systems. It focuses on scheduling
 
 ### Prerequisites
 
-- JDK 25+ (no `--enable-preview` required)
+- JDK 25+
 - Maven 3.9+
 
 ### Maven Dependency
@@ -86,7 +46,7 @@ LoomQ is a durable time kernel for distributed systems. It focuses on scheduling
 <dependency>
     <groupId>com.loomq</groupId>
     <artifactId>loomq-core</artifactId>
-    <version>0.7.0-SNAPSHOT</version>
+    <version>0.8.0-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -101,15 +61,14 @@ mvn clean package -DskipTests
 ### Start Server
 
 ```bash
-java -jar loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar
+java -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
 ```
 
-Server starts at `http://localhost:8080` by default.
+Server listens on `http://localhost:8080` by default.
 
 ### Create Your First Intent
 
 ```bash
-# Create an intent that triggers in 30 seconds
 curl -X POST http://localhost:8080/v1/intents \
   -H "Content-Type: application/json" \
   -d '{
@@ -130,78 +89,142 @@ curl http://localhost:8080/v1/intents/{intentId}
 
 ---
 
-## Embedded Usage (No HTTP Required)
+## Core Features
 
-LoomQ core can be embedded directly in your Java application without starting an HTTP server:
+| Feature | Description |
+|---------|-------------|
+| **Five Precision Tiers** | ULTRA (10ms), FAST (50ms), HIGH (100ms), STANDARD (500ms), ECONOMY (1000ms) |
+| **Durable Persistence** | Memory-mapped WAL with ASYNC/DURABLE/REPLICATED ack levels, CRC32 checksums |
+| **Virtual Threads Native** | Zero thread-pool tuning; all delivery and scheduling runs on virtual threads |
+| **Cohort-Based Wakeup** | CSA-inspired batched wakeup replaces per-intent VT sleep for efficient long-delay scheduling |
+| **Arrow Cross-Tier Borrowing** | High-priority tiers borrow idle slots from lower tiers during bursts, with AdapTBF bounds |
+| **Resizable Concurrency** | Per-tier `ResizableSemaphore` supports runtime concurrency adjustment without restart |
+| **Crash Recovery** | Snapshot + WAL replay pipeline, gzip-compressed binary snapshots every 5 minutes |
+| **Observability** | Per-tier latency histograms (P50–P99.9), RTT metrics, Prometheus export, borrow stats |
 
-```java
-import com.loomq.embedded.EmbeddedDemo;
-import com.loomq.domain.intent.Intent;
-import com.loomq.domain.intent.PrecisionTier;
+---
 
-public class MyApp {
-    public static void main(String[] args) {
-        EmbeddedDemo loomq = new EmbeddedDemo();
-        loomq.start();
+## What's New in v0.8.0
 
-        // Create an intent with local callback
-        loomq.createIntent(5000, PrecisionTier.STANDARD, intent -> {
-            System.out.println("Intent triggered: " + intent.getIntentId());
-            // Your business logic here
-        });
+v0.8.0 builds on the v0.7.0 modular split to make concurrency control adaptive and observable.
 
-        // Keep running...
-    }
-}
-```
-
-See `src/test/java/com/loomq/embedded/EmbeddedDemo.java` for the full example.
-
-**Use Cases for Embedded Mode:**
-- Single-node applications with delayed event needs
-- Integration tests without external dependencies
-- Resource-constrained environments (no HTTP server overhead)
-- Building custom shells on top of LoomQ core
+| Component | What It Does |
+|-----------|-------------|
+| **CohortManager** | Batches intents with similar executeAt times — one daemon thread wakes thousands of intents, replacing per-intent virtual-thread sleep |
+| **ResizableSemaphore** | `extends Semaphore` for zero-overhead acquire/tryAcquire; supports runtime `resize()` for gradual permit adjustment |
+| **Arrow Borrowing** | When a tier's slots are full, consumers borrow from lower-priority idle tiers (100ms timeout) |
+| **AdapTBF Constraints** | Bounds Arrow borrowing: each tier lends at most 50% of its slots, preventing starvation |
+| **RTT Metrics** | Per-tier dequeue→webhook-received latency (p50/p95/p99), independent of scheduling precision |
+| **BorrowStats** | `own_direct`, `own_blocking`, `borrowed`, `borrow_timeouts`, `borrow_rate` — full borrowing visibility |
 
 ---
 
 ## Precision Tiers
 
-| Tier | Window | Max Delay | Recommended Concurrency | Batch Strategy | Use Case |
-|------|--------|-----------|------------------------|----------------|----------|
-| ULTRA | 10ms | <1min | 10-50 | Single intent | Heartbeat, short deadline |
-| FAST | 50ms | <5min | 50-100 | Small batch | Message retry, exponential backoff |
-| HIGH | 100ms | <30min | 100-500 | Medium batch | Default choice, general purpose |
-| STANDARD | 500ms | <24h | 500-2000 | Large batch | **Recommended**, order timeout, scheduled notifications |
-| ECONOMY | 1000ms | >24h | 2000+ | Massive batch | Long-delay intents, data retention policies |
+| Tier | Window | Concurrency | Batch | Consumers | WAL Mode | Use Case |
+|------|--------|-------------|-------|-----------|----------|----------|
+| **ULTRA** | 10ms | 200 | 1×5ms | 16 | ASYNC | Heartbeats, sub-50ms deadlines |
+| **FAST** | 50ms | 150 | 1×10ms | 12 | ASYNC | Message retry, backoff |
+| **HIGH** | 100ms | 50 | 5×50ms | 4 | BATCH | General purpose |
+| **STANDARD** | 500ms | 50 | 20×100ms | 3 | DURABLE | **Recommended**, order timeouts |
+| **ECONOMY** | 1000ms | 50 | 25×300ms | 2 | DURABLE | Long-delay intents, bulk scheduling |
 
 **Selection Guide:**
-- For high-frequency deadlines or heartbeats: **ULTRA** or **FAST**
-- For order timeouts: **STANDARD** (best balance)
-- For massive long-delay intents: **ECONOMY**
+- Sub-50ms deadlines: **ULTRA** or **FAST**
+- Order timeouts and scheduled notifications: **STANDARD** (best balance of throughput and latency)
+- Massive batch scheduling (>1h delay): **ECONOMY** (highest resource efficiency)
 
 ---
 
-## Architecture Highlights
+## Performance Benchmarks
 
-LoomQ is built on first-principles thinking for maximum performance:
+**Test Environment:** JDK 25, NVMe SSD, 16 cores, localhost, Netty mock server
 
-### Virtual Thread Sleep Instead of Priority Queue
+### Full Benchmark (100k intents, 20k per tier)
 
-Traditional schedulers use priority queues (heap) with O(log n) insertion and centralized locks. LoomQ uses virtual threads that sleep until execution time—no locks, no heap operations, just pure OS-level scheduling.
+| Tier | E2E p50 | E2E p95 | E2E p99 | RTT p50 | RTT p95 |
+|------|---------|---------|---------|---------|---------|
+| ULTRA | 1,675ms | 2,967ms | 3,076ms | 1ms | 16ms |
+| FAST | 3,606ms | 5,979ms | 6,210ms | 1ms | 16ms |
+| HIGH | 11,272ms | 20,055ms | 20,800ms | 1ms | 16ms |
+| STANDARD | 18,192ms | 30,894ms | 31,503ms | 1ms | 16ms |
+| ECONOMY | 15,470ms | 27,987ms | 29,122ms | 15ms | 17ms |
+
+**System QPS:** 2,476 (100k intents in ~40s)
+
+### Arrow Borrowing Efficiency
+
+| Metric | Value |
+|--------|-------|
+| Direct acquires | 164,413 |
+| Borrowed acquires | 18,190 (9.6%) |
+| Blocking fallbacks | 6,768 |
+| Borrow timeouts | 11,047 |
+
+> **Key Insight:** Arrow borrowing handles 9.6% of all acquires without blocking. AdapTBF's 50% lend cap prevents high-priority tiers from starving ECONOMY while still enabling significant burst absorption.
+
+---
+
+## Embedded Usage (No HTTP Required)
+
+```java
+import com.loomq.LoomqEngine;
+import com.loomq.domain.intent.Intent;
+import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.spi.DeliveryHandler;
+import com.loomq.spi.DeliveryHandler.DeliveryResult;
+
+LoomqEngine engine = LoomqEngine.builder()
+    .walDir(Path.of("./data"))
+    .deliveryHandler(intent -> {
+        System.out.println("Intent fired: " + intent.getIntentId());
+        return DeliveryResult.SUCCESS;
+    })
+    .build();
+
+engine.start();
+
+// Schedule an intent 5 seconds from now
+Intent intent = new Intent();
+intent.setExecuteAt(Instant.now().plusSeconds(5));
+intent.setPrecisionTier(PrecisionTier.STANDARD);
+engine.createIntent(intent, AckMode.ASYNC);
+
+// ... when done:
+engine.close();
+```
+
+Use cases for embedded mode: single-node apps, integration tests, resource-constrained environments, custom shells on top of LoomQ core.
+
+---
+
+## Architecture
 
 ```
-Traditional:  insert(heap) → O(log n) + lock contention
-LoomQ:        virtualThread.sleep(until) → O(1), no locks
+loomq-server (Netty HTTP + JSON + webhook delivery)
+    ├── IntentHandler        — REST API routing (RadixTree)
+    ├── NettyHttpServer      — epoll + pooled allocator + semaphore backpressure
+    └── HttpDeliveryHandler  — Reactor Netty HTTP client
+
+loomq-core (embeddable kernel, zero HTTP/JSON deps)
+    ├── LoomqEngine           — builder-pattern entry point
+    ├── PrecisionScheduler    — time-wheel buckets, per-tier scan + batch consumers
+    │   ├── CohortManager     — CSA-style batched wakeup
+    │   ├── BucketGroupManager — per-tier time-bucket storage
+    │   └── ResizableSemaphore — runtime-adjustable concurrency (extends Semaphore)
+    ├── IntentStore           — in-memory ConcurrentHashMap storage
+    ├── SimpleWalWriter       — memory-mapped WAL with FFM API, ~100ns/record
+    ├── RecoveryPipeline      — snapshot + WAL replay on restart
+    └── SPI interfaces        — DeliveryHandler, CallbackHandler, RedeliveryDecider
 ```
 
-### MemorySegment + StripedCondition
+### Scheduler Design
 
-Zero object allocation for waiting. Uses `MemorySegment` for direct memory access and `StripedCondition` for striped condition variables—eliminating the "thundering herd" problem on wake-up.
+**Batch Consumers (fire-and-forget):** Each tier runs N virtual-thread consumers. A consumer acquires a permit (own tier or borrowed), polls the dispatch queue, and calls `deliveryHandler.deliverAsync()`. The permit is released in the async callback — consumer threads never block on HTTP.
 
-### Batch Delivery & Resource Isolation
+**Cohort Wakeup (CSA-inspired):** Intents with delay > precision window are grouped by cohort key. A single daemon thread wakes each cohort at its due time, flushing all intents into the bucket. This replaces per-intent virtual-thread sleep — one thread handles thousands of intents.
 
-Low-precision tiers (STANDARD, ECONOMY) benefit from automatic batch collection and delivery, achieving 10x per-thread efficiency compared to high-precision tiers.
+**Arrow Borrowing (AdapTBF-bounded):** When a tier's own semaphore is exhausted, consumers attempt `tryAcquire(100ms)` on each lower-priority tier. Up to 50% of a tier's slots can be lent. Borrowed permits are returned on the lender's semaphore, with `borrowedCount` tracking.
 
 ---
 
@@ -210,142 +233,118 @@ Low-precision tiers (STANDARD, ECONOMY) benefit from automatic batch collection 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/v1/intents` | Create an intent |
-| GET | `/v1/intents/{id}` | Get intent status |
-| PATCH | `/v1/intents/{id}` | Update intent |
-| POST | `/v1/intents/{id}/cancel` | Cancel intent |
+| GET | `/v1/intents/{id}` | Get intent by ID |
+| PATCH | `/v1/intents/{id}` | Update intent fields |
+| POST | `/v1/intents/{id}/cancel` | Cancel an intent |
 | POST | `/v1/intents/{id}/fire-now` | Trigger immediately |
 | GET | `/health` | Health check |
-| GET | `/metrics` | Prometheus metrics |
+| GET | `/health/live` | Liveness probe |
+| GET | `/health/ready` | Readiness probe (WAL health) |
+| GET | `/metrics` | JSON metrics snapshot |
 
-### Request Body
+### Create Intent Request
 
 ```json
 {
-  "executeAt": "2024-01-15T10:30:00Z",
-  "deadline": "2024-01-15T11:00:00Z",
+  "executeAt": "2026-05-01T10:30:00Z",
+  "deadline": "2026-05-01T11:00:00Z",
   "precisionTier": "STANDARD",
   "ackLevel": "DURABLE",
+  "idempotencyKey": "req-abc-123",
   "callback": {
-    "url": "http://your-server/callback",
+    "url": "https://example.com/webhook",
     "method": "POST",
-    "headers": {"X-Request-Id": "123"},
-    "body": "{\"event\": \"timeout\"}"
-  }
+    "headers": {"X-Request-Id": "123"}
+  },
+  "redelivery": {
+    "maxAttempts": 5,
+    "backoff": "exponential",
+    "initialDelayMs": 1000,
+    "maxDelayMs": 60000
+  },
+  "tags": {"tenant": "demo"}
 }
 ```
 
----
+**Required:** `executeAt` | **Optional:** `intentId`, `deadline`, `expiredAction`, `precisionTier`, `shardKey`, `ackLevel`, `callback`, `redelivery`, `idempotencyKey`, `tags`
 
-## v0.6.x Standalone Performance Summary
+### Error Responses
 
-**v0.6.x was the last single-module standalone milestone before the v0.7.x split.** It marked the end of the single-node era, after which the project moved to an embeddable core plus a standalone Netty service.
-
-### Performance Achievements
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| **ASYNC QPS** | 424,077 | Network + memory bandwidth bound |
-| **DURABLE QPS** | >150,000 | NVMe SSD fsync bound |
-| **Max Concurrent Intents** | 10M+ | 8GB heap memory |
-| **P99 Latency (ULTRA)** | ≤15ms | 10ms precision window |
-| **P99 Latency (STANDARD)** | ≤550ms | 500ms precision window, **recommended** |
-
-### Physical Limits Reached
-
-1. **Disk I/O**: DURABLE mode throughput is bounded by NVMe SSD random write IOPS (~500K). With group commit batching (20-50 records per fsync), theoretical max is 25K fsync/s → 500K-1.25M records/s. Achieved: >150K QPS including business logic overhead.
-
-2. **Network Bandwidth**: ASYNC mode is network and memory bandwidth bound. Netty + Virtual Threads achieve 424K QPS on JDK 25. Further optimization would require bypassing TCP stack or RDMA (out of scope for standalone).
-
-3. **CPU/Serialization**: JSON serialization overhead reduced to ~20ns per record (JDK 25 optimizations). No longer a bottleneck.
-
-4. **Scheduling**: Time-wheel bucketing achieves O(1) expiration check. Virtual thread sleep eliminates centralized scheduling overhead.
-
-### Resource Efficiency by Tier
-
-| Tier | Efficiency | Relative to ULTRA | Use Case |
-|------|-----------|-------------------|----------|
-| ULTRA | 2.5% | 1x | Distributed locks, heartbeats |
-| FAST | 5% | 2x | Message retry, backoff |
-| HIGH | 10% | 4x | Default precision |
-| **STANDARD** | **15%** | **6x** | **Recommended for production** |
-| ECONOMY | 25% | 10x | Massive long-delay intents |
-
-**Key Insight**: ECONOMY tier achieves 10x the resource efficiency of ULTRA. For intents with delays >1 hour, ECONOMY is strongly recommended.
+| Code | When |
+|------|------|
+| **404** | Intent not found |
+| **409** | Idempotency key conflict (duplicate with terminal state) |
+| **422** | Validation error (invalid time, unmodifiable state, etc.) |
+| **429** | Backpressure — retry after `retryAfterMs` from response body |
 
 ---
 
-## Known Limitations
+## SPI Extension Points
 
-LoomQ v0.6.x was the **last single-module standalone version**. The following limitations are historical notes that informed the v0.7.0 split.
+| Interface | Method | Purpose |
+|-----------|--------|---------|
+| `DeliveryHandler` | `deliverAsync(Intent)` → `CompletableFuture<DeliveryResult>` | How intents are dispatched (HTTP, MQ, local) |
+| `CallbackHandler` | `onIntentEvent(Intent, EventType, Throwable)` | Lifecycle event notification |
+| `RedeliveryDecider` | `shouldRedeliver(DeliveryContext)` → `boolean` | Custom retry policy |
 
-| Limitation | Description | Status |
-|------------|-------------|--------|
-| **REPLICATED ACK Not Implemented** | Distributed replication requires consensus protocol (Raft). REPLICATED mode currently falls back to DURABLE. | Planned for v0.7.0 |
-| **WAL in JSON Format** | WAL uses human-readable JSON instead of binary. Binary encoding would yield marginal gains (327ns/record already achieved). | Intentional trade-off |
-| **Memory-Bound Capacity** | IntentStore is in-memory only. ~10M intents require ~8GB heap. Plugin storage engine planned for v0.8.0. | Documented constraint |
-| **No Grafana Dashboard** | Observability limited to Prometheus metrics endpoint. Grafana templates are community-contributable. | Non-blocking |
-| **Single-Node Only** | No clustering, failover, or partition tolerance in v0.6.x. Multi-node support is the primary v0.7.0 goal. | Architectural boundary |
+`DeliveryResult` enum: `SUCCESS`, `RETRY`, `DEAD_LETTER`, `EXPIRED`
 
-### v0.6.x Completion Criteria
+---
 
-The following checklist defines v0.6.x completion. All items are now **✓ Done**:
+## Configuration
 
-- [x] Confirm core modules have no HTTP/JSON dependencies
-  - `IntentStore` ✓ Pure Java collections
-  - `IntentWal` ✓ Binary codec, no Jackson
-  - `BucketGroupManager` ✓ Pure Java
-  - `PrecisionTier` ⚠️ Has Jackson annotations (to be moved in v0.7.0)
-- [x] Create embedded demo (`EmbeddedDemo.java`)
-- [x] Document v0.6.x as the last single-module standalone version
-- [x] Tag `v0.6.3-final` and create `release/v0.6.x` branch
+Configuration is loaded from (highest to lowest priority):
+1. JVM system properties (`-Dloomq.xxx`)
+2. External `./config/application.yml`
+3. Classpath `application.yml`
+4. `@DefaultValue` annotations
 
-**Next Phase (v0.7.0)**: Split into `loomq-core` (embeddable, HTTP-free) + `loomq-server` (Netty HTTP layer).
+Key config groups: `server.*`, `netty.*`, `wal.*`, `scheduler.*`, `dispatcher.*`, `retry.*`, `recovery.*`
+
+See [Configuration Reference](docs/operations/CONFIGURATION.md) for the complete key list.
 
 ---
 
 ## Roadmap
 
-### v0.7.0
-- Split into `loomq-core` (embeddable) + `loomq-server` (standalone)
-- Plugin-based storage engine (RocksDB, LevelDB support)
-- REST API v2 with OpenAPI spec
+### v0.8.0 (current)
+- [x] Cohort-based batched wakeup (CSA-inspired)
+- [x] Arrow cross-tier slot borrowing
+- [x] AdapTBF lending constraints
+- [x] ResizableSemaphore (runtime concurrency adjustment)
+- [x] RTT per-tier metrics
+- [ ] Plugin-based storage engine (RocksDB, LevelDB)
 
-### v0.8.0
-- **Loomqex**: A future shell built on top of LoomQ for lease / lock semantics, once the kernel boundary is fully validated
+### v0.9.0
 - Multi-node clustering with Raft consensus
 - Web-based management console
+- **Loomqex**: lock/lease semantics built on the stable kernel boundary
 
 ### Future
-- Cloud-native deployment (Kubernetes operator)
+- Kubernetes operator
 - Multi-region replication
 - Schema registry for callback payloads
 
 ---
 
-## Development & Release
+## Development
 
-The current engineering baseline lives in the docs:
-
-- [Release checklist](docs/engineering/release-checklist.md)
-- [Benchmark checklist](docs/engineering/benchmark-checklist.md)
-- [Configuration reference](docs/operations/CONFIGURATION.md)
-- [Core model](docs/architecture/core-model.md)
-
-These documents are the source of truth for how we describe the current kernel and how we publish it.
+- [Release Checklist](docs/engineering/release-checklist.md)
+- [Benchmark Checklist](docs/engineering/benchmark-checklist.md)
+- [Configuration Reference](docs/operations/CONFIGURATION.md)
+- [Architecture Details](docs/development/ARCHITECTURE.md)
+- [Core Model](docs/architecture/core-model.md)
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-- **Issues**: Report bugs or request features at [GitHub Issues](https://github.com/loomq/loomq/issues)
-- **Pull Requests**: Fork, branch, and submit PRs against `main`
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
 ## License
 
 ```
-Copyright 2024 LoomQ Authors
+Copyright 2026 LoomQ Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

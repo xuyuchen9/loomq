@@ -1,6 +1,6 @@
 # LoomQ Deployment Guide
 
-Version: `0.7.0-SNAPSHOT`
+Version: `0.8.0-SNAPSHOT`
 
 This guide matches the current `Intent`-based standalone server.
 
@@ -23,7 +23,7 @@ mvn clean package -DskipTests
 ### Run
 
 ```bash
-java -jar loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar
+java -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
 ```
 
 The server listens on `http://localhost:8080` by default.
@@ -97,7 +97,7 @@ WantedBy=multi-user.target
 ### JVM Settings
 
 ```bash
-java -Xms2g -Xmx2g -XX:+UseZGC -jar loomq-server/target/loomq-server-0.7.0-SNAPSHOT.jar
+java -Xms2g -Xmx2g -XX:+UseZGC -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
 ```
 
 For production, increase heap according to your pending-intent target and WAL retention.
@@ -107,7 +107,7 @@ For production, increase heap according to your pending-intent target and WAL re
 ### Docker
 
 ```bash
-docker build -t loomq:0.7.0-SNAPSHOT .
+docker build -t loomq:0.8.0-SNAPSHOT .
 docker run -d \
   --name loomq \
   -p 8080:8080 \
@@ -115,7 +115,7 @@ docker run -d \
   -e LOOMQ_SERVER_PORT=8080 \
   -e LOOMQ_DATA_DIR=/data/wal \
   -e LOOMQ_NODE_ID=node-1 \
-  loomq:0.7.0-SNAPSHOT
+  loomq:0.8.0-SNAPSHOT
 ```
 
 ### Docker Compose
@@ -164,7 +164,7 @@ spec:
     spec:
       containers:
         - name: loomq
-          image: loomq:0.7.0-SNAPSHOT
+          image: loomq:0.8.0-SNAPSHOT
           ports:
             - containerPort: 8080
           env:
