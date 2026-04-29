@@ -223,13 +223,6 @@ final class PrecisionTierMetricsRegistry {
         return calculateP95(buckets, totalSamples);
     }
 
-    private long calculateP95DispatchQueueLagByTier(PrecisionTier tier) {
-        PrecisionTier resolvedTier = resolveTier(tier);
-        ConcurrentHashMap<Integer, AtomicLong> buckets = dispatchQueueLagByTier.get(resolvedTier);
-        long totalSamples = dispatchQueueLagSampleCountByTier.get(resolvedTier).get();
-        return calculateP95(buckets, totalSamples);
-    }
-
     Map<PrecisionTier, Long> getIntentCountsByTier() {
         Map<PrecisionTier, Long> result = new EnumMap<>(PrecisionTier.class);
         intentByTier.forEach((tier, count) -> result.put(tier, count.get()));
