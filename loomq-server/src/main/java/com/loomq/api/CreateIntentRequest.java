@@ -3,6 +3,7 @@ package com.loomq.api;
 import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.RedeliveryPolicy;
+import com.loomq.domain.intent.WalMode;
 import com.loomq.replication.AckLevel;
 
 import java.time.Instant;
@@ -20,6 +21,7 @@ public record CreateIntentRequest(
     Instant deadline,
     com.loomq.domain.intent.ExpiredAction expiredAction,
     PrecisionTier precisionTier,
+    WalMode walMode,
     String shardKey,
     AckLevel ackLevel,
     Callback callback,

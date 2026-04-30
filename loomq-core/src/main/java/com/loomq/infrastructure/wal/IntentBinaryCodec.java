@@ -7,6 +7,7 @@ import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.domain.intent.RedeliveryPolicy;
+import com.loomq.domain.intent.WalMode;
 import com.loomq.replication.AckLevel;
 
 import java.nio.ByteBuffer;
@@ -45,6 +46,7 @@ import java.util.Map;
  * 0x0F: tags (Map<String, String>)
  * 0x10: attempts (int)
  * 0x11: lastDeliveryId (String)
+ * 0x12: walMode (byte ordinal)
  *
  * String 编码：length(2B) + UTF-8 bytes
  * Map 编码：entryCount(4B) + [key(String) + value(String)]*
@@ -74,6 +76,7 @@ public class IntentBinaryCodec {
     private static final byte FIELD_TAGS = 0x0F;
     private static final byte FIELD_ATTEMPTS = 0x10;
     private static final byte FIELD_LAST_DELIVERY_ID = 0x11;
+    private static final byte FIELD_WAL_MODE = 0x12;
 
     // 预分配缓冲区大小（估算平均 Intent 大小）
     private static final int DEFAULT_BUFFER_SIZE = 512;
@@ -123,6 +126,10 @@ public class IntentBinaryCodec {
         }
         if (intent.getPrecisionTier() != null) {
             writeByteField(buffer, FIELD_PRECISION_TIER, (byte) intent.getPrecisionTier().ordinal());
+            fieldCount++;
+        }
+        if (intent.getWalMode() != null) {
+            writeByteField(buffer, FIELD_WAL_MODE, (byte) intent.getWalMode().ordinal());
             fieldCount++;
         }
 
@@ -200,6 +207,7 @@ public class IntentBinaryCodec {
         Instant deadline = null;
         ExpiredAction expiredAction = null;
         PrecisionTier precisionTier = null;
+        WalMode walMode = null;
         String shardKey = null;
         String shardId = null;
         AckLevel ackLevel = null;
@@ -227,6 +235,7 @@ public class IntentBinaryCodec {
                 case FIELD_DEADLINE -> deadline = Instant.ofEpochMilli(buffer.getLong());
                 case FIELD_EXPIRED_ACTION -> expiredAction = ExpiredAction.values()[buffer.get()];
                 case FIELD_PRECISION_TIER -> precisionTier = PRECISION_TIER_CATALOG.tierByOrdinal(buffer.get() & 0xFF);
+                case FIELD_WAL_MODE -> walMode = WalMode.values()[buffer.get()];
                 case FIELD_SHARD_KEY -> shardKey = readString(buffer, fieldLen);
                 case FIELD_SHARD_ID -> shardId = readString(buffer, fieldLen);
                 case FIELD_ACK_LEVEL -> ackLevel = AckLevel.values()[buffer.get()];
@@ -263,6 +272,7 @@ public class IntentBinaryCodec {
             deadline,
             expiredAction,
             precisionTier,
+            walMode,
             shardKey,
             shardId,
             ackLevel,

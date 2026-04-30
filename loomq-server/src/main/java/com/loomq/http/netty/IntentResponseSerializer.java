@@ -34,6 +34,7 @@ public final class IntentResponseSerializer {
     private static final byte[] FIELD_DEADLINE = "\"deadline\":".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_EXPIRED_ACTION = "\"expiredAction\":".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_PRECISION_TIER = "\"precisionTier\":".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_WAL_MODE = "\"walMode\":".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_ACK_LEVEL = "\"ackLevel\":".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_ATTEMPTS = "\"attempts\":".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_LAST_DELIVERY_ID = "\"lastDeliveryId\":".getBytes(StandardCharsets.UTF_8);
@@ -52,6 +53,7 @@ public final class IntentResponseSerializer {
         first = writeInstantField(buf, first, FIELD_DEADLINE, response.deadline());
         first = writeEnumField(buf, first, FIELD_EXPIRED_ACTION, response.expiredAction());
         first = writeEnumField(buf, first, FIELD_PRECISION_TIER, response.precisionTier());
+        first = writeEnumField(buf, first, FIELD_WAL_MODE, response.walMode());
         first = writeEnumField(buf, first, FIELD_ACK_LEVEL, response.ackLevel());
         first = writeIntField(buf, first, FIELD_ATTEMPTS, response.attempts());
         first = writeStringField(buf, first, FIELD_LAST_DELIVERY_ID, response.lastDeliveryId());
@@ -69,6 +71,7 @@ public final class IntentResponseSerializer {
         size += quotedLength(response.deadline());
         size += quotedLength(response.expiredAction());
         size += quotedLength(response.precisionTier());
+        size += quotedLength(response.walMode());
         size += quotedLength(response.ackLevel());
         size += 12;
         size += length(response.lastDeliveryId());

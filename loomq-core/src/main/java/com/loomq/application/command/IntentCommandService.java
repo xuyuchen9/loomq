@@ -7,6 +7,7 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.domain.intent.PrecisionTierProfile;
+import com.loomq.domain.intent.WalMode;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.infrastructure.wal.SimpleWalWriter;
 import com.loomq.spi.CallbackHandler;
@@ -90,7 +91,7 @@ public final class IntentCommandService {
             byte[] walPayload = IntentBinaryCodec.encode(intent);
 
             // 2. Resolve effective WAL mode
-            PrecisionTierProfile.WalTierMode effectiveMode = resolveWalMode(intent, ackMode);
+            WalMode effectiveMode = resolveWalMode(intent, ackMode);
 
             // 3. Start WAL write (I/O) — runs on background thread for DURABLE
             CompletableFuture<Long> walFuture = startWalWrite(walPayload, effectiveMode);
@@ -99,7 +100,7 @@ public final class IntentCommandService {
             intentStore.save(intent);
 
             // 5. For DURABLE mode, wait for fsync before scheduling
-            if (effectiveMode == PrecisionTierProfile.WalTierMode.DURABLE) {
+            if (effectiveMode == WalMode.DURABLE) {
                 walFuture.join();
             }
 
@@ -234,18 +235,24 @@ public final class IntentCommandService {
         });
     }
 
-    private PrecisionTierProfile.WalTierMode resolveWalMode(Intent intent, AckMode ackMode) {
+    private WalMode resolveWalMode(Intent intent, AckMode ackMode) {
+        // 1. Explicit AckMode wins (backward compatibility)
         if (ackMode != null) {
             return switch (ackMode) {
-                case ASYNC -> PrecisionTierProfile.WalTierMode.ASYNC;
-                case DURABLE, REPLICATED -> PrecisionTierProfile.WalTierMode.DURABLE;
+                case ASYNC -> WalMode.ASYNC;
+                case DURABLE, REPLICATED -> WalMode.DURABLE;
             };
         }
-        return PrecisionTierCatalog.defaultCatalog().walTierMode(intent.getPrecisionTier());
+        // 2. Intent-level walMode override
+        if (intent.getWalMode() != null) {
+            return intent.getWalMode();
+        }
+        // 3. Fall back to tier default
+        return PrecisionTierCatalog.defaultCatalog().walMode(intent.getPrecisionTier());
     }
 
     private CompletableFuture<Long> startWalWrite(byte[] walPayload,
-                                                   PrecisionTierProfile.WalTierMode mode) {
+                                                   WalMode mode) {
         return switch (mode) {
             case ASYNC -> walWriter.writeAsync(walPayload);
             case BATCH_DEFERRED -> {
@@ -260,17 +267,7 @@ public final class IntentCommandService {
     private long persistIntentState(Intent intent, AckMode ackMode) {
         byte[] data = IntentBinaryCodec.encode(intent);
 
-        // Resolve effective WAL mode: explicit ackMode wins, otherwise use tier's default
-        PrecisionTierProfile.WalTierMode effectiveMode;
-        if (ackMode != null) {
-            effectiveMode = switch (ackMode) {
-                case ASYNC -> PrecisionTierProfile.WalTierMode.ASYNC;
-                case DURABLE, REPLICATED -> PrecisionTierProfile.WalTierMode.DURABLE;
-            };
-        } else {
-            effectiveMode = PrecisionTierCatalog.defaultCatalog()
-                .walTierMode(intent.getPrecisionTier());
-        }
+        WalMode effectiveMode = resolveWalMode(intent, ackMode);
 
         return switch (effectiveMode) {
             case ASYNC -> walWriter.writeAsync(data).join();
