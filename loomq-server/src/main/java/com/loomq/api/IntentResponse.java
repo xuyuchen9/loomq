@@ -3,6 +3,7 @@ package com.loomq.api;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.domain.intent.WalMode;
 import com.loomq.http.netty.DirectSerializedResponse;
 import com.loomq.http.netty.IntentResponseSerializer;
 import com.loomq.replication.AckLevel;
@@ -23,6 +24,7 @@ public record IntentResponse(
     Instant deadline,
     com.loomq.domain.intent.ExpiredAction expiredAction,
     PrecisionTier precisionTier,
+    WalMode walMode,
     AckLevel ackLevel,
     int attempts,
     String lastDeliveryId,
@@ -38,6 +40,7 @@ public record IntentResponse(
             intent.getDeadline(),
             intent.getExpiredAction(),
             intent.getPrecisionTier(),
+            intent.getWalMode(),
             intent.getAckLevel(),
             intent.getAttempts(),
             intent.getLastDeliveryId(),

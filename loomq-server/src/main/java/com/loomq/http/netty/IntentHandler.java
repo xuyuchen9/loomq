@@ -108,6 +108,7 @@ public class IntentHandler {
         intent.setDeadline(request.deadline());
         intent.setExpiredAction(request.expiredAction());
         intent.setPrecisionTier(request.precisionTier() != null ? request.precisionTier() : DEFAULT_PRECISION_TIER);
+        intent.setWalMode(request.walMode());
         intent.setShardKey(request.shardKey());
         intent.setAckLevel(request.ackLevel() != null ? request.ackLevel() : AckLevel.DURABLE);
         intent.setCallback(request.callback());

@@ -65,6 +65,12 @@ public class Intent {
      */
     private PrecisionTier precisionTier;
 
+    /**
+     * WAL 持久化级别，覆盖精度档位默认值。
+     * null 表示使用精度档位的默认 walMode。
+     */
+    private WalMode walMode;
+
     // ========== 路由字段 ==========
 
     /**
@@ -156,6 +162,7 @@ public class Intent {
                    Instant deadline,
                    ExpiredAction expiredAction,
                    PrecisionTier precisionTier,
+                   WalMode walMode,
                    String shardKey,
                    String shardId,
                    AckLevel ackLevel,
@@ -173,6 +180,7 @@ public class Intent {
         this.deadline = deadline;
         this.expiredAction = expiredAction != null ? expiredAction : ExpiredAction.DISCARD;
         this.precisionTier = precisionTier != null ? precisionTier : defaultPrecisionTier();
+        this.walMode = walMode;
         this.shardKey = shardKey;
         this.shardId = shardId;
         this.ackLevel = ackLevel != null ? ackLevel : AckLevel.DURABLE;
@@ -196,6 +204,7 @@ public class Intent {
                                  Instant deadline,
                                  ExpiredAction expiredAction,
                                  PrecisionTier precisionTier,
+                                 WalMode walMode,
                                  String shardKey,
                                  String shardId,
                                  AckLevel ackLevel,
@@ -214,6 +223,7 @@ public class Intent {
             deadline,
             expiredAction,
             precisionTier,
+            walMode,
             shardKey,
             shardId,
             ackLevel,
@@ -366,6 +376,15 @@ public class Intent {
         this.updatedAt = Instant.now();
     }
 
+    public WalMode getWalMode() {
+        return walMode;
+    }
+
+    public void setWalMode(WalMode walMode) {
+        this.walMode = walMode;
+        this.updatedAt = Instant.now();
+    }
+
     public String getShardKey() {
         return shardKey;
     }
@@ -432,7 +451,7 @@ public class Intent {
 
     @Override
     public String toString() {
-        return String.format("Intent{id=%s, status=%s, executeAt=%s, deadline=%s, tier=%s}",
-            intentId, status, executeAt, deadline, precisionTier);
+        return String.format("Intent{id=%s, status=%s, executeAt=%s, deadline=%s, tier=%s, walMode=%s}",
+            intentId, status, executeAt, deadline, precisionTier, walMode);
     }
 }
