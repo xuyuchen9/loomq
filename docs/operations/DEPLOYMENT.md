@@ -26,20 +26,20 @@ mvn clean package -DskipTests
 java -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
 ```
 
-The server listens on `http://localhost:8080` by default.
+The server listens on `http://localhost:7928` by default.
 
 ### Verify
 
 ```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/health/ready
-curl http://localhost:8080/metrics
+curl http://localhost:7928/health
+curl http://localhost:7928/health/ready
+curl http://localhost:7928/metrics
 ```
 
 Create an `Intent`:
 
 ```bash
-curl -X POST http://localhost:8080/v1/intents \
+curl -X POST http://localhost:7928/v1/intents \
   -H "Content-Type: application/json" \
   -d '{
     "executeAt": "2026-04-20T10:00:00Z",
@@ -81,7 +81,7 @@ User=loomq
 Group=loomq
 WorkingDirectory=/opt/loomq
 Environment="LOOMQ_SERVER_HOST=0.0.0.0"
-Environment="LOOMQ_SERVER_PORT=8080"
+Environment="LOOMQ_SERVER_PORT=7928"
 Environment="LOOMQ_DATA_DIR=/opt/loomq/data/wal"
 Environment="LOOMQ_NODE_ID=node-1"
 ExecStart=/opt/loomq/bin/loomq-server.jar
@@ -110,9 +110,9 @@ For production, increase heap according to your pending-intent target and WAL re
 docker build -t loomq:0.8.0-SNAPSHOT .
 docker run -d \
   --name loomq \
-  -p 8080:8080 \
+  -p 7928:7928 \
   -v /host/wal:/data/wal \
-  -e LOOMQ_SERVER_PORT=8080 \
+  -e LOOMQ_SERVER_PORT=7928 \
   -e LOOMQ_DATA_DIR=/data/wal \
   -e LOOMQ_NODE_ID=node-1 \
   loomq:0.8.0-SNAPSHOT
@@ -137,7 +137,7 @@ data:
   application.yml: |
     server:
       host: "0.0.0.0"
-      port: 8080
+      port: 7928
     wal:
       data_dir: "/data/wal"
       flush_strategy: "batch"
@@ -166,12 +166,12 @@ spec:
         - name: loomq
           image: loomq:0.8.0-SNAPSHOT
           ports:
-            - containerPort: 8080
+            - containerPort: 7928
           env:
             - name: LOOMQ_SERVER_HOST
               value: "0.0.0.0"
             - name: LOOMQ_SERVER_PORT
-              value: "8080"
+              value: "7928"
             - name: LOOMQ_DATA_DIR
               value: "/data/wal"
             - name: LOOMQ_NODE_ID
@@ -236,12 +236,12 @@ Point Prometheus at the standalone server and scrape the metrics endpoint. Usefu
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LOOMQ_SERVER_HOST` | `0.0.0.0` | HTTP bind address |
-| `LOOMQ_SERVER_PORT` | `8080` | HTTP bind port |
+| `LOOMQ_SERVER_PORT` | `7928` | HTTP bind port |
 | `LOOMQ_SERVER_BACKLOG` | `1024` | Socket backlog |
 | `LOOMQ_VIRTUAL_THREADS` | `true` | Enable virtual threads |
 | `LOOMQ_MAX_REQUEST_SIZE` | `10485760` | Maximum request size in bytes |
 | `LOOMQ_THREAD_POOL_SIZE` | `200` | Fallback worker pool size |
-| `LOOMQ_NETTY_PORT` | `8080` | Netty bind port |
+| `LOOMQ_NETTY_PORT` | `7928` | Netty bind port |
 | `LOOMQ_NETTY_HOST` | `0.0.0.0` | Netty bind address |
 | `LOOMQ_WAL_DATA_DIR` | `./data/wal` | WAL data directory |
 | `LOOMQ_WAL_FLUSH_STRATEGY` | `batch` | WAL flush strategy |
@@ -256,7 +256,7 @@ Point Prometheus at the standalone server and scrape the metrics endpoint. Usefu
 
 ### Server Won't Start
 
-- verify port `8080` is free
+- verify port `7928` is free
 - verify the WAL directory is writable
 - confirm the Java version is 25+
 - check the startup log for the runtime configuration summary

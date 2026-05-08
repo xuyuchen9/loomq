@@ -81,6 +81,10 @@ final class PrecisionTierMetricsRegistry {
         resolveCounter(intentDueByTier, tier).incrementAndGet();
     }
 
+    void addIntentDueByTier(PrecisionTier tier, int count) {
+        resolveCounter(intentDueByTier, tier).addAndGet(count);
+    }
+
     void updateBucketSizeByTier(PrecisionTier tier, long size) {
         resolveCounter(bucketSizeByTier, tier).set(size);
     }

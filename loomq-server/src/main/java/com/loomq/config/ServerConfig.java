@@ -64,13 +64,13 @@ public record ServerConfig(
         Properties source = props == null ? new Properties() : props;
         return new ServerConfig(
                 ConfigSupport.string(source, "0.0.0.0", "server.host", "host"),
-                ConfigSupport.intValue(source, 8080, "server.port", "port"),
+                ConfigSupport.intValue(source, 7928, "server.port", "port"),
                 ConfigSupport.intValue(source, 1024, "server.backlog", "backlog"),
                 ConfigSupport.booleanValue(source, true, "server.virtual_threads", "server.virtualThreads", "virtualThreads"),
                 ConfigSupport.longValue(source, 10_485_760L, "server.max_request_size", "server.maxRequestSize", "maxRequestSize"),
                 ConfigSupport.intValue(source, 200, "server.thread_pool_size", "server.threadPoolSize", "threadPoolSize"),
                 ConfigSupport.string(source, "0.0.0.0", "netty.host", "nettyHost"),
-                ConfigSupport.intValue(source, 8080, "netty.port", "nettyPort"),
+                ConfigSupport.intValue(source, 7928, "netty.port", "nettyPort"),
                 ConfigSupport.intValue(source, 1, "netty.bossThreads", "netty.boss_threads", "bossThreads"),
                 ConfigSupport.intValue(source, 0, "netty.workerThreads", "netty.worker_threads", "workerThreads"),
                 ConfigSupport.intValue(source, 10_485_760, "netty.maxContentLength", "netty.max_content_length", "maxContentLength"),

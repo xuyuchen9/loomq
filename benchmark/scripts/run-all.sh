@@ -5,6 +5,8 @@
 #   ./run-all.sh              # 全量: 快测 + 慢测 + 集成 + 大压测
 #   ./run-all.sh --quick      # 快速: 跳过大压测, 只跑 benchmark smoke
 #   ./run-all.sh --no-bench   # 跳过所有压测
+#
+# 所有结果强制落库 (CSV + JSON + TXT)，旧报告自动轮转 (保留最近 10 组)。
 
 set -euo pipefail
 
@@ -51,6 +53,25 @@ run_mvn() {
 
 parse_counts() {
     grep "Tests run:" | tail -1 | sed 's/.*Tests run: \([0-9]*\).*Failures: \([0-9]*\).*Errors: \([0-9]*\).*/\1 \2 \3/'
+}
+
+# Extract field from pipe-delimited marker
+extract() { echo "$1" | grep -oP "${2}=\K[^|]+" || echo ""; }
+
+# Report rotation: keep only the N most recent reports/logs
+rotate_reports() {
+    local keep=10
+    # reports: keep 10 pairs = 20 files (json+txt)
+    local count
+    count=$(ls -1t "$REPORTS_DIR"/*.json "$REPORTS_DIR"/*.txt 2>/dev/null | wc -l)
+    if [ "$count" -gt "$((keep * 2))" ]; then
+        ls -1t "$REPORTS_DIR"/*.json "$REPORTS_DIR"/*.txt 2>/dev/null | tail -n +"$((keep * 2 + 1))" | xargs rm -f --
+    fi
+    # logs: keep 10
+    count=$(ls -1t "$LOGS_DIR"/*.log 2>/dev/null | wc -l)
+    if [ "$count" -gt "$keep" ]; then
+        ls -1t "$LOGS_DIR"/*.log 2>/dev/null | tail -n +"$((keep + 1))" | xargs rm -f --
+    fi
 }
 
 # ============================================================
@@ -120,27 +141,36 @@ fi
 echo "" | tee -a "$ALL_LOG"
 echo "=== Persisting results ===" | tee -a "$ALL_LOG"
 
-# CSV (wide format with per-tier columns)
+# Rotate old reports before saving new ones
+rotate_reports
+
+# --- CSV (unified 48-column wide format) ---
 CSV_FILE="$RESULTS_DIR/history.csv"
-MODE=$([ "$MODE" = "quick" ] && echo "quick" || echo "full")
+MODE_VAL=$([ "$MODE" = "quick" ] && echo "quick" || echo "full")
 
 TIERS="ULTRA FAST HIGH STANDARD ECONOMY"
-COLS="timestamp,commit,branch,mode,total_tests,total_failed"
+COLS="timestamp,commit,branch,mode,java_version,os_name,total_tests,total_failed"
 for T in $TIERS; do
-    COLS="$COLS,${T}_qps,${T}_p50_ms,${T}_p95_ms,${T}_p99_ms,${T}_mean_ms,${T}_max_ms,${T}_samples"
-    COLS="$COLS,${T}_util_pct,${T}_active_dispatch,${T}_queue_size,${T}_queue_offer_failed,${T}_queue_retry"
-    COLS="$COLS,${T}_acked,${T}_dead_letter,${T}_expired,${T}_wal_mode"
+    COLS="$COLS,${T}_qps,${T}_p95_ms,${T}_p99_ms,${T}_e2e_p95_ms,${T}_e2e_p99_ms,${T}_util_pct,${T}_backpressure"
 done
-COLS="$COLS,global_p95_trigger,global_p95_wake,global_p95_webhook,global_p95_total"
-COLS="$COLS,cohort_registered,cohort_flushed,cohort_wake_events,cohort_active,cohort_pending"
-COLS="$COLS,vt_reduction_pct,vts_saved"
+COLS="$COLS,completion_rate,total_qps,global_p95_total_ms,vt_reduction_pct,cohort_wake_events"
 
-if [ ! -f "$CSV_FILE" ]; then
+# Header consistency: verify or rebuild
+NEEDS_NEW_HEADER=true
+if [ -f "$CSV_FILE" ]; then
+    FIRST_LINE=$(head -1 "$CSV_FILE")
+    if [ "$FIRST_LINE" = "$COLS" ]; then
+        NEEDS_NEW_HEADER=false
+    fi
+fi
+if [ "$NEEDS_NEW_HEADER" = true ]; then
     echo "$COLS" > "$CSV_FILE"
 fi
 
-# Helper: extract field from pipe-delimited marker
-extract() { echo "$1" | grep -oP "${2}=\K[^|]+" || echo ""; }
+# Extract env info
+ENV_LINE=$(grep "^RESULT_ENV|" "$ALL_LOG" | tail -1)
+JAVA_VER=$(extract "$ENV_LINE" 'java_version')
+OS_NAME=$(extract "$ENV_LINE" 'os_name')
 
 # Extract counts from log
 CORE_FAST=$(grep -A2 "fast-tests (core)" "$ALL_LOG" | parse_counts || echo "0 0 0")
@@ -155,47 +185,73 @@ INTEG_T=$(echo "$INTEG" | awk '{print $1}')
 TOTAL=$((CORE_T + SERV_T + SLOW_T + INTEG_T))
 
 # Build CSV row
-VALS="$DATE_ISO,$COMMIT,$BRANCH,$MODE,$TOTAL,0"
+VALS="$DATE_ISO,$COMMIT,$BRANCH,$MODE_VAL,$JAVA_VER,$OS_NAME,$TOTAL,0"
 for T in $TIERS; do
-    TIER=$(echo "$T" | tr '[:upper:]' '[:lower:]')
     ROW=$(grep "RESULT_ROW|tier=$T" "$ALL_LOG" | tail -1)
     LAT=$(grep "RESULT_LATENCY|tier=$T" "$ALL_LOG" | tail -1)
+    E2E=$(grep "RESULT_E2E_LATENCY|tier=$T" "$ALL_LOG" | tail -1)
     SEM=$(grep "RESULT_SEMAPHORE|tier=$T" "$ALL_LOG" | tail -1)
-    QUE=$(grep "RESULT_QUEUE|tier=$T" "$ALL_LOG" | tail -1)
-    LIF=$(grep "RESULT_LIFECYCLE|tier=$T" "$ALL_LOG" | tail -1)
 
     VALS="$VALS,$(extract "$ROW" 'qps')"
-    VALS="$VALS,$(extract "$LAT" 'p50')"
     VALS="$VALS,$(extract "$LAT" 'p95')"
     VALS="$VALS,$(extract "$LAT" 'p99')"
-    VALS="$VALS,$(extract "$LAT" 'mean')"
-    VALS="$VALS,$(extract "$LAT" 'max')"
-    VALS="$VALS,$(extract "$LAT" 'samples')"
+    VALS="$VALS,$(extract "$E2E" 'p95')"
+    VALS="$VALS,$(extract "$E2E" 'p99')"
     VALS="$VALS,$(extract "$SEM" 'utilization_pct')"
-    VALS="$VALS,$(extract "$SEM" 'active')"
-    VALS="$VALS,$(extract "$QUE" 'size')"
-    VALS="$VALS,$(extract "$QUE" 'offer_failed')"
-    VALS="$VALS,$(extract "$QUE" 'retry')"
-    VALS="$VALS,$(extract "$LIF" 'acked')"
-    VALS="$VALS,$(extract "$LIF" 'dead_letter')"
-    VALS="$VALS,$(extract "$LIF" 'expired')"
+    VALS="$VALS,$(extract "$ROW" 'backpressure')"
 done
+
+# Final RESULT marker for completion_rate
+RESULT_LINE=$(grep "^RESULT|" "$ALL_LOG" | tail -1)
 GLOBAL=$(grep "RESULT_GLOBAL_LATENCY" "$ALL_LOG" | tail -1)
-VALS="$VALS,$(extract "$GLOBAL" 'p95_trigger')"
-VALS="$VALS,$(extract "$GLOBAL" 'p95_wake')"
-VALS="$VALS,$(extract "$GLOBAL" 'p95_webhook')"
+OPT=$(grep "RESULT_OPTIMIZATION" "$ALL_LOG" | tail -1)
+COHORT=$(grep "RESULT_COHORT" "$ALL_LOG" | tail -1)
+SYSQPS=$(grep "RESULT_SYSTEM_QPS" "$ALL_LOG" | tail -1)
+
+VALS="$VALS,$(extract "$RESULT_LINE" 'completion_rate')"
+VALS="$VALS,$(extract "$SYSQPS" 'total_qps')"
 VALS="$VALS,$(extract "$GLOBAL" 'p95_total')"
+VALS="$VALS,$(extract "$OPT" 'vt_reduction_pct')"
+VALS="$VALS,$(extract "$COHORT" 'wake_events')"
 
 echo "$VALS" >> "$CSV_FILE"
 
-# TXT Summary (rich)
+# --- JSON ---
+JSON_FILE="$REPORTS_DIR/full-suite-$TIMESTAMP.json"
+{
+    echo "{"
+    echo "  \"timestamp\": \"$DATE_ISO\","
+    echo "  \"commit\": \"$COMMIT\","
+    echo "  \"branch\": \"$BRANCH\","
+    echo "  \"mode\": \"$MODE_VAL\","
+    echo "  \"total_tests\": $TOTAL,"
+    echo "  \"total_failed\": 0,"
+    echo "  \"tiers\": {"
+    first=true
+    for T in $TIERS; do
+        if [ "$first" = true ]; then first=false; else echo ","; fi
+        ROW=$(grep "RESULT_ROW|tier=$T" "$ALL_LOG" | tail -1)
+        LAT=$(grep "RESULT_LATENCY|tier=$T" "$ALL_LOG" | tail -1)
+        E2E=$(grep "RESULT_E2E_LATENCY|tier=$T" "$ALL_LOG" | tail -1)
+        printf "    \"%s\": {\"qps\": \"%s\", \"p95\": \"%s\", \"p99\": \"%s\", \"e2e_p95\": \"%s\", \"e2e_p99\": \"%s\"}" \
+            "$T" "$(extract "$ROW" 'qps')" "$(extract "$LAT" 'p95')" "$(extract "$LAT" 'p99')" \
+            "$(extract "$E2E" 'p95')" "$(extract "$E2E" 'p99')"
+    done
+    echo ""
+    echo "  }"
+    echo "}"
+} > "$JSON_FILE"
+
+# --- TXT Summary (rich) ---
 SUMMARY_FILE="$REPORTS_DIR/full-suite-$TIMESTAMP.txt"
 {
     echo "LoomQ Full Test Suite Results"
     echo "=============================="
     echo "Date  : $DATE_ISO"
     echo "Commit: $COMMIT ($BRANCH)"
-    echo "Mode  : $MODE"
+    echo "Mode  : $MODE_VAL"
+    echo "Java  : $JAVA_VER"
+    echo "OS    : $OS_NAME"
     echo ""
     printf "%-16s %6s %8s %8s\n" "Phase" "Tests" "Failed" "Errors"
     printf "%-16s %6s %8s %8s\n" "----------" "-----" "------" "------"
@@ -208,35 +264,35 @@ SUMMARY_FILE="$REPORTS_DIR/full-suite-$TIMESTAMP.txt"
 
     if grep -q "RESULT_ROW|" "$ALL_LOG" 2>/dev/null; then
         echo "=== Per-Tier Performance Profile ==="
-        printf "%-10s %7s %5s %5s %5s %5s %5s %5s %5s %6s %5s %5s %s\n" \
-            "Tier" "QPS" "p50" "p75" "p90" "p95" "p99" "p999" "mean" "Util%" "Queue" "BP" "Lifecycle"
-        printf "%-10s %7s %5s %5s %5s %5s %5s %5s %5s %6s %5s %5s %s\n" \
-            "----------" "------" "---" "---" "---" "---" "---" "----" "----" "-----" "-----" "--" "---------"
+        printf "%-10s %7s %5s %5s %5s %5s %5s %5s %5s %6s %5s %s\n" \
+            "Tier" "QPS" "p50" "p95" "p99" "e2e_p95" "e2e_p99" "max" "mean" "Util%" "Queue" "BP"
+        printf "%-10s %7s %5s %5s %5s %5s %5s %5s %5s %6s %5s %s\n" \
+            "----------" "------" "---" "---" "---" "---" "----" "---" "----" "-----" "-----" "--"
         for T in $TIERS; do
             ROW=$(grep "RESULT_ROW|tier=$T" "$ALL_LOG" | tail -1)
             LAT=$(grep "RESULT_LATENCY|tier=$T" "$ALL_LOG" | tail -1)
+            E2E=$(grep "RESULT_E2E_LATENCY|tier=$T" "$ALL_LOG" | tail -1)
             SEM=$(grep "RESULT_SEMAPHORE|tier=$T" "$ALL_LOG" | tail -1)
             QUE=$(grep "RESULT_QUEUE|tier=$T" "$ALL_LOG" | tail -1)
-            LIF=$(grep "RESULT_LIFECYCLE|tier=$T" "$ALL_LOG" | tail -1)
             [ -z "$ROW" ] && continue
             QPS=$(extract "$ROW" 'qps')
-            printf "%-10s %7s %5s %5s %5s %5s %5s %5s %5s %6s %5s %5s %s\n" \
+            printf "%-10s %7s %5s %5s %5s %5s %5s %5s %5s %6s %5s %s\n" \
                 "$T" "$QPS" \
-                "$(extract "$LAT" 'p50')" "$(extract "$LAT" 'p75')" "$(extract "$LAT" 'p90')" \
-                "$(extract "$LAT" 'p95')" "$(extract "$LAT" 'p99')" "$(extract "$LAT" 'p999')" \
-                "$(extract "$LAT" 'mean')" "$(extract "$SEM" 'utilization_pct')" \
-                "$(extract "$QUE" 'size')" "$(extract "$ROW" 'backpressure')" \
-                "ACK:$(extract "$LIF" 'acked') DL:$(extract "$LIF" 'dead_letter')"
+                "$(extract "$LAT" 'p50')" \
+                "$(extract "$LAT" 'p95')" "$(extract "$LAT" 'p99')" \
+                "$(extract "$E2E" 'p95')" "$(extract "$E2E" 'p99')" \
+                "$(extract "$LAT" 'max')" "$(extract "$LAT" 'mean')" \
+                "$(extract "$SEM" 'utilization_pct')" \
+                "$(extract "$QUE" 'size')" "$(extract "$ROW" 'backpressure')"
         done
         echo ""
 
-        echo "=== SLO Validation (scheduler wakeup latency) ==="
-        echo "  ULTRA:    p95<15ms p99<25ms"
-        echo "  FAST:     p95<60ms p99<90ms"
-        echo "  HIGH:     p95<120ms p99<180ms"
-        echo "  STANDARD: p95<550ms p99<800ms"
-        echo "  ECONOMY:  p95<1100ms p99<1500ms"
-        echo "  (see RESULT_LATENCY markers for actual values)"
+        echo "=== SLO Validation (E2E latency: executeAt -> webhook received) ==="
+        echo "  ULTRA:    p95<50ms   p99<100ms"
+        echo "  FAST:     p95<150ms  p99<250ms"
+        echo "  HIGH:     p95<600ms  p99<1000ms"
+        echo "  STANDARD: p95<1500ms p99<2200ms"
+        echo "  ECONOMY:  p95<3500ms p99<5000ms"
         echo ""
 
         echo "=== System Resources ==="
@@ -247,6 +303,7 @@ SUMMARY_FILE="$REPORTS_DIR/full-suite-$TIMESTAMP.txt"
 
     echo "Log : $ALL_LOG"
     echo "CSV : $CSV_FILE"
+    echo "JSON: $JSON_FILE"
 } > "$SUMMARY_FILE"
 
 # ============================================================
@@ -261,5 +318,6 @@ echo "  ALL PHASES COMPLETE"
 echo "=============================================================="
 echo "  CSV  : $CSV_FILE"
 echo "  TXT  : $SUMMARY_FILE"
+echo "  JSON : $JSON_FILE"
 echo "  Log  : $ALL_LOG"
 echo ""

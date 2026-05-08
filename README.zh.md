@@ -64,12 +64,12 @@ mvn clean package -DskipTests
 java -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
 ```
 
-服务默认监听 `http://localhost:8080`。
+服务默认监听 `http://localhost:7928`。
 
 ### 创建第一个 Intent
 
 ```bash
-curl -X POST http://localhost:8080/v1/intents \
+curl -X POST http://localhost:7928/v1/intents \
   -H "Content-Type: application/json" \
   -d '{
     "executeAt": "'$(date -u -d "+30 seconds" +%Y-%m-%dT%H:%M:%SZ)'",
@@ -84,7 +84,7 @@ curl -X POST http://localhost:8080/v1/intents \
 ### 查询 Intent 状态
 
 ```bash
-curl http://localhost:8080/v1/intents/{intentId}
+curl http://localhost:7928/v1/intents/{intentId}
 ```
 
 ---

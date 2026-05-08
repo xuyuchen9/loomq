@@ -21,7 +21,7 @@ scrape_configs:
   # LoomQ single node
   - job_name: 'loomq-single'
     static_configs:
-      - targets: ['loomq-single:8080']
+      - targets: ['loomq-single:7928']
     metrics_path: '/metrics'
     scrape_interval: 10s
 
@@ -29,19 +29,19 @@ scrape_configs:
   - job_name: 'loomq-cluster'
     static_configs:
       - targets:
-          - 'loomq-node0:8080'
-          - 'loomq-node1:8080'
+          - 'loomq-node0:7928'
+          - 'loomq-node1:7928'
     metrics_path: '/metrics'
     scrape_interval: 10s
 
   # LoomQ cluster with relabeling for shard identification
   - job_name: 'loomq-cluster-detailed'
     static_configs:
-      - targets: ['loomq-node0:8080']
+      - targets: ['loomq-node0:7928']
         labels:
           shard_id: 'shard-0'
           shard_index: '0'
-      - targets: ['loomq-node1:8080']
+      - targets: ['loomq-node1:7928']
         labels:
           shard_id: 'shard-1'
           shard_index: '1'

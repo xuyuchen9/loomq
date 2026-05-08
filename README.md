@@ -64,12 +64,12 @@ mvn clean package -DskipTests
 java -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
 ```
 
-Server listens on `http://localhost:8080` by default.
+Server listens on `http://localhost:7928` by default.
 
 ### Create Your First Intent
 
 ```bash
-curl -X POST http://localhost:8080/v1/intents \
+curl -X POST http://localhost:7928/v1/intents \
   -H "Content-Type: application/json" \
   -d '{
     "executeAt": "'$(date -u -d "+30 seconds" +%Y-%m-%dT%H:%M:%SZ)'",
@@ -84,7 +84,7 @@ curl -X POST http://localhost:8080/v1/intents \
 ### Check Intent Status
 
 ```bash
-curl http://localhost:8080/v1/intents/{intentId}
+curl http://localhost:7928/v1/intents/{intentId}
 ```
 
 ---
