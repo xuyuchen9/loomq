@@ -241,6 +241,7 @@ class IntentStateTransitionTest {
             deadline,
             ExpiredAction.DEAD_LETTER,
             PrecisionTier.FAST,
+            null,
             "shard-a",
             "shard-1",
             AckLevel.REPLICATED,
@@ -274,7 +275,7 @@ class IntentStateTransitionTest {
         Intent restored = Intent.restore(
             "intent-acked", IntentStatus.ACKED,
             Instant.now(), Instant.now(), Instant.now(), null,
-            ExpiredAction.DISCARD, PrecisionTier.HIGH,
+            ExpiredAction.DISCARD, PrecisionTier.HIGH, null,
             "s", "s1", AckLevel.DURABLE,
             null, null, null, Map.of(), 1, null
         );

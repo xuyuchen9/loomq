@@ -849,7 +849,7 @@ public class SchedulerTriggerBenchmarkWithMockServer {
                 result.tier().name(),
                 p.precisionWindowMs(), p.maxConcurrency(), p.batchSize(),
                 p.batchWindowMs(), p.consumerCount(), p.dispatchQueueCapacity(),
-                p.walTierMode().name());
+                p.walMode().name());
 
             if (peak == null || result.qps() > peak.qps()) {
                 peak = result;
@@ -899,7 +899,7 @@ public class SchedulerTriggerBenchmarkWithMockServer {
 
         // Per-tier WAL mode indicators
         for (PrecisionTier tier : PrecisionTier.values()) {
-            var walMode = com.loomq.domain.intent.PrecisionTierCatalog.defaultCatalog().walTierMode(tier);
+            var walMode = com.loomq.domain.intent.PrecisionTierCatalog.defaultCatalog().walMode(tier);
             System.out.printf(Locale.ROOT,
                 "RESULT_WAL_MODE|tier=%s|wal_mode=%s%n",
                 tier.name(), walMode.name());
