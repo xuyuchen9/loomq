@@ -10,7 +10,7 @@ WORKDIR /app
 COPY loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar /app/loomq.jar
 
 # 暴露端口
-EXPOSE 8080
+EXPOSE 7928
 
 # 启动命令
 CMD ["java", "--enable-preview", "-jar", "loomq.jar"]

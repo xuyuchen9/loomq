@@ -103,6 +103,10 @@ public class MetricsCollector {
         tierMetrics.incrementIntentDueByTier(tier);
     }
 
+    public void addIntentDueByTier(PrecisionTier tier, int count) {
+        tierMetrics.addIntentDueByTier(tier, count);
+    }
+
     /**
      * 更新指定精度档位的 Bucket 大小
      */

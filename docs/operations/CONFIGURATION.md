@@ -23,7 +23,7 @@ LoomQ 当前使用两层配置来源：
 | Key | 默认值 | 作用 | 生产建议 |
 |-----|--------|------|----------|
 | `server.host` | `0.0.0.0` | 绑定地址 | 生产环境绑定到明确网卡或容器入口 |
-| `server.port` | `8080` | HTTP 监听端口 | 与负载均衡和探针端口保持一致 |
+| `server.port` | `7928` | HTTP 监听端口 | 与负载均衡和探针端口保持一致 |
 | `server.backlog` | `1024` | 连接队列长度 | 高并发入口可适度调大 |
 | `server.virtual_threads` | `true` | 是否启用虚拟线程处理请求 | 默认开启 |
 | `server.max_request_size` | `10485760` | 请求体大小上限，字节 | 按回调体积上限设置 |
@@ -34,7 +34,7 @@ LoomQ 当前使用两层配置来源：
 | Key | 默认值 | 作用 | 生产建议 |
 |-----|--------|------|----------|
 | `netty.host` | `0.0.0.0` | Netty 绑定地址 | 与 `server.host` 保持一致 |
-| `netty.port` | `8080` | Netty 监听端口 | 与 `server.port` 保持一致 |
+| `netty.port` | `7928` | Netty 监听端口 | 与 `server.port` 保持一致 |
 | `netty.bossThreads` | `1` | boss 线程数 | 一般保持 1 |
 | `netty.workerThreads` | `0` | worker 线程数 | `0` 表示使用 Netty 默认值 |
 | `netty.maxContentLength` | `10485760` | HTTP body 上限，字节 | 与 `server.max_request_size` 对齐 |

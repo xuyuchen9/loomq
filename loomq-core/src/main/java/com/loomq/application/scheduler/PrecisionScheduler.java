@@ -10,6 +10,7 @@ import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.spi.DefaultRedeliveryDecider;
 import com.loomq.spi.RedeliveryDecider;
 import com.loomq.store.IntentStore;
+import com.loomq.tracing.IntentTraceStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,6 +28,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
@@ -83,13 +85,50 @@ public class PrecisionScheduler {
         public final AtomicLong ownAcquires = new AtomicLong(0);
         public final AtomicLong ownBlockingAcquires = new AtomicLong(0);
         public final AtomicLong borrowedAcquires = new AtomicLong(0);
-        public final AtomicLong borrowedTimeouts = new AtomicLong(0);
         public long totalBorrowed() { return borrowedAcquires.get(); }
         public double borrowRate() {
             long total = ownAcquires.get() + ownBlockingAcquires.get() + borrowedAcquires.get();
             return total > 0 ? (double) borrowedAcquires.get() / total * 100.0 : 0;
         }
     }
+
+    // Permit timing diagnostics
+    private final PermitTimingStats permitTimingStats = new PermitTimingStats();
+    public static class PermitTimingStats {
+        public final AtomicLong totalAcquireWaitNanos = new AtomicLong(0);
+        public final AtomicLong totalPermitHoldNanos = new AtomicLong(0);
+        public final AtomicLong totalDeliverAsyncNanos = new AtomicLong(0);
+        public final AtomicLong totalBlockingWaitNanos = new AtomicLong(0);
+        public final AtomicInteger deliverySampleCount = new AtomicInteger(0);
+        public final AtomicInteger blockingWaitCount = new AtomicInteger(0);
+
+        public double avgAcquireWaitMs() {
+            int n = deliverySampleCount.get();
+            return n > 0 ? (totalAcquireWaitNanos.get() / (double) n) / 1_000_000.0 : 0;
+        }
+        public double avgPermitHoldMs() {
+            int n = deliverySampleCount.get();
+            return n > 0 ? (totalPermitHoldNanos.get() / (double) n) / 1_000_000.0 : 0;
+        }
+        public double avgDeliverAsyncUs() {
+            int n = deliverySampleCount.get();
+            return n > 0 ? (totalDeliverAsyncNanos.get() / (double) n) / 1_000.0 : 0;
+        }
+        public double avgBlockingWaitMs() {
+            int n = blockingWaitCount.get();
+            return n > 0 ? (totalBlockingWaitNanos.get() / (double) n) / 1_000_000.0 : 0;
+        }
+        public void reset() {
+            totalAcquireWaitNanos.set(0);
+            totalPermitHoldNanos.set(0);
+            totalDeliverAsyncNanos.set(0);
+            totalBlockingWaitNanos.set(0);
+            deliverySampleCount.set(0);
+            blockingWaitCount.set(0);
+        }
+    }
+
+    public PermitTimingStats getPermitTimingStats() { return permitTimingStats; }
 
     private volatile boolean running = false;
     private volatile boolean paused = false;
@@ -313,12 +352,21 @@ public class PrecisionScheduler {
             return;
         }
 
+        // Trace: record intent creation
+        IntentTraceStore.getInstance().recordCreated(
+            intent.getIntentId(), intent.getTraceId(), intent.getPrecisionTier());
+
         Instant executeAt = intent.getExecuteAt();
         Instant now = Instant.now();
         long delayMs = Duration.between(now, executeAt).toMillis();
 
         PrecisionTier tier = intent.getPrecisionTier();
         long precisionWindowMs = precisionTierCatalog.precisionWindowMs(tier);
+
+        // Transition to SCHEDULED if still in CREATED state
+        if (intent.getStatus() == IntentStatus.CREATED) {
+            intent.transitionTo(IntentStatus.SCHEDULED);
+        }
 
         if (delayMs <= 0) {
             // 已到期，直接投递
@@ -380,17 +428,21 @@ public class PrecisionScheduler {
             if (!dueIntents.isEmpty()) {
                 logger.debug("Found {} due intents for tier {}", dueIntents.size(), tier);
 
-                // 记录指标
-                for (int i = 0; i < dueIntents.size(); i++) {
-                    metrics.incrementIntentDueByTier(tier);
-                }
+                // Batch metrics: single addAndGet instead of N incrementAndGet
+                metrics.addIntentDueByTier(tier, dueIntents.size());
+
+                // Batch enqueue timestamp: one nanoTime for the entire scan cycle
+                long batchEnqueueNanos = System.nanoTime();
 
                 for (Intent intent : dueIntents) {
                     // 记录唤醒延迟
                     recordWakeupLatency(intent, now);
 
                     // 追踪入队时间（用于 due→dispatch lag 计算）
-                    enqueueTimeNanos.put(intent.getIntentId(), System.nanoTime());
+                    enqueueTimeNanos.put(intent.getIntentId(), batchEnqueueNanos);
+
+                    // Trace: record enqueued
+                    IntentTraceStore.getInstance().recordEnqueued(intent.getIntentId());
 
                     // 提交到档位队列（有界，带短重试）
                     ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
@@ -410,6 +462,7 @@ public class PrecisionScheduler {
                             tier, intent.getIntentId());
                     }
                 }
+
             }
 
             // 更新桶大小指标
@@ -474,6 +527,7 @@ public class PrecisionScheduler {
         ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
 
         while (running) {
+            long acquireStartNs = System.nanoTime();
             ResizableSemaphore acquired;
             try {
                 acquired = acquireWithBorrow(tier);
@@ -481,41 +535,66 @@ public class PrecisionScheduler {
                 Thread.currentThread().interrupt();
                 break;
             }
+            long acquireEndNs = System.nanoTime();
 
             Intent intent = queue.pollFirst();
             if (intent == null) {
                 acquired.release();
-                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+                long parkNanos = switch (tier) {
+                    case ULTRA -> 100_000L;    // 100μs (10ms precision window ≈ 1%)
+                    case FAST  -> 200_000L;    // 200μs
+                    default    -> 1_000_000L;  // 1ms
+                };
+                LockSupport.parkNanos(parkNanos);
                 continue;
             }
 
+            // Trace: record dequeued (right after pollFirst, before any other processing)
+            IntentTraceStore.getInstance().recordDequeued(intent.getIntentId());
+
             recordDispatchQueueLag(intent, tier);
 
+            // Only accumulate acquire wait for actual deliveries so the average
+            // denominator (deliverySampleCount) matches.
+            permitTimingStats.totalAcquireWaitNanos.addAndGet(acquireEndNs - acquireStartNs);
+            final long permitAcquiredNs = acquireEndNs;
+
+            long deliverStartNs = System.nanoTime();
             deliveryHandler.deliverAsync(intent)
                 .orTimeout(30, TimeUnit.SECONDS)
                 .whenComplete((result, ex) -> {
-                    try {
-                        if (ex != null) {
-                            handleDeliveryException(intent, tier, ex);
-                        } else {
-                            finalizeIntent(intent, tier, result);
-                        }
-                    } finally {
-                        if (acquired != tierSemaphores.get(tier)) {
-                            acquired.decrementBorrowed();
-                        }
-                        acquired.release();
+                    long releaseNs = System.nanoTime();
+
+                    permitTimingStats.totalPermitHoldNanos.addAndGet(releaseNs - permitAcquiredNs);
+                    permitTimingStats.deliverySampleCount.incrementAndGet();
+
+                    // Release permit before finalizeIntent to maximize concurrency
+                    if (acquired != tierSemaphores.get(tier)) {
+                        acquired.decrementBorrowed();
                     }
+                    acquired.release();
+
+                    // Defer finalization off the event loop (ConcurrentHashMap.compute + store update)
+                    sharedExecutor.submit(() -> {
+                        try {
+                            if (ex != null) {
+                                handleDeliveryException(intent, tier, ex);
+                            } else {
+                                finalizeIntent(intent, tier, result);
+                            }
+                        } catch (Exception e) {
+                            logger.error("Error in delivery callback for intent {}", intent.getIntentId(), e);
+                        }
+                    });
                 });
+            permitTimingStats.totalDeliverAsyncNanos.addAndGet(System.nanoTime() - deliverStartNs);
         }
     }
 
     /**
      * Arrow-inspired cross-tier slot acquisition.
-     * Tries own tier first. If full, borrows from lower-priority idle tiers
-     * with a 100ms timeout. Falls back to blocking on own tier.
-     *
-     * @return the semaphore that was acquired (may be a borrowed one)
+     * Non-blocking try on own tier, then non-blocking borrow from lower-priority
+     * tiers (AdapTBF-bounded), then blocking fallback on own tier.
      */
     private ResizableSemaphore acquireWithBorrow(PrecisionTier tier) throws InterruptedException {
         ResizableSemaphore own = tierSemaphores.get(tier);
@@ -524,26 +603,27 @@ public class PrecisionScheduler {
             return own;
         }
 
-        // Try to borrow from lower-priority tiers (AdapTBF: bounded lending)
+        // Non-blocking borrow from lower-priority tiers (AdapTBF: bounded lending)
         PrecisionTier[] allTiers = PrecisionTier.values();
         for (int i = tier.ordinal() + 1; i < allTiers.length; i++) {
             ResizableSemaphore other = tierSemaphores.get(allTiers[i]);
 
-            if (other.getBorrowedCount() >= (int) (other.getCurrentMax() * MAX_LEND_RATIO)) {
-                borrowStats.borrowedTimeouts.incrementAndGet();
-                continue;
-            }
+            if (other.availablePermits() <= 0) continue;
+            if (other.getBorrowedCount() >= (int) (other.getCurrentMax() * MAX_LEND_RATIO)) continue;
 
-            if (other.tryAcquire(100, TimeUnit.MILLISECONDS)) {
+            if (other.tryAcquire()) {
                 other.incrementBorrowed();
                 borrowStats.borrowedAcquires.incrementAndGet();
                 return other;
             }
-            borrowStats.borrowedTimeouts.incrementAndGet();
         }
 
-        // Fallback: block on own tier
+        // Fallback: block on own tier until a completing delivery returns a permit
+        long blockingStartNs = System.nanoTime();
         own.acquire();
+        long blockingEndNs = System.nanoTime();
+        permitTimingStats.totalBlockingWaitNanos.addAndGet(blockingEndNs - blockingStartNs);
+        permitTimingStats.blockingWaitCount.incrementAndGet();
         borrowStats.ownBlockingAcquires.incrementAndGet();
         return own;
     }
@@ -616,11 +696,17 @@ public class PrecisionScheduler {
             intent.transitionTo(IntentStatus.DISPATCHING);
             intent.incrementAttempts();
 
+            // Trace: record delivered
+            IntentTraceStore.getInstance().recordDelivered(intent.getIntentId());
+
             switch (result) {
                 case SUCCESS:
                     intent.transitionTo(IntentStatus.DELIVERED);
                     intent.transitionTo(IntentStatus.ACKED);
                     intentStore.update(intent);
+                    // Trace: record acked
+                    IntentTraceStore.getInstance().recordAcked(intent.getIntentId());
+                    IntentTraceStore.getInstance().updateStatus(intent.getIntentId(), IntentStatus.ACKED);
                     logger.debug("Intent {} delivered successfully", intent.getIntentId());
                     break;
 
@@ -699,13 +785,6 @@ public class PrecisionScheduler {
                 break;
         }
         intentStore.update(intent);
-    }
-
-    /**
-     * 生成投递 ID
-     */
-    private String generateDeliveryId(Intent intent) {
-        return "delivery_" + intent.getIntentId() + "_" + intent.getAttempts();
     }
 
     /**
