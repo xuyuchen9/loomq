@@ -18,7 +18,7 @@ JVM_XMS="${JVM_XMS:-2g}"
 JVM_XMX="${JVM_XMX:-2g}"
 JVM_GC="${JVM_GC:-ZGC}"
 JVM_GC_PAUSE="${JVM_GC_PAUSE:-10}"
-LOOMQ_PORT="${LOOMQ_PORT:-8080}"
+LOOMQ_PORT="${LOOMQ_PORT:-7928}"
 LOOMQ_HOST="${LOOMQ_HOST:-0.0.0.0}"
 
 # Function to print colored messages
@@ -140,7 +140,7 @@ Environment Variables:
   JVM_XMX              Maximum heap size (default: 2g)
   JVM_GC               Garbage collector: ZGC, G1GC, ParallelGC (default: ZGC)
   JVM_GC_PAUSE         Max GC pause target in ms (default: 10)
-  LOOMQ_PORT           Server port (default: 8080)
+  LOOMQ_PORT           Server port (default: 7928)
   LOOMQ_HOST           Server host (default: 0.0.0.0)
   LOOMQ_DATA_DIR       WAL data directory (default: ./data/wal)
   LOOMQ_EXTRA_PROPS    Additional JVM system properties

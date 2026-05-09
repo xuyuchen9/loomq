@@ -17,6 +17,8 @@ import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.http.json.JsonCodec;
 import com.loomq.replication.AckLevel;
 import com.loomq.store.IdempotencyResult;
+import com.loomq.tracing.IntentTrace;
+import com.loomq.tracing.IntentTraceStore;
 import io.netty.handler.codec.http.HttpMethod;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,6 +55,7 @@ public class IntentHandler {
     public void register(RadixRouter router) {
         router.add(HttpMethod.POST, "/v1/intents", this::createIntent);
         router.add(HttpMethod.GET, "/v1/intents/{intentId}", this::getIntent);
+        router.add(HttpMethod.GET, "/v1/intents/{intentId}/trace", this::getTrace);
         router.add(HttpMethod.PATCH, "/v1/intents/{intentId}", this::patchIntent);
         router.add(HttpMethod.POST, "/v1/intents/{intentId}/cancel", this::cancelIntent);
         router.add(HttpMethod.POST, "/v1/intents/{intentId}/fire-now", this::fireNow);
@@ -242,6 +245,22 @@ public class IntentHandler {
         }
 
         return new IntentActionResponse(intentId, IntentStatus.DISPATCHING.name());
+    }
+
+    /**
+     * GET /v1/intents/{intentId}/trace
+     */
+    public Object getTrace(HttpMethod method, String uri, byte[] body,
+                           Map<String, String> headers,
+                           Map<String, String> pathParams) {
+        String intentId = pathParams.get("intentId");
+        IntentTrace trace = IntentTraceStore.getInstance().get(intentId);
+
+        if (trace == null) {
+            return errorResponse(404, "40402", "No trace found for intent: " + intentId);
+        }
+
+        return trace.toJson();
     }
 
     private AckMode toAckMode(AckLevel ackLevel) {

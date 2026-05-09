@@ -17,12 +17,6 @@
 .PARAMETER NoCompile
     Skip compilation step
 
-.PARAMETER Save
-    Auto-save results to history
-
-.PARAMETER NoSave
-    Preview mode (do not save results)
-
 .PARAMETER Help
     Show help message
 
@@ -37,9 +31,6 @@
 
 .PARAMETER Workload
     Workload distribution profile: uniform, prod-typical, burst-ultra, mixed-heavy (default: uniform)
-
-.PARAMETER OutputJson
-    Also write results as JSON file alongside the text summary
 #>
 
 param(
@@ -47,14 +38,11 @@ param(
     [switch]$Quick,
     [switch]$Compare,
     [switch]$NoCompile,
-    [switch]$Save,
-    [switch]$NoSave,
     [switch]$Help,
     [switch]$KeepOpen,
     [switch]$NoPause,
     [switch]$VerboseOutput,
-    [string]$Workload = "uniform",
-    [switch]$OutputJson
+    [string]$Workload = "uniform"
 )
 
 # ============================================================
@@ -292,6 +280,34 @@ function Get-LatestSummaryFile {
     return Get-ChildItem -Path $SummaryDir -Filter "summary-*.txt" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
+}
+
+function Remove-OldReports {
+    param([int]$Keep = 10)
+
+    $ReportsDir = Join-Path $ProjectRoot "benchmark\results\reports"
+    $LogsDir = Join-Path $ProjectRoot "benchmark\results\logs"
+
+    try {
+        if (Test-Path $ReportsDir) {
+            $reports = Get-ChildItem -Path $ReportsDir -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -in '.json','.txt' } |
+                Sort-Object LastWriteTime -Descending
+            if ($null -ne $reports -and $reports.Count -gt ($Keep * 2)) {
+                $reports | Select-Object -Skip ($Keep * 2) | Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+
+    try {
+        if (Test-Path $LogsDir) {
+            $logs = Get-ChildItem -Path $LogsDir -Filter "*.log" -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending
+            if ($null -ne $logs -and $logs.Count -gt $Keep) {
+                $logs | Select-Object -Skip $Keep | Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
 }
 
 function ConvertFrom-BenchmarkMarker {
@@ -537,33 +553,92 @@ function Write-BenchmarkHistoryCsv {
     $Commit = Get-GitCommit
     $Branch = try { git rev-parse --abbrev-ref HEAD 2>$null } catch { "unknown" }
 
-    if (-not (Test-Path $HistoryFile)) {
-        "timestamp,commit,branch,scenario,tier,qps,p50_ms,p95_ms,p99_ms,utilization_pct,completion_pct,backpressure_events" |
-            Out-File -FilePath $HistoryFile -Encoding UTF8
+    # --- Unified 48-column schema ---
+    $Tiers = @("ULTRA","FAST","HIGH","STANDARD","ECONOMY")
+    $HeaderCols = @("timestamp","commit","branch","mode","java_version","os_name","total_tests","total_failed")
+    foreach ($t in $Tiers) {
+        $HeaderCols += "${t}_qps","${t}_p95_ms","${t}_p99_ms","${t}_e2e_p95_ms","${t}_e2e_p99_ms","${t}_util_pct","${t}_backpressure"
+    }
+    $HeaderCols += "completion_rate","total_qps","global_p95_total_ms","vt_reduction_pct","cohort_wake_events"
+    $ExpectedHeader = $HeaderCols -join ","
+
+    # Header consistency: verify or rebuild
+    $NeedsNewHeader = $true
+    if (Test-Path $HistoryFile) {
+        $FirstLine = (Get-Content $HistoryFile -TotalCount 1 -ErrorAction SilentlyContinue)
+        if ($FirstLine -eq $ExpectedHeader) {
+            $NeedsNewHeader = $false
+        }
+    }
+    if ($NeedsNewHeader) {
+        [System.IO.File]::WriteAllLines($HistoryFile, @($ExpectedHeader), [System.Text.UTF8Encoding]::new($false))
     }
 
-    if ($SchedulerResult) {
-        $SchedulerRows = Get-BenchmarkRowData -Rows $SchedulerResult.Rows
-        foreach ($Row in $SchedulerRows) {
-            $Tier = [string]$Row["tier"]
-            $Qps = Get-ResultDouble $Row "qps"
-            $Latency = Get-ResultDouble $Row "avg_latency_ms"
-            $Concurrency = Get-ResultInt $Row "concurrency"
-            $Backpressure = Get-ResultInt $Row "backpressure"
-            $Completion = Get-ResultDouble $SchedulerResult.Data "completion_rate" -Default 0
-            $Utilization = if ($Concurrency -gt 0 -and $Latency -gt 0) {
-                [math]::Round(($Qps * $Latency / 1000.0) / $Concurrency * 100, 1)
-            } else { 0 }
+    # Parse all RESULT markers from scheduler output
+    $ParsedLatency = @{}
+    $ParsedE2E = @{}
+    $ParsedSemaphore = @{}
+    $ParsedEnv = @{}
+    $ParsedGlobal = @{}
+    $ParsedCohort = @{}
+    $ParsedOptimization = @{}
+    $ParsedSysQps = @{}
+    $SchedulerRows = @()
 
-            "$Timestamp,$Commit,$Branch,scheduler,$Tier,$Qps,N/A,$Latency,N/A,$Utilization,$Completion,$Backpressure" |
-                Out-File -FilePath $HistoryFile -Encoding UTF8 -Append
+    if ($SchedulerResult -and $SchedulerResult.Lines) {
+        foreach ($line in $SchedulerResult.Lines) {
+            if ($line -match '^(RESULT_[A-Z0-9_]+)\|(.+)') {
+                $markerType = $Matches[1]
+                $row = @{}
+                foreach ($pair in $Matches[2].Split('|')) {
+                    $kv = $pair.Split('=', 2)
+                    if ($kv.Count -eq 2) { $row[$kv[0]] = $kv[1] }
+                }
+                switch ($markerType) {
+                    'RESULT_ROW'           { $SchedulerRows += $row }
+                    'RESULT_LATENCY'       { $ParsedLatency[$row["tier"]] = $row }
+                    'RESULT_E2E_LATENCY'   { $ParsedE2E[$row["tier"]] = $row }
+                    'RESULT_SEMAPHORE'     { $ParsedSemaphore[$row["tier"]] = $row }
+                    'RESULT_ENV'           { $ParsedEnv = $row }
+                    'RESULT_GLOBAL_LATENCY'{ $ParsedGlobal = $row }
+                    'RESULT_COHORT'        { $ParsedCohort = $row }
+                    'RESULT_OPTIMIZATION'  { $ParsedOptimization = $row }
+                    'RESULT_SYSTEM_QPS'    { $ParsedSysQps = $row }
+                }
+            }
         }
     }
 
-    if ($HttpResult) {
-        "$Timestamp,$Commit,$Branch,http,ALL,$(Get-ResultDouble $HttpResult.Data 'peak_qps'),N/A,$(Get-ResultDouble $HttpResult.Data 'best_p99_ms'),$(Get-ResultDouble $HttpResult.Data 'worst_p99_ms'),N/A,N/A,N/A" |
-            Out-File -FilePath $HistoryFile -Encoding UTF8 -Append
+    $Mode = if ($Quick) { "quick" } else { "full" }
+    $JavaVersion = if ($ParsedEnv.Count -gt 0) { $ParsedEnv["java_version"] } else { "" }
+    $OsName = if ($ParsedEnv.Count -gt 0) { $ParsedEnv["os_name"] } else { "" }
+
+    # Build row values
+    $Vals = @($Timestamp, $Commit, $Branch, $Mode, $JavaVersion, $OsName, "", "")
+
+    foreach ($t in $Tiers) {
+        $row  = $SchedulerRows | Where-Object { $_["tier"] -eq $t } | Select-Object -First 1
+        $lat  = $ParsedLatency[$t]
+        $e2e  = $ParsedE2E[$t]
+        $sem  = $ParsedSemaphore[$t]
+
+        $Vals += if ($row) { $row["qps"] } else { "" }
+        $Vals += if ($lat) { $lat["p95"] } else { "" }
+        $Vals += if ($lat) { $lat["p99"] } else { "" }
+        $Vals += if ($e2e) { $e2e["p95"] } else { "" }
+        $Vals += if ($e2e) { $e2e["p99"] } else { "" }
+        $Vals += if ($sem) { $sem["utilization_pct"] } else { "" }
+        $Vals += if ($row) { $row["backpressure"] } else { "" }
     }
+
+    $Vals += if ($SchedulerResult) { Get-ResultDouble $SchedulerResult.Data "completion_rate" -Default "" } else { "" }
+    $Vals += if ($ParsedSysQps.Count -gt 0) { $ParsedSysQps["total_qps"] } else { "" }
+    $Vals += if ($ParsedGlobal.Count -gt 0) { $ParsedGlobal["p95_total"] } else { "" }
+    $Vals += if ($ParsedOptimization.Count -gt 0) { $ParsedOptimization["vt_reduction_pct"] } else { "" }
+    $Vals += if ($ParsedCohort.Count -gt 0) { $ParsedCohort["wake_events"] } else { "" }
+
+    $RowLine = $Vals -join ","
+    [System.IO.File]::AppendAllText($HistoryFile, $RowLine + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 
     Write-Info "History appended to: $HistoryFile"
 }
@@ -580,10 +655,12 @@ function Write-BenchmarkJson {
     $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $JsonFile = Join-Path $JsonDir ("benchmark-" + $Timestamp + ".json")
 
+    $JsonBranch = try { (git rev-parse --abbrev-ref HEAD 2>$null).Trim() } catch { "unknown" }
+
     $Output = [ordered]@{
         timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
         commit = Get-GitCommit
-        branch = try { git rev-parse --abbrev-ref HEAD 2>$null } catch { "unknown" }
+        branch = $JsonBranch
         scenarios = @{}
     }
 
@@ -1122,7 +1199,7 @@ $script:VerboseScenarioOutput = $VerboseOutput -or $script:PauseOnExit
 # 显示帮助
 if ($Help) {
     Write-Host @"
-LoomQ Performance Benchmark v0.7.1
+LoomQ Performance Benchmark v0.8.0
 
 Usage: .\benchmark.ps1 [Options]
 
@@ -1131,21 +1208,19 @@ Options:
   -Quick           Quick test mode
   -Compare         Show history comparison only
   -NoCompile       Skip compilation
-  -Save            Auto-save results to history
-  -NoSave          Preview mode (do not save)
   -KeepOpen        Keep console window open after finish
   -NoPause         Never pause on exit (for scripted runs)
   -VerboseOutput   Show full scenario logs
   -Workload <name> Workload distribution: uniform, prod-typical, burst-ultra, mixed-heavy (default: uniform)
-  -OutputJson      Also write results as JSON file
   -Help            Show this help
 
+Note: All results are always persisted (CSV + JSON + TXT). Old reports are
+      automatically rotated (10 most recent kept).
+
 Examples:
-  .\benchmark.ps1                  # Run full tests, ask to save
+  .\benchmark.ps1                  # Run full tests
   .\benchmark.ps1 -InternalOnly    # Internal tests only
   .\benchmark.ps1 -Compare         # View history
-  .\benchmark.ps1 -Save            # Auto save results
-  .\benchmark.ps1 -NoSave          # Preview mode
   .\benchmark.ps1 -KeepOpen        # Keep window open
   .\benchmark.ps1 -VerboseOutput   # Full scenario logs
 "@
@@ -1155,7 +1230,7 @@ Examples:
 # 横幅
 Write-Host ""
 Write-Host "+============================================================+" -ForegroundColor Magenta
-Write-Host "|          LoomQ Atomic Performance Benchmark v0.7.1         |" -ForegroundColor Magenta
+Write-Host "|          LoomQ Atomic Performance Benchmark v0.8.0         |" -ForegroundColor Magenta
 Write-Host "+============================================================+" -ForegroundColor Magenta
 Write-Host ""
 
@@ -1344,26 +1419,20 @@ try {
     Write-Header "Summary"
     $SummaryLines | ForEach-Object { Write-Host $_ }
 
-    if (-not $NoSave) {
-        $SummaryFile = Save-BenchmarkSummary -Lines $SummaryLines
-        Write-Host ""
-        Write-Success "Summary saved"
-        Write-Info "Report: $SummaryFile"
+    Remove-OldReports
 
-        # Always write CSV history when saving
-        Write-BenchmarkHistoryCsv -InternalResult $InternalResult -HttpResult $HttpResult -SchedulerResult $SchedulerResult
+    $SummaryFile = Save-BenchmarkSummary -Lines $SummaryLines
+    Write-Host ""
+    Write-Success "Summary saved"
+    Write-Info "Report: $SummaryFile"
 
-        if ($OutputJson) {
-            Write-BenchmarkJson -InternalResult $InternalResult -HttpResult $HttpResult -SchedulerResult $SchedulerResult
-        }
+    Write-BenchmarkHistoryCsv -InternalResult $InternalResult -HttpResult $HttpResult -SchedulerResult $SchedulerResult
 
-        $Latest = Get-LatestSummaryFile
-        if ($Latest) {
-            Write-Info "Latest: $($Latest.FullName)"
-        }
-    } else {
-        Write-Host ""
-        Write-Info "Preview mode: summary not saved"
+    Write-BenchmarkJson -InternalResult $InternalResult -HttpResult $HttpResult -SchedulerResult $SchedulerResult
+
+    $Latest = Get-LatestSummaryFile
+    if ($Latest) {
+        Write-Info "Latest: $($Latest.FullName)"
     }
 
     Write-Host ""

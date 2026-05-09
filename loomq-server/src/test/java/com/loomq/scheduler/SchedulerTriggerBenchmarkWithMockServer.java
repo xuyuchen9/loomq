@@ -12,6 +12,7 @@ import com.loomq.store.IntentStore;
 import com.sun.management.OperatingSystemMXBean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,11 +38,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 调度器端到端性能基准测试（带 Mock Webhook Server）
  *
- * 在 Windows 环境下使用 Java 内置 HttpServer 搭建真实测试环境。
+ * 在 Windows 环境下使用 Netty 搭建真实测试环境。
  *
  * @author loomq
  * @since v0.6.2
  */
+@Tag("benchmark")
 public class SchedulerTriggerBenchmarkWithMockServer {
 
     private static final Logger logger = LoggerFactory.getLogger(SchedulerTriggerBenchmarkWithMockServer.class);
@@ -59,7 +61,8 @@ public class SchedulerTriggerBenchmarkWithMockServer {
     private IntentStore intentStore;
     private MetricsCollector metrics;
     private NettyMockWebhookServer mockServer;
-    private BatchedHttpDeliveryHandler deliveryHandler;
+    private ReactorNettyDeliveryHandler deliveryHandler;
+    private SimulatedDelayDeliveryHandler simulatedDelayHandler;
 
     // 统计各档位接收到的 webhook 数量
     private final Map<PrecisionTier, AtomicInteger> webhookReceivedByTier = new ConcurrentHashMap<>();
@@ -99,12 +102,25 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         logger.info("Scheduler benchmark setup: creating scheduler components");
         intentStore = new IntentStore();
 
-        deliveryHandler = new BatchedHttpDeliveryHandler(WEBHOOK_PORT);
+        boolean useSimulatedDelay = Boolean.getBoolean("loomq.benchmark.simulated-delay");
+        boolean useChameleonMode = Boolean.getBoolean("loomq.benchmark.chameleon");
+
+        deliveryHandler = new ReactorNettyDeliveryHandler(WEBHOOK_PORT, useChameleonMode);
+
+        if (useSimulatedDelay) {
+            Map<String, Integer> simDelays = new HashMap<>();
+            for (PrecisionTier tier : PrecisionTier.values()) {
+                simDelays.put(tier.name(), getDelayForTier(tier));
+            }
+            simulatedDelayHandler = new SimulatedDelayDeliveryHandler(deliveryHandler, simDelays);
+        }
+
+        final DeliveryHandler deliveryDelegate = simulatedDelayHandler != null ? simulatedDelayHandler : deliveryHandler;
 
         // Wrap to record scheduler precision at dequeue time
         DeliveryHandler wrappedHandler = intent -> {
             dequeuedAtMs.put(intent.getIntentId(), System.currentTimeMillis());
-            return deliveryHandler.deliverAsync(intent);
+            return deliveryDelegate.deliverAsync(intent);
         };
 
         scheduler = new PrecisionScheduler(intentStore, wrappedHandler, new DefaultRedeliveryDecider());
@@ -119,6 +135,9 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         if (scheduler != null) {
             scheduler.stop();
         }
+        if (simulatedDelayHandler != null) {
+            simulatedDelayHandler.shutdown();
+        }
         if (deliveryHandler != null) {
             deliveryHandler.shutdown();
         }
@@ -126,6 +145,7 @@ public class SchedulerTriggerBenchmarkWithMockServer {
     }
 
     private void startMockServer() throws IOException {
+        boolean zeroDelay = Boolean.getBoolean("loomq.benchmark.simulated-delay");
         Map<String, Integer> delays = new HashMap<>();
         Map<String, AtomicInteger> receivedMap = new HashMap<>();
         for (PrecisionTier tier : PrecisionTier.values()) {
@@ -133,7 +153,7 @@ public class SchedulerTriggerBenchmarkWithMockServer {
             receivedMap.put(tier.name(), webhookReceivedByTier.get(tier));
         }
         mockServer = new NettyMockWebhookServer(WEBHOOK_PORT, delays, receivedMap,
-            webhookReceiveTimeMs, totalWebhookReceived);
+            webhookReceiveTimeMs, totalWebhookReceived, zeroDelay);
         try {
             mockServer.start();
         } catch (InterruptedException e) {
@@ -916,18 +936,45 @@ public class SchedulerTriggerBenchmarkWithMockServer {
             "RESULT_OPTIMIZATION|vts_old_path=%d|vts_new_path=%d|vt_reduction_pct=%.1f|vts_saved=%d%n",
             vtsOld, vtsNew, vtReductionPct, vtsOld - vtsNew);
 
+        // Delivery client info
+        boolean zeroDelay = Boolean.getBoolean("loomq.benchmark.simulated-delay");
+        System.out.printf(Locale.ROOT,
+            "RESULT_CLIENT|handler=%s|zero_delay=%s|simulated_delay=%s%n",
+            deliveryHandler != null ? deliveryHandler.getClass().getSimpleName() : "N/A",
+            zeroDelay, simulatedDelayHandler != null);
+
         // Batch delivery metrics
         if (deliveryHandler != null) {
             deliveryHandler.printBatchMarkers();
         }
 
+        // Simulated delay metrics
+        if (simulatedDelayHandler != null) {
+            System.out.printf("RESULT_SIM_DELAY|avg_schedule_delay_ms=%.1f|avg_late_ms=%.1f|submitted=%d|released=%d%n",
+                simulatedDelayHandler.getAvgScheduleDelayMs(),
+                simulatedDelayHandler.getAvgVtSleepMs(),
+                simulatedDelayHandler.getSubmittedCount(),
+                simulatedDelayHandler.getReleasedCount());
+        }
+
         // Arrow cross-tier borrowing metrics
         var borrowStats = scheduler.getBorrowStats();
         System.out.printf(Locale.ROOT,
-            "RESULT_BORROW|own_direct=%d|own_blocking=%d|borrowed=%d|borrow_timeouts=%d|borrow_rate=%.1f%n",
+            "RESULT_BORROW|own_direct=%d|own_blocking=%d|borrowed=%d|borrow_rate=%.1f%n",
             borrowStats.ownAcquires.get(), borrowStats.ownBlockingAcquires.get(),
-            borrowStats.borrowedAcquires.get(), borrowStats.borrowedTimeouts.get(),
+            borrowStats.borrowedAcquires.get(),
             borrowStats.borrowRate());
+
+        // Permit timing diagnostics
+        var permitTiming = scheduler.getPermitTimingStats();
+        System.out.printf(Locale.ROOT,
+            "RESULT_PERMIT_TIMING|acquire_wait_avg_ms=%.1f|permit_hold_avg_ms=%.1f|deliver_async_avg_us=%.1f|blocking_wait_avg_ms=%.1f|blocking_count=%d|delivery_samples=%d%n",
+            permitTiming.avgAcquireWaitMs(),
+            permitTiming.avgPermitHoldMs(),
+            permitTiming.avgDeliverAsyncUs(),
+            permitTiming.avgBlockingWaitMs(),
+            permitTiming.blockingWaitCount.get(),
+            permitTiming.deliverySampleCount.get());
 
         // Pipeline trace: avg time at each stage (all tiers combined)
         printPipelineTrace();

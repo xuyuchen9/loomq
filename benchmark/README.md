@@ -1,4 +1,4 @@
-# LoomQ 原子化性能基准测试
+# LoomQ 性能基准测试
 
 ## 目录结构
 
@@ -6,12 +6,13 @@
 benchmark/
 ├── scripts/                    # 测试脚本
 │   ├── benchmark.ps1          # PowerShell 脚本 (Windows)
-│   ├── benchmark.sh           # Bash 脚本 (Linux/Mac)
-│   └── benchmark.cmd          # CMD 脚本 (Windows)
+│   ├── benchmark.sh           # Bash 脚本 (Linux/macOS)
+│   ├── run-all.ps1            # 一键全量测试 (Windows)
+│   └── run-all.sh             # 一键全量测试 (Linux/macOS)
 ├── results/                    # 测试结果
-│   ├── history.csv            # 历史记录
-│   └── reports/               # 测试报告
-│       └── report-*.md
+│   ├── history.csv            # 历史记录 (48 列宽格式)
+│   ├── reports/               # 测试报告 (JSON + TXT)
+│   └── logs/                  # 完整运行日志
 ├── post_intent.lua            # wrk 压测脚本
 └── README.md                   # 本文档
 ```
@@ -21,197 +22,167 @@ benchmark/
 ### Windows (PowerShell)
 
 ```powershell
-# 进入项目根目录
-cd D:\Development\Projects\Personal\loomq
-
-# 运行测试
+# 运行全部场景 (internal + HTTP + scheduler)
 .\benchmark\scripts\benchmark.ps1
 
 # 仅运行内部测试（无需启动服务）
 .\benchmark\scripts\benchmark.ps1 -InternalOnly
 
+# 快速模式
+.\benchmark\scripts\benchmark.ps1 -Quick
+
 # 查看历史对比
 .\benchmark\scripts\benchmark.ps1 -Compare
 
-# 自动保存结果
-.\benchmark\scripts\benchmark.ps1 -Save
-
-# 预览模式（不保存）
-.\benchmark\scripts\benchmark.ps1 -NoSave
-
-# 查看帮助
-.\benchmark\scripts\benchmark.ps1 -Help
+# 一键全量测试 (快测 + 慢测 + 集成 + 压测)
+.\benchmark\scripts\run-all.ps1
+.\benchmark\scripts\run-all.ps1 -Quick
 ```
 
-### Linux/Mac (Bash)
+### Linux/macOS (Bash)
 
 ```bash
-# 进入项目根目录
-cd /path/to/loomq
-
-# 运行测试
+# 运行全部场景
 ./benchmark/scripts/benchmark.sh
+
+# 仅运行调度器压测
+./benchmark/scripts/benchmark.sh --scenario=scheduler
+
+# 快速模式
+./benchmark/scripts/benchmark.sh --quick
 
 # 查看历史对比
 ./benchmark/scripts/benchmark.sh --compare
+
+# 一键全量测试
+./benchmark/scripts/run-all.sh
+./benchmark/scripts/run-all.sh --quick
 ```
 
 ## 参数说明
+
+### benchmark.ps1
 
 | 参数 | 说明 |
 |------|------|
 | `-InternalOnly` | 仅运行内部组件测试 |
 | `-Quick` | 快速测试模式 |
-| `-Compare` | 仅显示历史对比 |
+| `-Compare` | 显示历史对比 |
 | `-NoCompile` | 跳过编译步骤 |
-| `-Save` | 自动保存结果 |
-| `-NoSave` | 预览模式，不保存 |
+| `-Workload <name>` | 负载分布: uniform, prod-typical, burst-ultra, mixed-heavy (默认: uniform) |
+| `-VerboseOutput` | 显示完整场景日志 |
+| `-KeepOpen` | 运行结束后保持窗口 |
+| `-NoPause` | 不暂停窗口 |
 
-## 测试架构
+### benchmark.sh
 
-```
-客户端请求
-    ↓
-┌─────────────────────────────────────────────────────────┐
-│  HTTP 层                                                │
-│  ├── Netty 连接处理                                     │
-│  └── 路由匹配                                           │
-├─────────────────────────────────────────────────────────┤
-│  JSON 层                                                │
-│  ├── 请求反序列化 (Jackson)                             │
-│  └── 响应序列化 (手写/Jackson)                          │
-├─────────────────────────────────────────────────────────┤
-│  存储层                                                 │
-│  ├── IntentStore.save() 新建                           │
-│  ├── IntentStore.save() 更新                           │
-│  └── IntentStore.findById() 查询                       │
-├─────────────────────────────────────────────────────────┤
-│  调度层                                                 │
-│  ├── BucketGroup.add() 入桶 (按精度档位)               │
-│  └── BucketGroup.scanDue() 扫描到期                    │
-├─────────────────────────────────────────────────────────┤
-│  持久化层                                               │
-│  ├── RingBuffer.offer() 写入                           │
-│  ├── RingBuffer.drain() 消费                           │
-│  └── CRC32 校验                                        │
-└─────────────────────────────────────────────────────────┘
-```
-
-## 原子测试项说明
-
-### 1. 存储层测试 (`storage`)
-
-| 测试名称 | 关注点 | 预期性能 |
-|----------|--------|----------|
-| IntentStore.save (new) | 新建 Intent 的写入性能 | >500K/s |
-| IntentStore.save (update) | 更新已有 Intent 的性能 | >300K/s |
-| IntentStore.findById | 按 ID 查询性能 | >5M/s |
-| ConcurrentHashMap.put | 底层数据结构写入性能 | >10M/s |
-| ConcurrentHashMap.get | 底层数据结构读取性能 | >20M/s |
-
-### 2. 调度层测试 (`scheduler_add`, `scheduler_scan`)
-
-| 测试名称 | 关注点 | 预期性能 |
-|----------|--------|----------|
-| BucketGroup.add ULTRA | 10ms 精度档位入桶性能 | >200K/s |
-| BucketGroup.add FAST | 50ms 精度档位入桶性能 | >200K/s |
-| BucketGroup.add HIGH | 100ms 精度档位入桶性能 | >200K/s |
-| BucketGroup.add STANDARD | 500ms 精度档位入桶性能 | >200K/s |
-| BucketGroup.add ECONOMY | 1000ms 精度档位入桶性能 | >200K/s |
-| BucketGroup.scanDue * | 各档位扫描到期任务性能 | >100K/s |
-
-### 3. 持久化层测试 (`ringbuffer`, `persistence`)
-
-| 测试名称 | 关注点 | 预期性能 |
-|----------|--------|----------|
-| RingBuffer.offer 16K | 16K 容量写入性能 | >10M/s |
-| RingBuffer.drain 100 | 批量消费性能 | >1M/s |
-| CRC32 256B | 256 字节校验性能 | >5M/s |
-
-### 4. JSON 层测试 (`json`)
-
-| 测试名称 | 关注点 | 预期性能 |
-|----------|--------|----------|
-| Jackson.readValue CreateRequest | 请求反序列化性能 | >200K/s |
-| String.format JSON | 字符串格式化性能 | >500K/s |
-
-## 性能基线 (v0.6.1 参考)
-
-### 存储层
-
-| 操作 | 1 线程 | 10 线程 | 50 线程 |
-|------|--------|---------|---------|
-| IntentStore.save (new) | ~500K/s | ~800K/s | ~1.2M/s |
-| IntentStore.findById | ~5M/s | ~6M/s | ~6M/s |
-
-### 调度层 (各精度档位)
-
-| 档位 | BucketGroup.add | BucketGroup.scanDue |
-|------|-----------------|---------------------|
-| ULTRA | ~200K/s | ~100K/s |
-| FAST | ~200K/s | ~100K/s |
-| HIGH | ~200K/s | ~100K/s |
-| STANDARD | ~200K/s | ~100K/s |
-| ECONOMY | ~200K/s | ~100K/s |
-
-### 持久化层
-
-| 操作 | 性能 |
+| 参数 | 说明 |
 |------|------|
-| RingBuffer.offer 16K | ~18M/s |
-| CRC32 256B | ~5M/s |
+| `--quick` | 快速测试模式 |
+| `--full` | 完整测试模式 (默认) |
+| `--scenario=<name>` | 场景选择: all, internal, http, scheduler (默认: all) |
+| `--workload=<name>` | 负载分布: uniform, prod-typical, burst-ultra, mixed-heavy (默认: uniform) |
+| `--no-compile` | 跳过编译 |
+| `--compare` | 显示历史对比 |
+| `--verbose` | 显示完整输出 |
 
-## 瓶颈分析指南
+### run-all.ps1 / run-all.sh
 
-### 定位瓶颈
+| 参数 | 说明 |
+|------|------|
+| `-Quick` / `--quick` | 快速模式 (跳过大压测) |
+| `-SkipBenchmark` / `--no-bench` | 跳过所有压测 |
 
-当发现整体性能下降时：
+## 强制落库
 
-1. **查看 HTTP 层测试** → 是否网络/协议问题
-2. **查看存储层测试** → 是否内存结构问题
-3. **查看调度层测试** → 是否调度算法问题
-4. **查看持久化层测试** → 是否 IO 问题
+所有测试运行的结果**始终**持久化到 `benchmark/results/` 目录：
 
-### 性能对比
+- **CSV**: `history.csv` — 48 列宽格式，每次运行追加一行
+- **JSON**: `reports/benchmark-*.json` 或 `reports/full-suite-*.json` — 完整结构化数据
+- **TXT**: `reports/benchmark-*.txt` 或 `reports/full-suite-*.txt` — 人类可读摘要
 
-```
-原子测试 QPS vs HTTP 接口 QPS
+## 报告自动轮转
 
-IntentStore.save: 1,000,000/s
-POST /v1/intents:    15,000/s
+每次运行脚本时，自动删除超过 10 组的旧报告和日志（保留最近 10 组）。每组包含一个 JSON + TXT 文件对。
 
-差距: 66x → HTTP+JSON 层是主要瓶颈
-```
+## CSV Schema (48 列)
 
-## 保存策略
+### 运行标识 (6 列)
 
-测试完成后会询问是否保存结果：
+| 列名 | 来源 | 说明 |
+|------|------|------|
+| `timestamp` | 系统 | ISO 8601 时间戳 |
+| `commit` | Git | 短哈希 |
+| `branch` | Git | 分支名 |
+| `mode` | 参数 | quick 或 full |
+| `java_version` | RESULT_ENV | JDK 版本 |
+| `os_name` | RESULT_ENV | 操作系统 |
 
-1. **版本变化时**：建议保存，便于对比
-2. **预览模式**：仅查看结果，不保存
-3. **自动保存**：使用 `-Save` 参数
+### 测试结果 (2 列)
 
-## 输出文件
+| 列名 | 说明 |
+|------|------|
+| `total_tests` | 总测试数 (仅 run-all 脚本) |
+| `total_failed` | 失败测试数 |
 
-- **报告**: `benchmark/results/reports/report-YYYYMMDD-HHMMSS.md`
-- **历史**: `benchmark/results/history.csv`
+### Per-Tier 核心指标 (7 列 × 5 层级 = 35 列)
+
+对每个层级 T (ULTRA, FAST, HIGH, STANDARD, ECONOMY):
+
+| 列名 | 来源 | 说明 |
+|------|------|------|
+| `T_qps` | RESULT_ROW | 吞吐量 |
+| `T_p95_ms` | RESULT_LATENCY | 唤醒延迟 p95 |
+| `T_p99_ms` | RESULT_LATENCY | 唤醒延迟 p99 |
+| `T_e2e_p95_ms` | RESULT_E2E_LATENCY | 端到端延迟 p95 |
+| `T_e2e_p99_ms` | RESULT_E2E_LATENCY | 端到端延迟 p99 |
+| `T_util_pct` | RESULT_SEMAPHORE | 信号量利用率 |
+| `T_backpressure` | RESULT_ROW | 背压事件数 |
+
+### 全局聚合 (5 列)
+
+| 列名 | 来源 | 说明 |
+|------|------|------|
+| `completion_rate` | RESULT | 完成率 |
+| `total_qps` | RESULT_SYSTEM_QPS | 系统总 QPS |
+| `global_p95_total_ms` | RESULT_GLOBAL_LATENCY | 全局 p95 总延迟 |
+| `vt_reduction_pct` | RESULT_OPTIMIZATION | VT 减少百分比 |
+| `cohort_wake_events` | RESULT_COHORT | Cohort 唤醒事件数 |
+
+详细数据（p50/p75/p90/p999/max/mean/samples、队列、生命周期、批次、追踪、借用等）保留在 JSON 报告中。
+
+## 测试场景
+
+### 1) In-process upper bound
+
+直接调用 IntentStore 和 BucketGroup，测量存储和调度层的理论极限。
+
+### 2) HTTP create path
+
+通过 HTTP 接口创建 Intent，测量 Netty + JSON + 存储的完整链路吞吐。
+
+### 3) Scheduler trigger path
+
+模拟调度器触发 + Webhook 回调的完整链路，包含五层精度档位的差异化行为。这是最接近生产负载的测试。
+
+## SLO 验证
+
+端到端延迟 (executeAt → webhook received) 的 SLO 阈值:
+
+| 档位 | p95 | p99 |
+|------|-----|-----|
+| ULTRA | 50ms | 100ms |
+| FAST | 150ms | 250ms |
+| HIGH | 600ms | 1000ms |
+| STANDARD | 1500ms | 2200ms |
+| ECONOMY | 3500ms | 5000ms |
 
 ## 常见问题
 
-### Q: HTTP QPS 远低于原子测试 QPS
+### Q: 为什么 scheduler QPS 远低于 in-process QPS?
 
-**原因**: HTTP 协议开销 + JSON 序列化开销
+调度器压测包含 HTTP 回调延迟（mock server 模拟 5ms 延迟），理论 QPS ≈ 并发数 / (batch_dwell + HTTP_RTT)。in-process 测试不包含网络和回调开销。
 
-**排查**:
-1. 对比 `Jackson.readValue` 性能
-2. 对比 `IntentStore.save` 性能
-3. 检查网络延迟
+### Q: history.csv 被截断/重建了?
 
-### Q: 高并发下性能下降
-
-**原因**: 锁竞争或资源争用
-
-**排查**:
-1. 对比不同线程数测试结果
-2. 查看 `ConcurrentHashMap` vs `IntentStore` 差距
-3. 检查 GC 日志
+CSV header 一致性检查会验证列数和列名。如果检测到旧格式（列数或列名不匹配），会自动重建 header。历史数据在 JSON 报告中保留。

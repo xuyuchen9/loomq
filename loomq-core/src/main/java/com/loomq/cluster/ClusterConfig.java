@@ -40,11 +40,11 @@ import java.util.regex.Pattern;
  *   nodes:
  *     - shard_id: "shard-0"
  *       host: "localhost"
- *       port: 8080
+ *       port: 7928
  *       weight: 100
  *     - shard_id: "shard-1"
  *       host: "localhost"
- *       port: 8081
+ *       port: 7929
  *       weight: 100
  * </pre>
  *
@@ -140,9 +140,9 @@ public class ClusterConfig {
         boolean hotReload = getEnvBool("HOT_RELOAD", false);
         long reloadInterval = getEnvLong("RELOAD_INTERVAL_MS", 60000);
 
-        // 解析节点列表（格式：shard-0:localhost:8080:100,shard-1:localhost:8081:100）
+        // 解析节点列表（格式：shard-0:localhost:7928:100,shard-1:localhost:7929:100）
         List<NodeConfig> nodes = parseNodesFromEnv(
-                getEnv("NODES", String.format("shard-%d:localhost:8080:100", localShardIndex)));
+                getEnv("NODES", String.format("shard-%d:localhost:7928:100", localShardIndex)));
 
         String rawTotalShards = getRawEnv("TOTAL_SHARDS");
         int totalShards = rawTotalShards != null && !rawTotalShards.isBlank()
@@ -179,7 +179,7 @@ public class ClusterConfig {
      */
     public static ClusterConfig defaultSingleNodeConfig() {
         List<NodeConfig> nodes = List.of(
-                new NodeConfig("shard-0", "localhost", 8080, 100)
+                new NodeConfig("shard-0", "localhost", 7928, 100)
         );
         return new ClusterConfig("loomq-single", 1, 0, nodes, false, 60000);
     }
@@ -359,7 +359,7 @@ public class ClusterConfig {
             String base = "cluster.nodes[" + index + "]";
             String shardId = requireProperty(props, base + ".shard_id");
             String host = requireProperty(props, base + ".host");
-            int port = ConfigSupport.intValue(props, 8080, base + ".port");
+            int port = ConfigSupport.intValue(props, 7928, base + ".port");
             int weight = ConfigSupport.intValue(props, 100, base + ".weight");
             nodes.add(new NodeConfig(shardId, host, port, weight));
         }
@@ -426,7 +426,7 @@ public class ClusterConfig {
             return nodes;
         }
 
-        // 格式：shard-0:localhost:8080:100,shard-1:localhost:8081:100
+        // 格式：shard-0:localhost:7928:100,shard-1:localhost:7929:100
         String[] parts = envValue.split(",");
         for (String part : parts) {
             String entry = part.trim();

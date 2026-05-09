@@ -22,13 +22,13 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.ReferenceCountUtil;
-import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -37,6 +37,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Replaces java built-in HttpServer (bottleneck at ~500 concurrent connections)
  * with Netty NIO transport to support 10k+ simultaneous webhook deliveries
  * without the server becoming the E2E latency bottleneck.
+ *
+ * Uses non-blocking scheduled responses instead of Thread.sleep, so handler
+ * threads are never blocked and a single I/O thread can service thousands of
+ * concurrent delayed responses.
  */
 final class NettyMockWebhookServer {
 
@@ -47,10 +51,10 @@ final class NettyMockWebhookServer {
     private final Map<String, AtomicInteger> receivedByTier;
     private final ConcurrentHashMap<String, Long> receiveTimeMs;
     private final AtomicInteger totalReceived;
+    private final boolean zeroDelay;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
-    private DefaultEventExecutorGroup handlerGroup;
     private Channel serverChannel;
     private volatile boolean running;
 
@@ -58,19 +62,25 @@ final class NettyMockWebhookServer {
                            Map<String, AtomicInteger> receivedByTier,
                            ConcurrentHashMap<String, Long> receiveTimeMs,
                            AtomicInteger totalReceived) {
+        this(port, tierDelaysMs, receivedByTier, receiveTimeMs, totalReceived, false);
+    }
+
+    NettyMockWebhookServer(int port, Map<String, Integer> tierDelaysMs,
+                           Map<String, AtomicInteger> receivedByTier,
+                           ConcurrentHashMap<String, Long> receiveTimeMs,
+                           AtomicInteger totalReceived,
+                           boolean zeroDelay) {
         this.port = port;
         this.tierDelaysMs = tierDelaysMs;
         this.receivedByTier = receivedByTier;
         this.receiveTimeMs = receiveTimeMs;
         this.totalReceived = totalReceived;
+        this.zeroDelay = zeroDelay;
     }
 
     void start() throws InterruptedException {
         bossGroup = new NioEventLoopGroup(1);
         workerGroup = new NioEventLoopGroup(Runtime.getRuntime().availableProcessors());
-        // Offload blocking handlers (Thread.sleep) from Netty I/O threads
-        handlerGroup = new DefaultEventExecutorGroup(256);
-
         ServerBootstrap bootstrap = new ServerBootstrap();
         bootstrap.group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel.class)
@@ -83,13 +93,14 @@ final class NettyMockWebhookServer {
                     ChannelPipeline p = ch.pipeline();
                     p.addLast(new HttpServerCodec());
                     p.addLast(new HttpObjectAggregator(65536));
-                    p.addLast(handlerGroup, new WebhookHandler());  // offload blocking
+                    // Handler runs directly on I/O threads — no blocking, no executor offload needed
+                    p.addLast(new WebhookHandler());
                 }
             });
 
         serverChannel = bootstrap.bind(port).sync().channel();
         running = true;
-        log.info("Netty mock webhook server started on port {}", port);
+        log.info("Netty mock webhook server started on port {} (zeroDelay={})", port, zeroDelay);
     }
 
     void stop() {
@@ -102,9 +113,6 @@ final class NettyMockWebhookServer {
         }
         if (workerGroup != null) {
             workerGroup.shutdownGracefully();
-        }
-        if (handlerGroup != null) {
-            handlerGroup.shutdownGracefully();
         }
         log.info("Netty mock webhook server stopped");
     }
@@ -122,34 +130,60 @@ final class NettyMockWebhookServer {
             ByteBuf content = req.content();
             String body = content.toString(StandardCharsets.UTF_8);
 
-            // Detect batch (JSON array) vs single intent (JSON object)
+            // Parse and track immediately — receive timestamp reflects arrival, not response
+            int delayMs;
             if (body.startsWith("[")) {
-                processBatch(body, receiveMs);
+                delayMs = processBatch(body, receiveMs);
             } else {
-                processSingle(body, receiveMs);
+                delayMs = processSingle(body, receiveMs);
             }
 
-            byte[] respBytes = "{\"status\":\"ok\"}".getBytes(StandardCharsets.UTF_8);
-            FullHttpResponse response = new DefaultFullHttpResponse(
-                HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
-                Unpooled.wrappedBuffer(respBytes));
-            response.headers()
-                .set(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.APPLICATION_JSON)
-                .set(HttpHeaderNames.CONTENT_LENGTH, respBytes.length);
-            ctx.writeAndFlush(response);
+            if (zeroDelay) {
+                delayMs = 0;
+            }
+
+            // Release the request immediately after extracting body content.
+            // We don't need the request for the response.
             ReferenceCountUtil.release(req);
+
+            Runnable respond = () -> {
+                if (!ctx.channel().isActive()) {
+                    return;
+                }
+                byte[] respBytes = "{\"status\":\"ok\"}".getBytes(StandardCharsets.UTF_8);
+                FullHttpResponse response = new DefaultFullHttpResponse(
+                    HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
+                    Unpooled.wrappedBuffer(respBytes));
+                response.headers()
+                    .set(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.APPLICATION_JSON)
+                    .set(HttpHeaderNames.CONTENT_LENGTH, respBytes.length);
+                ctx.writeAndFlush(response);
+            };
+
+            if (delayMs > 0) {
+                ctx.executor().schedule(respond, delayMs, TimeUnit.MILLISECONDS);
+            } else {
+                ctx.executor().execute(respond);
+            }
         }
 
-        private void processSingle(String body, long receiveMs) {
+        /**
+         * Process a single-intent JSON body.
+         * Returns the delay to apply before responding.
+         */
+        private int processSingle(String body, long receiveMs) {
             String intentId = extractField(body, "intentId");
             String tierStr = extractField(body, "precisionTier");
             int delayMs = tierStr != null ? tierDelaysMs.getOrDefault(tierStr, 5) : 5;
-            doSleep(delayMs);
             track(intentId, tierStr, receiveMs);
+            return delayMs;
         }
 
-        private void processBatch(String body, long receiveMs) {
-            // Parse each JSON object in the array, apply the max delay among them
+        /**
+         * Process a batch JSON array body.
+         * Returns the max delay among all intents in the batch.
+         */
+        private int processBatch(String body, long receiveMs) {
             int maxDelay = 5;
             int idx = 0;
             while ((idx = body.indexOf("\"precisionTier\":\"", idx)) >= 0) {
@@ -161,8 +195,6 @@ final class NettyMockWebhookServer {
                 }
                 idx = end + 1;
             }
-            // Apply max delay once for the whole batch (simulates batch processing time)
-            doSleep(maxDelay);
 
             // Track each intent in the batch
             idx = 0;
@@ -171,7 +203,6 @@ final class NettyMockWebhookServer {
                 int end = body.indexOf('"', start);
                 if (end > start) {
                     String intentId = body.substring(start, end);
-                    // Find tier for this intent
                     int tierIdx = body.indexOf("\"precisionTier\":\"", idx);
                     String tierStr = null;
                     if (tierIdx >= 0) {
@@ -183,12 +214,8 @@ final class NettyMockWebhookServer {
                 }
                 idx = end + 1;
             }
-        }
 
-        private void doSleep(int delayMs) {
-            if (delayMs > 0) {
-                try { Thread.sleep(delayMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-            }
+            return maxDelay;
         }
 
         private void track(String intentId, String tierStr, long receiveMs) {

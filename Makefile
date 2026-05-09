@@ -75,7 +75,7 @@ docker-build: build-fast
 docker-run: docker-build
 	docker run -d \
 		--name loomq-single \
-		-p 8080:8080 \
+		-p 7928:7928 \
 		-v loomq-data:/app/data/wal \
 		-e JVM_XMS=2g \
 		-e JVM_XMX=2g \

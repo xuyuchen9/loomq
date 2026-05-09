@@ -21,7 +21,7 @@ if (-not $JVM_XMS) { $JVM_XMS = "2g" }
 if (-not $JVM_XMX) { $JVM_XMX = "2g" }
 if (-not $JVM_GC) { $JVM_GC = "ZGC" }
 if (-not $JVM_GC_PAUSE) { $JVM_GC_PAUSE = 10 }
-if (-not $Port) { $Port = 8080 }
+if (-not $Port) { $Port = 7928 }
 if (-not $ListenHost) { $ListenHost = "0.0.0.0" }
 if (-not $NodeId) { $NodeId = "node-1" }
 if (-not $DataDir) { $DataDir = "./data/wal" }
@@ -43,7 +43,7 @@ Parameters:
   -JVM_XMX         Maximum heap size (default: 2g)
   -JVM_GC          Garbage collector: ZGC, G1GC, ParallelGC (default: ZGC)
   -JVM_GC_PAUSE    Max GC pause target in ms (default: 10)
-  -Port            Server port (default: 8080)
+  -Port            Server port (default: 7928)
   -ListenHost      Server host (default: 0.0.0.0)
   -NodeId          Logical node identifier (default: node-1)
   -DataDir         WAL data directory (default: ./data/wal)

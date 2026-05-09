@@ -13,7 +13,7 @@ info:
   version: 0.8.0-SNAPSHOT
 
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:7928
     description: Local development server
 
 paths:
@@ -546,5 +546,5 @@ components:
             message: "Lease expired, current primary is 10.0.1.100"
             details:
               intentId: "intent_01J9XYZABC"
-              redirectTo: "http://10.0.1.100:8080/v1/intents/intent_01J9XYZABC/fire-now"
-              newPrimary: "10.0.1.100:8080"
+              redirectTo: "http://10.0.1.100:7928/v1/intents/intent_01J9XYZABC/fire-now"
+              newPrimary: "10.0.1.100:7928"

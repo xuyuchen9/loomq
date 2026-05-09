@@ -320,6 +320,30 @@ public class LoomqEngine implements AutoCloseable {
     }
 
     /**
+     * 获取 WAL 健康状态
+     */
+    public WalHealthStatus getWalHealth() {
+        return new WalHealthStatus(
+            walWriter.getWalHealth(),
+            walWriter.getUnflushedBytes(),
+            walWriter.getLastFsyncMsAgo(),
+            walWriter.getWritePosition(),
+            walWriter.getFlushedPosition()
+        );
+    }
+
+    /**
+     * WAL 健康状态
+     */
+    public record WalHealthStatus(
+        String status,
+        long unflushedBytes,
+        long lastFsyncMsAgo,
+        long writePosition,
+        long flushedPosition
+    ) {}
+
+    /**
      * 立即生成一次快照。
      */
     public SnapshotInfo createSnapshot() {

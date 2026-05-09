@@ -57,7 +57,7 @@ public class LoomqServerApplication {
 
         RadixRouter router = new RadixRouter();
         new IntentHandler(engine).register(router);
-        registerSystemRoutes(router);
+        registerSystemRoutes(router, engine);
 
         NettyHttpServer server = new NettyHttpServer(serverConfig, router);
 
@@ -162,17 +162,57 @@ public class LoomqServerApplication {
         return fallback;
     }
 
-    private static void registerSystemRoutes(RadixRouter router) {
+    private static void registerSystemRoutes(RadixRouter router, LoomqEngine engine) {
         router.add(HttpMethod.GET, "/health", (method, uri, body, headers, pathParams) ->
             HEALTH_UP_RESPONSE);
         router.add(HttpMethod.GET, "/health/live", (method, uri, body, headers, pathParams) ->
             HEALTH_LIVE_RESPONSE);
         router.add(HttpMethod.GET, "/health/ready", (method, uri, body, headers, pathParams) ->
             LoomQMetrics.getInstance().isWalHealthy() ? HEALTH_UP_RESPONSE : HEALTH_DOWN_RESPONSE);
+        router.add(HttpMethod.GET, "/health/deep", (method, uri, body, headers, pathParams) ->
+            buildDeepHealthResponse(engine));
         router.add(HttpMethod.GET, "/metrics", (method, uri, body, headers, pathParams) ->
             LoomQMetrics.getInstance().snapshot());
         router.add(HttpMethod.GET, "/api/v1/metrics", (method, uri, body, headers, pathParams) ->
             LoomQMetrics.getInstance().snapshot());
+    }
+
+    private static String buildDeepHealthResponse(LoomqEngine engine) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"status\":\"").append(engine.getWalHealth().status()).append("\"");
+
+        // Tier status
+        sb.append(",\"tiers\":{");
+        var backpressure = engine.getScheduler().getBackpressureStatus();
+        boolean first = true;
+        for (var entry : backpressure.entrySet()) {
+            if (!first) sb.append(",");
+            first = false;
+            var info = entry.getValue();
+            sb.append("\"").append(entry.getKey().name()).append("\":{");
+            sb.append("\"maxConcurrency\":").append(info.maxConcurrency()).append(",");
+            sb.append("\"activeDispatches\":").append(info.activeDispatches()).append(",");
+            sb.append("\"availablePermits\":").append(info.availablePermits()).append(",");
+            sb.append("\"queueSize\":").append(info.queueSize()).append(",");
+            sb.append("\"utilizationPct\":").append(String.format("%.1f", info.utilizationPct())).append(",");
+            sb.append("\"underBackpressure\":").append(info.underBackpressure());
+            sb.append("}");
+        }
+        sb.append("}");
+
+        // WAL status
+        var wal = engine.getWalHealth();
+        sb.append(",\"wal\":{");
+        sb.append("\"status\":\"").append(wal.status()).append("\",");
+        sb.append("\"unflushedBytes\":").append(wal.unflushedBytes()).append(",");
+        sb.append("\"lastFsyncMsAgo\":").append(wal.lastFsyncMsAgo()).append(",");
+        sb.append("\"writePosition\":").append(wal.writePosition()).append(",");
+        sb.append("\"flushedPosition\":").append(wal.flushedPosition());
+        sb.append("}");
+
+        sb.append(",\"timestamp\":\"").append(java.time.Instant.now().toString()).append("\"");
+        sb.append("}");
+        return sb.toString();
     }
 
     private static void printBanner() {

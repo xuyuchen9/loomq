@@ -12,10 +12,10 @@ services:
     image: loomq:0.8.0-SNAPSHOT
     container_name: loomq-single
     ports:
-      - "8080:8080"
+      - "7928:7928"
     environment:
       - LOOMQ_SERVER_HOST=0.0.0.0
-      - LOOMQ_SERVER_PORT=8080
+      - LOOMQ_SERVER_PORT=7928
       - LOOMQ_WAL_DATA_DIR=/app/data/wal
       - LOOMQ_WAL_FLUSH_STRATEGY=batch
       - LOOMQ_SCHEDULER_MAX_PENDING=1000000
@@ -32,7 +32,7 @@ services:
     networks:
       - loomq-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:7928/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -55,13 +55,13 @@ services:
     image: loomq:0.8.0-SNAPSHOT
     container_name: loomq-node0
     ports:
-      - "8080:8080"
+      - "7928:7928"
     environment:
       - LOOMQ_SERVER_HOST=0.0.0.0
-      - LOOMQ_SERVER_PORT=8080
+      - LOOMQ_SERVER_PORT=7928
       - LOOMQ_SHARD_INDEX=0
       - LOOMQ_TOTAL_SHARDS=2
-      - LOOMQ_NODES=shard-0:loomq-node0:8080,shard-1:loomq-node1:8080
+      - LOOMQ_NODES=shard-0:loomq-node0:7928,shard-1:loomq-node1:7928
       - JVM_XMS=2g
       - JVM_XMX=2g
       - JVM_GC=ZGC
@@ -80,13 +80,13 @@ services:
     image: loomq:0.8.0-SNAPSHOT
     container_name: loomq-node1
     ports:
-      - "8081:8080"
+      - "7929:7928"
     environment:
       - LOOMQ_SERVER_HOST=0.0.0.0
-      - LOOMQ_SERVER_PORT=8080
+      - LOOMQ_SERVER_PORT=7928
       - LOOMQ_SHARD_INDEX=1
       - LOOMQ_TOTAL_SHARDS=2
-      - LOOMQ_NODES=shard-0:loomq-node0:8080,shard-1:loomq-node1:8080
+      - LOOMQ_NODES=shard-0:loomq-node0:7928,shard-1:loomq-node1:7928
       - JVM_XMS=2g
       - JVM_XMX=2g
       - JVM_GC=ZGC

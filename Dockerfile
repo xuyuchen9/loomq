@@ -24,7 +24,7 @@ COPY loomq-server/src/main/resources/application.yml config/application.yml
 
 # Environment variables with defaults
 ENV LOOMQ_SERVER_HOST=0.0.0.0
-ENV LOOMQ_SERVER_PORT=8080
+ENV LOOMQ_SERVER_PORT=7928
 ENV LOOMQ_WAL_DATA_DIR=/app/data/wal
 ENV LOOMQ_WAL_FLUSH_STRATEGY=batch
 ENV LOOMQ_SCHEDULER_MAX_PENDING_INTENTS=1000000
@@ -35,11 +35,11 @@ ENV JVM_GC=ZGC
 ENV JVM_GC_PAUSE=10
 
 # Expose ports
-EXPOSE 8080
+EXPOSE 7928
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD curl -f http://localhost:7928/health || exit 1
 
 # JVM arguments for virtual threads and ZGC
 ENTRYPOINT ["sh", "-c", \
