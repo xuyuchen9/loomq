@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,6 +41,14 @@ public class SimpleWalWriter implements AutoCloseable {
     private static final int HEADER_SIZE = 4;  // Length field
     private static final int CHECKSUM_SIZE = 4; // CRC32
     private static final int RECORD_OVERHEAD = HEADER_SIZE + CHECKSUM_SIZE;
+
+    /** WAL record overhead per entry: 4B length + 4B CRC32 = 8 bytes. */
+    public static final int RECORD_FIXED_OVERHEAD = HEADER_SIZE + CHECKSUM_SIZE;
+
+    /** Calculate total WAL record length for a given payload size. */
+    public static int recordLength(int payloadLength) {
+        return RECORD_FIXED_OVERHEAD + payloadLength;
+    }
 
     // ========== 默认配置 ==========
     private static final long DEFAULT_INITIAL_SIZE = 64 * 1024 * 1024;  // 64MB
@@ -416,6 +425,75 @@ public class SimpleWalWriter implements AutoCloseable {
         if (unflushed > flushThreshold * 3 || ago > 5000) return "CRITICAL";
         if (unflushed > flushThreshold || ago > flushIntervalNs / 1_000_000 * 3) return "WARNING";
         return "OK";
+    }
+
+    // ========== 冷热交换：按位置读取 WAL 记录 ==========
+
+    /**
+     * 按文件绝对位置读取一条 WAL 记录，校验 CRC32 后返回 payload 字节。
+     *
+     * 用于长延迟 Intent 的内存换入：Intent 在创建时已持久化到 WAL，
+     * 换出内存后仅保留 (intentId, walPosition, recordLength)。到期前通过此方法
+     * 从 WAL 文件中读回完整 Intent 并解码恢复。
+     *
+     * @param position     WAL 文件中的记录起始位置（writeInternal 返回值）
+     * @param recordLength 整条记录的长度 = HEADER_SIZE + payloadLen + CHECKSUM_SIZE
+     * @return payload 字节数组（不含 header 和 checksum）
+     * @throws IOException 如果读取失败或 CRC 校验不通过
+     */
+    public byte[] readRecord(long position, int recordLength) throws IOException {
+        if (position < 0 || recordLength <= RECORD_OVERHEAD) {
+            throw new IllegalArgumentException(
+                "Invalid position=" + position + ", recordLength=" + recordLength);
+        }
+
+        int payloadLen = recordLength - RECORD_OVERHEAD;
+
+        // Read header (4-byte length field) to cross-validate.
+        // WAL format uses native byte order (JAVA_INT), which is LITTLE_ENDIAN on x86.
+        // ByteBuffer.getInt() defaults to BIG_ENDIAN — must match the write byte order.
+        ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE)
+            .order(java.nio.ByteOrder.nativeOrder());
+        int headerBytes = fileChannel.read(headerBuf, position);
+        if (headerBytes != HEADER_SIZE) {
+            throw new IOException("Failed to read header at position " + position);
+        }
+        headerBuf.flip();
+        int storedLen = headerBuf.getInt();
+        if (storedLen != payloadLen) {
+            throw new IOException(
+                "Length mismatch at position " + position +
+                ": stored=" + storedLen + ", expected=" + payloadLen);
+        }
+
+        // Read payload
+        ByteBuffer payloadBuf = ByteBuffer.allocate(payloadLen);
+        int payloadBytes = fileChannel.read(payloadBuf, position + HEADER_SIZE);
+        if (payloadBytes != payloadLen) {
+            throw new IOException("Failed to read payload at position " + position);
+        }
+        payloadBuf.flip();
+        byte[] payload = new byte[payloadLen];
+        payloadBuf.get(payload);
+
+        // Read and verify CRC (also native byte order)
+        ByteBuffer crcBuf = ByteBuffer.allocate(CHECKSUM_SIZE)
+            .order(java.nio.ByteOrder.nativeOrder());
+        int crcBytes = fileChannel.read(crcBuf, position + HEADER_SIZE + payloadLen);
+        if (crcBytes != CHECKSUM_SIZE) {
+            throw new IOException("Failed to read CRC at position " + position);
+        }
+        crcBuf.flip();
+        int storedCrc = crcBuf.getInt();
+        int computedCrc = calculateCrc(payload);
+        if (storedCrc != computedCrc) {
+            throw new IOException(
+                "CRC mismatch at position " + position +
+                ": stored=0x" + Integer.toHexString(storedCrc) +
+                ", computed=0x" + Integer.toHexString(computedCrc));
+        }
+
+        return payload;
     }
 
     // ========== 关闭 ==========

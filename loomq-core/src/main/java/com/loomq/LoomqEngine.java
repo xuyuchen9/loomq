@@ -3,6 +3,7 @@ package com.loomq;
 import com.loomq.application.command.IntentCommandService;
 import com.loomq.application.scheduler.BucketGroupManager;
 import com.loomq.application.scheduler.PrecisionScheduler;
+import com.loomq.application.swap.ColdIntentSwapper;
 import com.loomq.common.MetricsCollector;
 import com.loomq.config.WalConfig;
 import com.loomq.domain.intent.AckMode;
@@ -52,6 +53,7 @@ public class LoomqEngine implements AutoCloseable {
     private final PrecisionScheduler scheduler;
     private final RecoveryPipeline recoveryPipeline;
     private final IntentCommandService commandService;
+    private final ColdIntentSwapper coldSwapper;
 
     // ========== 回调机制 ==========
     private final Executor callbackExecutor;
@@ -66,11 +68,13 @@ public class LoomqEngine implements AutoCloseable {
     private final Path walDir;
     private final String nodeId;
     private final WalConfig walConfig;
+    private final PrecisionTier defaultTier;
 
     private LoomqEngine(Builder builder) {
         this.nodeId = builder.nodeId != null ? builder.nodeId : "default-node";
         this.walDir = builder.walDir != null ? builder.walDir : Path.of("./data");
         this.walConfig = builder.walConfig != null ? builder.walConfig : defaultWalConfig();
+        this.defaultTier = builder.defaultTier;
         this.callbackExecutor = builder.callbackExecutor != null
             ? builder.callbackExecutor
             : Executors.newVirtualThreadPerTaskExecutor();
@@ -93,6 +97,9 @@ public class LoomqEngine implements AutoCloseable {
                 builder.redeliveryDecider
             );
 
+            // 初始化冷热交换器（依赖 scheduler）
+            this.coldSwapper = new ColdIntentSwapper(intentStore, scheduler, walWriter);
+
             this.commandService = new IntentCommandService(
                 intentStore,
                 scheduler,
@@ -101,7 +108,9 @@ public class LoomqEngine implements AutoCloseable {
                 callbackExecutor,
                 running,
                 sequenceNumber,
-                builder.callbackHandler
+                builder.callbackHandler,
+                defaultTier,
+                coldSwapper
             );
 
             logger.info(
@@ -149,6 +158,9 @@ public class LoomqEngine implements AutoCloseable {
         // 启动调度器
         scheduler.start();
 
+        // 启动冷热交换器（长延迟 Intent 内存换出/换入）
+        coldSwapper.start();
+
         // 启动定期快照
         recoveryPipeline.startSnapshots(intentStore, walWriter::getWritePosition);
 
@@ -172,6 +184,9 @@ public class LoomqEngine implements AutoCloseable {
 
         // 停止调度器
         scheduler.stop();
+
+        // 停止冷热交换器
+        coldSwapper.close();
 
         // 停止存储后台清理线程
         intentStore.shutdown();
@@ -351,6 +366,30 @@ public class LoomqEngine implements AutoCloseable {
         return recoveryPipeline.checkpoint(intentStore, walWriter::getWritePosition);
     }
 
+    /**
+     * 获取冷热交换统计。
+     */
+    public ColdSwapStats getColdSwapStats() {
+        return new ColdSwapStats(
+            coldSwapper.coldIntentCount(),
+            coldSwapper.getTotalSwappedOut(),
+            coldSwapper.getTotalSwappedIn(),
+            coldSwapper.getSwapInErrors(),
+            coldSwapper.getColdThreshold()
+        );
+    }
+
+    /**
+     * 冷热交换统计。
+     */
+    public record ColdSwapStats(
+        int coldIntentCount,
+        long totalSwappedOut,
+        long totalSwappedIn,
+        long swapInErrors,
+        java.time.Duration coldThreshold
+    ) {}
+
     // ========== 内部方法 ==========
 
     private void ensureRunning() {
@@ -377,6 +416,7 @@ public class LoomqEngine implements AutoCloseable {
         private CallbackHandler callbackHandler;
         private DeliveryHandler deliveryHandler;
         private RedeliveryDecider redeliveryDecider;
+        private PrecisionTier defaultTier;
 
         public Builder walDir(Path walDir) {
             this.walDir = walDir;
@@ -390,6 +430,11 @@ public class LoomqEngine implements AutoCloseable {
 
         public Builder walConfig(WalConfig walConfig) {
             this.walConfig = walConfig;
+            return this;
+        }
+
+        public Builder defaultTier(PrecisionTier tier) {
+            this.defaultTier = tier;
             return this;
         }
 

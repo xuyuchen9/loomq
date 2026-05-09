@@ -1,16 +1,26 @@
 package com.loomq.benchmark;
 
+import com.loomq.application.scheduler.PrecisionScheduler;
+import com.loomq.application.swap.ColdIntentSwapper;
+import com.loomq.config.WalConfig;
 import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.infrastructure.wal.IntentBinaryCodec;
+import com.loomq.infrastructure.wal.SimpleWalWriter;
+import com.loomq.spi.DeliveryHandler;
+import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.store.IntentStore;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -92,6 +102,107 @@ public class InternalBenchmark {
         System.out.printf("每 Intent 约占: %.0f bytes%n", bytesPerIntent);
         System.out.println("说明: 这是保留引用后的增量，能反映真实驻留成本。");
         System.out.println();
+
+        // 3) 冷热交换内存节省
+        int coldCount = Integer.getInteger("loomq.benchmark.coldswap.count",
+            quick ? 10_000 : 100_000);
+        System.out.println("=== 冷热交换内存节省 ===");
+        System.out.println("Intent 数量: " + String.format("%,d", coldCount));
+        System.out.println("延迟设置: 2 小时 (超过 1 小时冷阈值)");
+        System.out.println();
+
+        Path coldTempDir = Files.createTempDirectory("loomq-cold-bench");
+        try {
+            WalConfig walCfg = new WalConfig(
+                coldTempDir.toString(), 8, "batch", 100, false,
+                "memory_segment", 8, 128, 64, 10, 4,
+                1, false, false, "localhost", 9090, 30000, false
+            );
+            IntentStore coldStore = new IntentStore();
+            SimpleWalWriter coldWal = new SimpleWalWriter(walCfg, "cold-bench");
+            coldWal.start();
+
+            DeliveryHandler noop = intent ->
+                CompletableFuture.completedFuture(DeliveryResult.SUCCESS);
+            PrecisionScheduler coldScheduler = new PrecisionScheduler(coldStore, noop, null);
+            ColdIntentSwapper coldSwapper = new ColdIntentSwapper(coldStore, coldScheduler, coldWal);
+
+            // Phase 0: baseline (empty store)
+            pauseForGc();
+            long baselineHeap = usedHeapBytes();
+
+            // Phase 1: create and persist all intents (hot, in memory)
+            List<Intent> hotIntents = new ArrayList<>(coldCount);
+            List<Long> walPositions = new ArrayList<>(coldCount);
+            List<Integer> recordLengths = new ArrayList<>(coldCount);
+            Instant farFuture = Instant.now().plus(2, ChronoUnit.HOURS);
+
+            for (int i = 0; i < coldCount; i++) {
+                Intent intent = newIntent("cold-" + i);
+                intent.setExecuteAt(farFuture);
+                intent.transitionTo(IntentStatus.SCHEDULED);
+                coldStore.save(intent);
+                hotIntents.add(intent);
+
+                byte[] payload = IntentBinaryCodec.encode(intent);
+                long pos = coldWal.writeDurable(payload).join();
+                walPositions.add(pos);
+                recordLengths.add(SimpleWalWriter.recordLength(payload.length));
+            }
+
+            pauseForGc();
+            long hotHeap = usedHeapBytes();
+
+            // Phase 2: swap all out, then drop local references so GC can reclaim
+            for (int i = 0; i < coldCount; i++) {
+                coldSwapper.swapOut(hotIntents.get(i), walPositions.get(i), recordLengths.get(i));
+            }
+            hotIntents.clear();
+            walPositions.clear();
+            recordLengths.clear();
+
+            pauseForGc();
+            long coldHeap = usedHeapBytes();
+            long savedBytes = Math.max(hotHeap - coldHeap, 0);
+            long hotDelta = Math.max(hotHeap - baselineHeap, 0);
+            long coldDelta = Math.max(coldHeap - baselineHeap, 0);
+
+            System.out.printf("基线堆内存:   %,.2f MB%n", baselineHeap / 1024.0 / 1024.0);
+            System.out.printf("热状态堆内存: %,.2f MB (增量: %,.2f MB)%n",
+                hotHeap / 1024.0 / 1024.0, hotDelta / 1024.0 / 1024.0);
+            System.out.printf("冷状态堆内存: %,.2f MB (增量: %,.2f MB)%n",
+                coldHeap / 1024.0 / 1024.0, coldDelta / 1024.0 / 1024.0);
+            System.out.printf("节省内存:     %,.2f MB (%.1f%%)%n",
+                savedBytes / 1024.0 / 1024.0,
+                hotDelta > 0 ? (double) savedBytes / hotDelta * 100.0 : 0);
+            System.out.printf("每 Intent 节省: %.0f bytes (hot: %.0f, cold: %.0f)%n",
+                coldCount > 0 ? (double) savedBytes / coldCount : 0,
+                coldCount > 0 ? (double) hotDelta / coldCount : 0,
+                coldCount > 0 ? (double) coldDelta / coldCount : 0);
+            System.out.println("冷索引 Intent 数: " + coldSwapper.coldIntentCount());
+            System.out.println("说明: swap-out 后 IntentStore 中无对象，仅保留 ~80B ColdIntentEntry。");
+            System.out.println();
+
+            // RESULT marker for script parsing
+            System.out.printf(Locale.ROOT,
+                "RESULT_COLD_SWAP|count=%d|hot_heap_bytes=%d|cold_heap_bytes=%d|baseline_heap_bytes=%d|hot_delta_bytes=%d|cold_delta_bytes=%d|saved_bytes=%d|saved_pct=%.1f|bytes_per_intent=%.0f|cold_index_count=%d%n",
+                coldCount, hotHeap, coldHeap, baselineHeap, hotDelta, coldDelta, savedBytes,
+                hotDelta > 0 ? (double) savedBytes / hotDelta * 100.0 : 0,
+                coldCount > 0 ? (double) savedBytes / coldCount : 0,
+                coldSwapper.coldIntentCount());
+
+            coldSwapper.close();
+            coldScheduler.stop();
+            coldWal.close();
+            coldStore.shutdown();
+        } finally {
+            // Cleanup temp directory
+            try {
+                Files.walk(coldTempDir)
+                    .sorted(java.util.Comparator.reverseOrder())
+                    .forEach(p -> { try { Files.delete(p); } catch (Exception ignored) {} });
+            } catch (Exception ignored) {}
+        }
 
         System.out.println("=== 结论 ===");
         System.out.println("进程内保存吞吐是上限，HTTP/JSON/路由开销要在单独的 HTTP benchmark 里看。");
