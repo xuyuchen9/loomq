@@ -143,7 +143,7 @@ class DispatchPipelineIntegrationTest {
 
         // Wait for first delivery attempt
         Thread.sleep(500);
-        assertEquals(1, mockWebhook.getRequestCount(), "should have at least 1 attempt");
+        assertTrue(mockWebhook.getRequestCount() >= 1, "should have at least 1 attempt, got " + mockWebhook.getRequestCount());
 
         // Intent should be in SCHEDULED state (awaiting redelivery) or already retried
         Optional<Intent> stored = engine.getIntent("retry-cycle");
