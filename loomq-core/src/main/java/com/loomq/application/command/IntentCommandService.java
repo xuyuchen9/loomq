@@ -1,10 +1,12 @@
 package com.loomq.application.command;
 
 import com.loomq.application.scheduler.PrecisionScheduler;
+import com.loomq.application.swap.ColdIntentSwapper;
 import com.loomq.common.MetricsCollector;
 import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
+import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.domain.intent.PrecisionTierProfile;
 import com.loomq.domain.intent.WalMode;
@@ -16,6 +18,7 @@ import com.loomq.store.IntentStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -44,6 +47,8 @@ public final class IntentCommandService {
     private final AtomicLong sequenceNumber;
 
     private volatile CallbackHandler callbackHandler;
+    private final PrecisionTier defaultTier;
+    private final ColdIntentSwapper coldSwapper;
 
     public IntentCommandService(
         IntentStore intentStore,
@@ -53,7 +58,9 @@ public final class IntentCommandService {
         Executor callbackExecutor,
         AtomicBoolean running,
         AtomicLong sequenceNumber,
-        CallbackHandler callbackHandler
+        CallbackHandler callbackHandler,
+        PrecisionTier defaultTier,
+        ColdIntentSwapper coldSwapper
     ) {
         this.intentStore = intentStore;
         this.scheduler = scheduler;
@@ -63,6 +70,8 @@ public final class IntentCommandService {
         this.running = running;
         this.sequenceNumber = sequenceNumber;
         this.callbackHandler = callbackHandler;
+        this.defaultTier = defaultTier;
+        this.coldSwapper = coldSwapper;
     }
 
     public void registerCallbackHandler(CallbackHandler handler) {
@@ -84,6 +93,11 @@ public final class IntentCommandService {
         long seq = sequenceNumber.incrementAndGet();
 
         try {
+            // Apply engine-level default tier if configured
+            if (defaultTier != null) {
+                intent.setPrecisionTier(defaultTier);
+            }
+
             intent.transitionTo(IntentStatus.SCHEDULED);
 
             // Pipeline overlap (DeepSeek V4 compute-comm overlap):
@@ -99,13 +113,25 @@ public final class IntentCommandService {
             // 4. While WAL I/O is in flight, save to store (memory-only)
             intentStore.save(intent);
 
-            // 5. For DURABLE mode, wait for fsync before scheduling
+            // 5. For DURABLE mode, wait for fsync before scheduling or cold-swap
+            long walPosition = -1;
             if (effectiveMode == WalMode.DURABLE) {
-                walFuture.join();
+                walPosition = walFuture.join();
             }
 
-            // 6. Schedule (memory-only, independent of WAL)
-            scheduler.schedule(intent);
+            // 6. Cold swap: long-delay intents evicted from memory after DURABLE persist
+            if (coldSwapper != null && walPosition >= 0
+                && coldSwapper.shouldSwapOut(Duration.between(Instant.now(), intent.getExecuteAt()).toMillis())) {
+                int recordLen = SimpleWalWriter.recordLength(walPayload.length);
+                coldSwapper.swapOut(intent, walPosition, recordLen);
+                logger.debug("Intent {} cold-swapped: delay={}s, walPos={}",
+                    intent.getIntentId(),
+                    Duration.between(Instant.now(), intent.getExecuteAt()).toSeconds(),
+                    walPosition);
+            } else {
+                // 7. Schedule (memory-only, independent of WAL)
+                scheduler.schedule(intent);
+            }
 
             metricsCollector.incrementIntentsCreated();
             logger.debug("Intent created: id={}, ackMode={}, walMode={}, seq={}",

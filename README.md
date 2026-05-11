@@ -3,7 +3,7 @@
 [![JDK](https://img.shields.io/badge/JDK-25%2B-green.svg)](https://openjdk.org/)
 [![Maven Central](https://img.shields.io/badge/Maven%20Central-0.8.x-blue.svg)](https://central.sonatype.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/Tests-471%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-494%20passed-brightgreen.svg)]()
 
 **Making future events happen reliably, powered by Java 25 Virtual Threads.**
 
@@ -94,28 +94,81 @@ curl http://localhost:7928/v1/intents/{intentId}
 | Feature | Description |
 |---------|-------------|
 | **Five Precision Tiers** | ULTRA (10ms), FAST (50ms), HIGH (100ms), STANDARD (500ms), ECONOMY (1000ms) |
-| **Durable Persistence** | Memory-mapped WAL with ASYNC/DURABLE/REPLICATED ack levels, CRC32 checksums |
+| **Durable Persistence** | Memory-mapped WAL with ASYNC / BATCH_DEFERRED / DURABLE modes; tier-differentiated write strategy |
 | **Virtual Threads Native** | Zero thread-pool tuning; all delivery and scheduling runs on virtual threads |
-| **Cohort-Based Wakeup** | CSA-inspired batched wakeup replaces per-intent VT sleep for efficient long-delay scheduling |
+| **Cohort-Based Wakeup** | CSA-inspired batched wakeup — 5 daemon events replace 100,000 VT sleeps (100% VT reduction) |
+| **Batch Delivery** | 2,231 HTTP requests for 100,000 intents — 44.8x reduction via batch aggregation |
 | **Arrow Cross-Tier Borrowing** | High-priority tiers borrow idle slots from lower tiers during bursts, with AdapTBF bounds |
 | **Resizable Concurrency** | Per-tier `ResizableSemaphore` supports runtime concurrency adjustment without restart |
+| **Cold Swap** | Long-delay intents (>1h) evicted from heap after DURABLE WAL persist; auto-reloaded 60s before executeAt; 72.5% memory reduction |
 | **Crash Recovery** | Snapshot + WAL replay pipeline, gzip-compressed binary snapshots every 5 minutes |
 | **Observability** | Per-tier latency histograms (P50–P99.9), RTT metrics, Prometheus export, borrow stats |
+| **Engine DefaultTier** | `builder.defaultTier(Tier)` sets engine-wide tier; auto-applied to all intents at creation |
 
 ---
 
-## What's New in v0.8.0
+## Performance Benchmarks
 
-v0.8.0 builds on the v0.7.0 modular split to make concurrency control adaptive and observable.
+**Test Environment:** JDK 25.0.2, Windows 11, 22 cores, 8GB heap, localhost, Netty mock server (tiered HTTP delays).
 
-| Component | What It Does |
-|-----------|-------------|
-| **CohortManager** | Batches intents with similar executeAt times — one daemon thread wakes thousands of intents, replacing per-intent virtual-thread sleep |
-| **ResizableSemaphore** | `extends Semaphore` for zero-overhead acquire/tryAcquire; supports runtime `resize()` for gradual permit adjustment |
-| **Arrow Borrowing** | When a tier's slots are full, consumers borrow from lower-priority idle tiers (100ms timeout) |
-| **AdapTBF Constraints** | Bounds Arrow borrowing: each tier lends at most 50% of its slots, preventing starvation |
-| **RTT Metrics** | Per-tier dequeue→webhook-received latency (p50/p95/p99), independent of scheduling precision |
-| **BorrowStats** | `own_direct`, `own_blocking`, `borrowed`, `borrow_timeouts`, `borrow_rate` — full borrowing visibility |
+### Full Suite (100k intents, 20k per tier)
+
+| Tier | QPS | E2E p50 | E2E p95 | E2E p99 | Sched p50 | Sched p95 | Delivery p50 | Delivery p95 |
+|------|-----|---------|---------|---------|-----------|-----------|--------------|--------------|
+| ULTRA | 13,633 | 1,058ms | 1,417ms | 1,448ms | 1,055ms | 1,416ms | 3ms | 3ms |
+| FAST | 5,475 | 2,106ms | 3,490ms | 3,630ms | 2,092ms | 3,479ms | 13ms | 14ms |
+| HIGH | 1,465 | 7,088ms | 12,990ms | 13,519ms | 7,076ms | 12,978ms | 12ms | 13ms |
+| STANDARD | 1,131 | 9,064ms | 16,825ms | 17,511ms | 9,052ms | 16,812ms | 12ms | 13ms |
+| ECONOMY | 760 | 13,693ms | 25,057ms | 26,068ms | 13,680ms | 25,044ms | 13ms | 14ms |
+
+**System QPS:** 3,504.5 | **Pipeline:** scheduler p50=3,595ms p95=19,987ms | delivery p50=12ms p95=13ms
+
+> E2E latency = executeAt → webhook received. The dominant factor is scheduler precision (executeAt → dequeue), while delivery (dequeue → webhook received) is consistently ~12–14ms across tiers.
+
+### Batch Delivery & Cohort CSA Impact
+
+| Metric | Value |
+|--------|-------|
+| Total batches (for 100k intents) | 2,231 |
+| HTTP request reduction | 44.8x (100,000 → 2,231) |
+| Cohort wake events | 5 (platform daemon) |
+| Virtual threads saved | 99,995 (100% VT reduction) |
+| Intents via cohort | 100,000 (was: 1 VT each) |
+
+> **Key Insight:** CohortManager consolidates 100,000 per-intent VT sleeps into 5 daemon wake events. Combined with batch delivery, the scheduler achieves both scheduling efficiency and HTTP economy.
+
+### Arrow Borrowing Efficiency
+
+| Metric | Value |
+|--------|-------|
+| Direct acquires | 869,094 |
+| Borrowed acquires | 1,067 (0.1%) |
+| Blocking fallbacks | 10,389 |
+
+> The low borrow rate in steady-state tests reflects sufficient per-tier capacity under uniform load. Arrow borrowing is designed for burst scenarios — when a tier's slots are saturated, consumers transparently borrow from lower-priority idle tiers with AdapTBF's 50% lend cap preventing starvation.
+
+### Tier-Differentiated WAL
+
+| Tier | WAL Mode | Trade-off |
+|------|----------|-----------|
+| ULTRA | ASYNC | Lowest latency; crash-lose window < flush interval |
+| FAST | ASYNC | Lowest latency; crash-lose window < flush interval |
+| HIGH | BATCH_DEFERRED | Balanced: periodic batch fsync (~50ms) |
+| STANDARD | DURABLE | Strongest durability; fsync per write |
+| ECONOMY | DURABLE | Strongest durability; fsync per write |
+
+### Cold Swap Memory Efficiency
+
+**Test:** 10,000 intents with 2h delay, DURABLE WAL, measured before/after swap-out.
+
+| Metric | Value |
+|--------|-------|
+| Hot heap per intent | 476 bytes |
+| Cold heap per intent | 131 bytes |
+| Memory saved | 72.5% (345 bytes/intent) |
+| Cold index entry | ~80 bytes (record) + ~50 bytes (map overhead) |
+
+> **Key Insight:** For 1 million long-delay intents, cold swap reduces heap from ~450 MB to ~130 MB. The swap-in daemon reloads intents from WAL 60s before executeAt with sub-millisecond latency since WAL positions are known at swap-out time.
 
 ---
 
@@ -125,7 +178,7 @@ v0.8.0 builds on the v0.7.0 modular split to make concurrency control adaptive a
 |------|--------|-------------|-------|-----------|----------|----------|
 | **ULTRA** | 10ms | 200 | 1×5ms | 16 | ASYNC | Heartbeats, sub-50ms deadlines |
 | **FAST** | 50ms | 150 | 1×10ms | 12 | ASYNC | Message retry, backoff |
-| **HIGH** | 100ms | 50 | 5×50ms | 4 | BATCH | General purpose |
+| **HIGH** | 100ms | 50 | 5×50ms | 4 | BATCH_DEFERRED | General purpose |
 | **STANDARD** | 500ms | 50 | 20×100ms | 3 | DURABLE | **Recommended**, order timeouts |
 | **ECONOMY** | 1000ms | 50 | 25×300ms | 2 | DURABLE | Long-delay intents, bulk scheduling |
 
@@ -133,35 +186,6 @@ v0.8.0 builds on the v0.7.0 modular split to make concurrency control adaptive a
 - Sub-50ms deadlines: **ULTRA** or **FAST**
 - Order timeouts and scheduled notifications: **STANDARD** (best balance of throughput and latency)
 - Massive batch scheduling (>1h delay): **ECONOMY** (highest resource efficiency)
-
----
-
-## Performance Benchmarks
-
-**Test Environment:** JDK 25, NVMe SSD, 16 cores, localhost, Netty mock server
-
-### Full Benchmark (100k intents, 20k per tier)
-
-| Tier | E2E p50 | E2E p95 | E2E p99 | RTT p50 | RTT p95 |
-|------|---------|---------|---------|---------|---------|
-| ULTRA | 1,675ms | 2,967ms | 3,076ms | 1ms | 16ms |
-| FAST | 3,606ms | 5,979ms | 6,210ms | 1ms | 16ms |
-| HIGH | 11,272ms | 20,055ms | 20,800ms | 1ms | 16ms |
-| STANDARD | 18,192ms | 30,894ms | 31,503ms | 1ms | 16ms |
-| ECONOMY | 15,470ms | 27,987ms | 29,122ms | 15ms | 17ms |
-
-**System QPS:** 2,476 (100k intents in ~40s)
-
-### Arrow Borrowing Efficiency
-
-| Metric | Value |
-|--------|-------|
-| Direct acquires | 164,413 |
-| Borrowed acquires | 18,190 (9.6%) |
-| Blocking fallbacks | 6,768 |
-| Borrow timeouts | 11,047 |
-
-> **Key Insight:** Arrow borrowing handles 9.6% of all acquires without blocking. AdapTBF's 50% lend cap prevents high-priority tiers from starving ECONOMY while still enabling significant burst absorption.
 
 ---
 
@@ -176,6 +200,7 @@ import com.loomq.spi.DeliveryHandler.DeliveryResult;
 
 LoomqEngine engine = LoomqEngine.builder()
     .walDir(Path.of("./data"))
+    .defaultTier(PrecisionTier.FAST)
     .deliveryHandler(intent -> {
         System.out.println("Intent fired: " + intent.getIntentId());
         return DeliveryResult.SUCCESS;
@@ -209,9 +234,11 @@ loomq-server (Netty HTTP + JSON + webhook delivery)
 loomq-core (embeddable kernel, zero HTTP/JSON deps)
     ├── LoomqEngine           — builder-pattern entry point
     ├── PrecisionScheduler    — time-wheel buckets, per-tier scan + batch consumers
-    │   ├── CohortManager     — CSA-style batched wakeup
+    │   ├── CohortManager     — CSA-style batched wakeup (replaces per-intent VT sleep)
+    │   ├── BatchDispatcher   — batch aggregation for HTTP request economy
     │   ├── BucketGroupManager — per-tier time-bucket storage
     │   └── ResizableSemaphore — runtime-adjustable concurrency (extends Semaphore)
+    ├── ColdIntentSwapper     — long-delay intent memory swap-out/in; 72.5% heap reduction
     ├── IntentStore           — in-memory ConcurrentHashMap storage
     ├── SimpleWalWriter       — memory-mapped WAL with FFM API, ~100ns/record
     ├── RecoveryPipeline      — snapshot + WAL replay on restart
@@ -305,6 +332,36 @@ See [Configuration Reference](docs/operations/CONFIGURATION.md) for the complete
 
 ---
 
+## Deployment
+
+### Docker
+
+```bash
+# Build and run single node
+make docker-build && make docker-run
+
+# Cluster + monitoring stack (Prometheus + Grafana)
+docker-compose --profile full up -d
+```
+
+| Service | Port | Dashboard |
+|---------|------|-----------|
+| LoomQ server | 7928 | REST API + `/metrics` |
+| Prometheus | 9090 | Metrics collection (30d retention) |
+| Grafana | 3000 | Pre-built dashboards (admin / loomq123) |
+
+### Makefile Shortcuts
+
+```bash
+make build          # Full build with tests
+make build-fast     # Build without tests
+make test           # Run default test suite
+make run            # Build and start server
+make docker-build   # Build Docker image
+```
+
+---
+
 ## Roadmap
 
 ### v0.8.0 (current)
@@ -313,9 +370,13 @@ See [Configuration Reference](docs/operations/CONFIGURATION.md) for the complete
 - [x] AdapTBF lending constraints
 - [x] ResizableSemaphore (runtime concurrency adjustment)
 - [x] RTT per-tier metrics
-- [ ] Plugin-based storage engine (RocksDB, LevelDB)
+- [x] Batch delivery with 44.8x HTTP reduction
+- [x] Tier-differentiated WAL strategy
+- [x] Cold swap: long-delay intent memory optimization (72.5% heap reduction)
+- [x] Engine-level default tier via builder
 
 ### v0.9.0
+- Plugin-based storage engine (RocksDB, LevelDB)
 - Multi-node clustering with Raft consensus
 - Web-based management console
 - **Loomqex**: lock/lease semantics built on the stable kernel boundary
@@ -330,7 +391,7 @@ See [Configuration Reference](docs/operations/CONFIGURATION.md) for the complete
 ## Development
 
 - [Release Checklist](docs/engineering/release-checklist.md)
-- [Benchmark Checklist](docs/engineering/benchmark-checklist.md)
+- [Benchmark Guide](benchmark/README.md)
 - [Configuration Reference](docs/operations/CONFIGURATION.md)
 - [Architecture Details](docs/development/ARCHITECTURE.md)
 - [Core Model](docs/architecture/core-model.md)
