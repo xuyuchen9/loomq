@@ -2,28 +2,30 @@ package com.loomq.recovery;
 
 import com.loomq.application.scheduler.PrecisionScheduler;
 import com.loomq.domain.intent.Intent;
+import com.loomq.infrastructure.wal.SimpleWalWriter;
 import com.loomq.snapshot.SnapshotManager;
 import com.loomq.snapshot.SnapshotManager.SnapshotInfo;
 import com.loomq.snapshot.SnapshotManager.SnapshotRestoreResult;
+import com.loomq.spi.WalAccessor;
 import com.loomq.store.IntentStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /**
  * 恢复管线。
  *
  * 负责：
  * 1. 从快照恢复当前状态
- * 2. 回放快照之后的 WAL 增量
- * 3. 定期生成快照
+ * 2. 回放快照之后的 WAL 增量（段文件模式）
+ * 3. 定期生成快照并截断旧 WAL 段
  */
 public final class RecoveryPipeline implements AutoCloseable {
 
@@ -32,14 +34,12 @@ public final class RecoveryPipeline implements AutoCloseable {
 
     private final SnapshotManager snapshotManager;
     private final WalReplayManager walReplayManager;
-    private final Path walPath;
     private final ScheduledExecutorService snapshotExecutor;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     public RecoveryPipeline(Path walDir) {
         this.snapshotManager = new SnapshotManager(walDir.toString());
         this.walReplayManager = new WalReplayManager();
-        this.walPath = walDir.resolve("shard-0").resolve("wal.bin");
         this.snapshotExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread thread = new Thread(r, "recovery-snapshot");
             thread.setDaemon(true);
@@ -48,14 +48,22 @@ public final class RecoveryPipeline implements AutoCloseable {
     }
 
     /**
-     * 恢复 store 和调度器。
+     * 恢复 store 和调度器（段文件模式）。
      */
-    public RecoveryReport recover(IntentStore store, PrecisionScheduler scheduler) {
+    public RecoveryReport recover(IntentStore store, PrecisionScheduler scheduler, WalAccessor walAccessor) {
         SnapshotRestoreResult snapshotResult = snapshotManager.restoreFromSnapshot(intent -> restoreIntent(intent, store, scheduler));
         int restoredFromSnapshot = snapshotResult.restoredCount();
 
-        int restoredFromWal = walReplayManager.replay(walPath, snapshotResult.walOffset(),
-            intent -> restoreIntent(intent, store, scheduler));
+        // 使用 WalAccessor 从段文件回放
+        SimpleWalWriter walWriter = walAccessor instanceof SimpleWalWriter sw ? sw : null;
+        int restoredFromWal;
+        if (walWriter != null) {
+            restoredFromWal = walReplayManager.replay(walWriter, snapshotResult.walOffset(),
+                intent -> restoreIntent(intent, store, scheduler));
+        } else {
+            restoredFromWal = 0;
+            logger.warn("WalAccessor is not SimpleWalWriter, cannot replay WAL");
+        }
 
         int totalRestored = restoredFromSnapshot + restoredFromWal;
         if (totalRestored > 0) {
@@ -69,9 +77,13 @@ public final class RecoveryPipeline implements AutoCloseable {
     }
 
     /**
-     * 启动定期快照。
+     * 启动定期快照，并在快照完成后截断旧 WAL 段。
+     *
+     * @param store         Intent 存储
+     * @param walOffsetSupplier 获取当前 WAL 写位置
+     * @param walAccessorSupplier 获取 WalAccessor（用于截断）
      */
-    public void startSnapshots(IntentStore store, LongSupplier walOffsetSupplier) {
+    public void startSnapshots(IntentStore store, LongSupplier walOffsetSupplier, Supplier<WalAccessor> walAccessorSupplier) {
         if (!running.compareAndSet(false, true)) {
             return;
         }
@@ -80,12 +92,25 @@ public final class RecoveryPipeline implements AutoCloseable {
             try {
                 SnapshotInfo info = snapshotManager.createSnapshot(store, walOffsetSupplier.getAsLong());
                 logger.debug("Snapshot checkpoint written: {}", info);
+
+                // 截断已快照覆盖的旧 WAL 段
+                WalAccessor wal = walAccessorSupplier.get();
+                if (wal != null) {
+                    wal.truncateBefore(info.walOffset);
+                }
             } catch (Exception e) {
                 logger.error("Snapshot checkpoint failed", e);
             }
         }, SNAPSHOT_INTERVAL_MINUTES, SNAPSHOT_INTERVAL_MINUTES, TimeUnit.MINUTES);
 
         logger.info("RecoveryPipeline started: snapshot interval {} minutes", SNAPSHOT_INTERVAL_MINUTES);
+    }
+
+    /**
+     * 启动定期快照（无截断，向后兼容）。
+     */
+    public void startSnapshots(IntentStore store, LongSupplier walOffsetSupplier) {
+        startSnapshots(store, walOffsetSupplier, () -> null);
     }
 
     /**

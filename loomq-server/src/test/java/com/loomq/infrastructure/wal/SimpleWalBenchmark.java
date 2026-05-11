@@ -7,7 +7,7 @@ import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.infrastructure.wal.SimpleWalWriter;
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -110,7 +110,7 @@ public class SimpleWalBenchmark {
         intent.setDeadline(Instant.now().plusSeconds(3600));
         intent.setShardKey("test-shard");
         intent.setPrecisionTier(PrecisionTier.STANDARD);
-        intent.setAckLevel(AckLevel.DURABLE);
+        intent.setAckMode(AckMode.DURABLE);
         intent.setIdempotencyKey("idem-" + System.nanoTime());
 
         Callback callback = new Callback("http://localhost:8080/callback");

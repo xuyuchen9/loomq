@@ -4,7 +4,7 @@ import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.RedeliveryPolicy;
 import com.loomq.domain.intent.WalMode;
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 
 import java.time.Instant;
 import java.util.Map;
@@ -23,7 +23,7 @@ public record CreateIntentRequest(
     PrecisionTier precisionTier,
     WalMode walMode,
     String shardKey,
-    AckLevel ackLevel,
+    AckMode ackLevel,
     Callback callback,
     RedeliveryPolicy redelivery,
     String idempotencyKey,

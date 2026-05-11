@@ -15,7 +15,7 @@ import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.http.json.JsonCodec;
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 import com.loomq.store.IdempotencyResult;
 import com.loomq.tracing.IntentTrace;
 import com.loomq.tracing.IntentTraceStore;
@@ -113,15 +113,14 @@ public class IntentHandler {
         intent.setPrecisionTier(request.precisionTier() != null ? request.precisionTier() : DEFAULT_PRECISION_TIER);
         intent.setWalMode(request.walMode());
         intent.setShardKey(request.shardKey());
-        intent.setAckLevel(request.ackLevel() != null ? request.ackLevel() : AckLevel.DURABLE);
+        intent.setAckMode(request.ackLevel() != null ? request.ackLevel() : AckMode.DURABLE);
         intent.setCallback(request.callback());
         intent.setRedelivery(request.redelivery());
         intent.setIdempotencyKey(request.idempotencyKey());
         intent.setTags(request.tags());
 
-        AckMode ackMode = toAckMode(intent.getAckLevel());
         try {
-            engine.createIntent(intent, ackMode).join();
+            engine.createIntent(intent, intent.getAckMode()).join();
         } catch (CompletionException e) {
             if (e.getCause() instanceof BackPressureException bpe) {
                 return new HttpErrorResponse(429, ErrorResponse.of(
@@ -134,7 +133,7 @@ public class IntentHandler {
         }
 
         logger.info("Intent created: id={}, executeAt={}, ackLevel={}",
-            intent.getIntentId(), intent.getExecuteAt(), intent.getAckLevel());
+            intent.getIntentId(), intent.getExecuteAt(), intent.getAckMode());
 
         return new IntentHandler.CreatedResponse(201, IntentResponse.from(intent));
     }
@@ -261,13 +260,6 @@ public class IntentHandler {
         }
 
         return trace.toJson();
-    }
-
-    private AckMode toAckMode(AckLevel ackLevel) {
-        if (ackLevel == null) {
-            return AckMode.DURABLE;
-        }
-        return AckMode.valueOf(ackLevel.name());
     }
 
     private String callbackUrl(CreateIntentRequest request) {

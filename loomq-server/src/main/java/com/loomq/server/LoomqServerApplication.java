@@ -3,6 +3,10 @@ package com.loomq.server;
 import com.loomq.LoomqEngine;
 import com.loomq.callback.HttpCallbackHandler;
 import com.loomq.callback.NettyHttpDeliveryHandler;
+import com.loomq.cluster.ClusterManager;
+import com.loomq.cluster.FailoverController;
+import com.loomq.cluster.ReplicationEndpoints;
+import com.loomq.cluster.ReplicaRole;
 import com.loomq.config.LoomqConfig;
 import com.loomq.config.WalConfig;
 import com.loomq.config.ServerConfig;
@@ -55,6 +59,56 @@ public class LoomqServerApplication {
             .deliveryHandler(new NettyHttpDeliveryHandler())
             .build();
 
+        // ---- 集群/复制模式（可选）----
+        final ClusterManager clusterManager;
+        final com.loomq.replication.ReplicationManager replicationManager;
+        final FailoverController failoverController;
+
+        boolean clusterEnabled = Boolean.parseBoolean(
+            resolveSetting("LOOMQ_CLUSTER_ENABLED", "loomq.cluster.enabled", "false"));
+        if (clusterEnabled) {
+            String replicaHost = resolveSetting("LOOMQ_REPLICA_HOST", "loomq.replica.host", "localhost");
+            int replicaPort = Integer.parseInt(
+                resolveSetting("LOOMQ_REPLICA_PORT", "loomq.replica.port", "7929"));
+            String role = resolveSetting("LOOMQ_ROLE", "loomq.role", "primary");
+
+            // 复制管理器
+            replicationManager = new com.loomq.replication.ReplicationManager(nodeId);
+            com.loomq.replication.RecordApplier applier =
+                new com.loomq.replication.RecordApplier(engine.getIntentStore());
+            applier.setScheduler(engine.getScheduler());
+            replicationManager.setRecordApplier(applier);
+
+            // 角色初始化
+            if ("primary".equalsIgnoreCase(role)) {
+                replicationManager.promoteToPrimary(replicaHost, replicaPort).join();
+            } else {
+                replicationManager.demoteToReplica("0.0.0.0", replicaPort).join();
+            }
+
+            // 集群管理器（分片路由）
+            clusterManager = ClusterManager.singleNode(serverConfig.port());
+            try {
+                clusterManager.start();
+            } catch (Exception e) {
+                logger.warn("ClusterManager start failed (non-fatal)", e);
+            }
+
+            // Failover 控制器
+            ReplicationEndpoints endpoints = new ReplicationEndpoints(replicaHost, replicaPort, "0.0.0.0", replicaPort);
+            failoverController = new FailoverController(
+                nodeId, "shard-0", ReplicaRole.FOLLOWER, 1,
+                30_000, 0.5, endpoints);
+            failoverController.setReplicationManager(replicationManager);
+            failoverController.start();
+
+            logger.info("Replication enabled: role={}, replica={}:{}", role, replicaHost, replicaPort);
+        } else {
+            clusterManager = null;
+            replicationManager = null;
+            failoverController = null;
+        }
+
         RadixRouter router = new RadixRouter();
         new IntentHandler(engine).register(router);
         registerSystemRoutes(router, engine);
@@ -73,6 +127,21 @@ public class LoomqServerApplication {
                 callbackHandler.close();
             } catch (Exception e) {
                 logger.warn("Error while closing callback handler", e);
+            }
+
+            // 关闭复制组件
+            if (failoverController != null) {
+                failoverController.close();
+            }
+            if (replicationManager != null) {
+                try {
+                    replicationManager.close();
+                } catch (Exception e) {
+                    logger.warn("Error closing replication manager", e);
+                }
+            }
+            if (clusterManager != null) {
+                clusterManager.stop();
             }
 
             try {

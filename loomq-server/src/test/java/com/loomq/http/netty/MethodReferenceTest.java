@@ -1,5 +1,6 @@
 package com.loomq.http.netty;
 
+import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
 import io.netty.handler.codec.http.HttpMethod;
 import org.junit.jupiter.api.Test;
@@ -16,7 +17,7 @@ class MethodReferenceTest {
     @Test
     void testWithLambda() {
         RadixRouter router = new RadixRouter();
-        IntentStore store = new IntentStore();
+        IntentStore store = new ConcurrentIntentStore();
 
         router.add(HttpMethod.POST, "/v1/intents",
             (method, uri, body, headers, pathParams) -> Map.of("endpoint", "create"));
@@ -33,7 +34,7 @@ class MethodReferenceTest {
     @Test
     void testWithMethodReference() {
         RadixRouter router = new RadixRouter();
-        IntentStore store = new IntentStore();
+        IntentStore store = new ConcurrentIntentStore();
 
         // 创建一个简单的处理器对象
         TestHandler handler = new TestHandler(store);

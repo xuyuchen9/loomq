@@ -1,9 +1,9 @@
 # LoomQ — Durable Time Kernel for Future Events
 
 [![JDK](https://img.shields.io/badge/JDK-25%2B-green.svg)](https://openjdk.org/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-0.8.x-blue.svg)](https://central.sonatype.com/)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-0.9.x-blue.svg)](https://central.sonatype.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/Tests-494%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-481%20passed-brightgreen.svg)]()
 
 **Making future events happen reliably, powered by Java 25 Virtual Threads.**
 
@@ -27,9 +27,9 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 
 | Category | Examples |
 |----------|----------|
-| **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics |
-| **Beta** | cluster plumbing, replication, shard routing, failover |
-| **Not yet committed** | distributed coordination primitives, lock/lease semantics, leader election |
+| **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics, pluggable storage (in-memory + RocksDB), WAL segment rotation with auto-truncation, IntentObserver lifecycle hooks |
+| **Beta** | replication, shard routing, failover, primary-backup cluster mode |
+| **Not yet committed** | Raft consensus, distributed coordination primitives, lock/lease semantics |
 
 ---
 
@@ -46,7 +46,7 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 <dependency>
     <groupId>com.loomq</groupId>
     <artifactId>loomq-core</artifactId>
-    <version>0.8.0-SNAPSHOT</version>
+    <version>0.9.0-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -101,6 +101,9 @@ curl http://localhost:7928/v1/intents/{intentId}
 | **Arrow Cross-Tier Borrowing** | High-priority tiers borrow idle slots from lower tiers during bursts, with AdapTBF bounds |
 | **Resizable Concurrency** | Per-tier `ResizableSemaphore` supports runtime concurrency adjustment without restart |
 | **Cold Swap** | Long-delay intents (>1h) evicted from heap after DURABLE WAL persist; auto-reloaded 60s before executeAt; 72.5% memory reduction |
+| **Segmented WAL** | Multi-segment WAL files with automatic rotation; auto-truncation after snapshot; 1.25M ops/sec ASYNC throughput |
+| **Pluggable Storage** | `IntentStore` interface with in-memory (`ConcurrentIntentStore`) and RocksDB (`RocksDBIntentStore`) backends |
+| **IntentObserver SPI** | Lifecycle hooks (onScheduled/onDelivered/onDeadLettered/onExpired/onDeliveryFailed) for service-layer integration |
 | **Crash Recovery** | Snapshot + WAL replay pipeline, gzip-compressed binary snapshots every 5 minutes |
 | **Observability** | Per-tier latency histograms (P50–P99.9), RTT metrics, Prometheus export, borrow stats |
 | **Engine DefaultTier** | `builder.defaultTier(Tier)` sets engine-wide tier; auto-applied to all intents at creation |
@@ -201,11 +204,19 @@ import com.loomq.spi.DeliveryHandler.DeliveryResult;
 LoomqEngine engine = LoomqEngine.builder()
     .walDir(Path.of("./data"))
     .defaultTier(PrecisionTier.FAST)
+    .intentStore(new RocksDBIntentStore(Path.of("./db")))  // optional: pluggable storage
     .deliveryHandler(intent -> {
         System.out.println("Intent fired: " + intent.getIntentId());
         return DeliveryResult.SUCCESS;
     })
     .build();
+
+engine.registerObserver(new IntentObserver() {
+    @Override public void onDelivered(Intent i, DeliveryResult r) {
+        System.out.println("Delivered: " + i.getIntentId());
+    }
+    // ... other callbacks
+});
 
 engine.start();
 
@@ -235,14 +246,13 @@ loomq-core (embeddable kernel, zero HTTP/JSON deps)
     ├── LoomqEngine           — builder-pattern entry point
     ├── PrecisionScheduler    — time-wheel buckets, per-tier scan + batch consumers
     │   ├── CohortManager     — CSA-style batched wakeup (replaces per-intent VT sleep)
-    │   ├── BatchDispatcher   — batch aggregation for HTTP request economy
     │   ├── BucketGroupManager — per-tier time-bucket storage
     │   └── ResizableSemaphore — runtime-adjustable concurrency (extends Semaphore)
     ├── ColdIntentSwapper     — long-delay intent memory swap-out/in; 72.5% heap reduction
-    ├── IntentStore           — in-memory ConcurrentHashMap storage
-    ├── SimpleWalWriter       — memory-mapped WAL with FFM API, ~100ns/record
+    ├── IntentStore (interface) — pluggable storage (ConcurrentIntentStore / RocksDBIntentStore)
+    ├── SimpleWalWriter       — segmented WAL with FFM API, auto-truncation
     ├── RecoveryPipeline      — snapshot + WAL replay on restart
-    └── SPI interfaces        — DeliveryHandler, CallbackHandler, RedeliveryDecider
+    └── SPI interfaces        — DeliveryHandler, CallbackHandler, IntentObserver, WalAccessor, RedeliveryDecider
 ```
 
 ### Scheduler Design
@@ -311,6 +321,8 @@ loomq-core (embeddable kernel, zero HTTP/JSON deps)
 | Interface | Method | Purpose |
 |-----------|--------|---------|
 | `DeliveryHandler` | `deliverAsync(Intent)` → `CompletableFuture<DeliveryResult>` | How intents are dispatched (HTTP, MQ, local) |
+| `IntentObserver` | `onScheduled/onDelivered/onDeadLettered/onExpired/onDeliveryFailed` | Lifecycle event observation for service layers |
+| `WalAccessor` | `readRecord/listSegments/truncateBefore` | WAL read access for replication and recovery |
 | `CallbackHandler` | `onIntentEvent(Intent, EventType, Throwable)` | Lifecycle event notification |
 | `RedeliveryDecider` | `shouldRedeliver(DeliveryContext)` → `boolean` | Custom retry policy |
 
@@ -364,27 +376,25 @@ make docker-build   # Build Docker image
 
 ## Roadmap
 
-### v0.8.0 (current)
+### v0.9.0 (current)
 - [x] Cohort-based batched wakeup (CSA-inspired)
-- [x] Arrow cross-tier slot borrowing
-- [x] AdapTBF lending constraints
+- [x] Arrow cross-tier slot borrowing + AdapTBF constraints
 - [x] ResizableSemaphore (runtime concurrency adjustment)
-- [x] RTT per-tier metrics
-- [x] Batch delivery with 44.8x HTTP reduction
-- [x] Tier-differentiated WAL strategy
 - [x] Cold swap: long-delay intent memory optimization (72.5% heap reduction)
-- [x] Engine-level default tier via builder
-
-### v0.9.0
-- Plugin-based storage engine (RocksDB, LevelDB)
-- Multi-node clustering with Raft consensus
-- Web-based management console
-- **Loomqex**: lock/lease semantics built on the stable kernel boundary
+- [x] Segmented WAL with auto-truncation
+- [x] Pluggable storage engine: `IntentStore` interface + `ConcurrentIntentStore` + `RocksDBIntentStore`
+- [x] `IntentObserver` SPI for lifecycle hooks
+- [x] `WalAccessor` SPI for WAL read/truncation
+- [x] Primary-backup replication integration
+- [x] Observable backpressure (no silent drops)
+- [x] Expiry index: O(log n) expired intent scanning
+- [x] Benchmark suite: WAL throughput, storage comparison, observer overhead
 
 ### Future
+- Multi-node clustering with Raft consensus
+- **Loomqex**: lock/lease semantics built on the stable kernel boundary
 - Kubernetes operator
-- Multi-region replication
-- Schema registry for callback payloads
+- Web-based management console
 
 ---
 

@@ -4,6 +4,7 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.DefaultRedeliveryDecider;
+import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
 import com.loomq.application.scheduler.PrecisionScheduler;
 import org.junit.jupiter.api.AfterEach;
@@ -79,7 +80,7 @@ class RealHttpBenchmark {
 
     private void runSingleTier(PrecisionTier tier) throws Exception {
         // Fresh components per tier to avoid cross-contamination
-        IntentStore intentStore = new IntentStore();
+        IntentStore intentStore = new ConcurrentIntentStore();
         deliveryHandler = new ReactorNettyDeliveryHandler(WEBHOOK_PORT);
 
         AtomicInteger delivered = new AtomicInteger(0);

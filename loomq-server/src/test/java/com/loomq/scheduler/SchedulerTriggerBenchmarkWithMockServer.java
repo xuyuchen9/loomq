@@ -8,6 +8,7 @@ import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.spi.DefaultRedeliveryDecider;
 import com.loomq.spi.DeliveryHandler;
+import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
 import com.sun.management.OperatingSystemMXBean;
 import org.junit.jupiter.api.AfterEach;
@@ -100,7 +101,7 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         startMockServer();
 
         logger.info("Scheduler benchmark setup: creating scheduler components");
-        intentStore = new IntentStore();
+        intentStore = new ConcurrentIntentStore();
 
         boolean useSimulatedDelay = Boolean.getBoolean("loomq.benchmark.simulated-delay");
         boolean useChameleonMode = Boolean.getBoolean("loomq.benchmark.chameleon");

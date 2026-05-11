@@ -34,7 +34,7 @@ for arg in "$@"; do
         --verbose)         VERBOSE=true ;;
         --help|-h)
             echo ""
-            echo "LoomQ Performance Benchmark v0.8.0"
+            echo "LoomQ Performance Benchmark v0.9.0"
             echo ""
             echo "Usage: ./benchmark.sh [Options]"
             echo ""
@@ -120,7 +120,7 @@ fi
 
 echo ""
 echo "+--------------------------------------------------------------+"
-echo "|          LoomQ 性能基准测试 v0.8.0                            |"
+echo "|          LoomQ 性能基准测试 v0.9.0                            |"
 echo "+--------------------------------------------------------------+"
 echo ""
 echo "Scenario: $SCENARIO"
@@ -155,10 +155,16 @@ rotate_reports
 BM_CLASS_SCHEDULER="com.loomq.scheduler.SchedulerTriggerBenchmarkWithMockServer"
 BM_CLASS_INTERNAL="com.loomq.benchmark.InternalBenchmark"
 BM_CLASS_HTTP="com.loomq.benchmark.HttpVirtualThreadBenchmark"
+BM_CLASS_WAL="com.loomq.benchmark.WalThroughputBenchmark"
+BM_CLASS_STORAGE="com.loomq.benchmark.StorageBenchmark"
+BM_CLASS_OBSERVER="com.loomq.benchmark.ObserverOverheadBenchmark"
 
 SCHEDULER_LOG="$LOGS_DIR/benchmark-scheduler-$TIMESTAMP.log"
 INTERNAL_LOG="$LOGS_DIR/benchmark-internal-$TIMESTAMP.log"
 HTTP_LOG="$LOGS_DIR/benchmark-http-$TIMESTAMP.log"
+WAL_LOG="$LOGS_DIR/benchmark-wal-$TIMESTAMP.log"
+STORAGE_LOG="$LOGS_DIR/benchmark-storage-$TIMESTAMP.log"
+OBSERVER_LOG="$LOGS_DIR/benchmark-observer-$TIMESTAMP.log"
 
 run_scenario() {
     local name="$1"
@@ -196,6 +202,12 @@ if [ "$SCENARIO" = "all" ] || [ "$SCENARIO" = "internal" ]; then
     else
         run_scenario "1) In-process upper bound" "$BM_CLASS_INTERNAL" "$INTERNAL_LOG"
     fi
+
+    # ---- 新增组件基准测试 (v0.9.0) ----
+    run_scenario "1b) WAL Write Throughput" "$BM_CLASS_WAL" "$WAL_LOG"
+    run_scenario "1c) Storage Engine Comparison" "$BM_CLASS_STORAGE" "$STORAGE_LOG"
+    run_scenario "1d) Observer Overhead" "$BM_CLASS_OBSERVER" "$OBSERVER_LOG"
+    # ---- 新增结束 ----
 fi
 
 # Scenario 2: HTTP create path (requires running server - skip if not in full mode)

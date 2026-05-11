@@ -8,7 +8,7 @@ import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.domain.intent.RedeliveryPolicy;
 import com.loomq.domain.intent.WalMode;
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -144,8 +144,8 @@ public class IntentBinaryCodec {
         }
 
         // 可靠性字段
-        if (intent.getAckLevel() != null) {
-            writeByteField(buffer, FIELD_ACK_LEVEL, (byte) intent.getAckLevel().ordinal());
+        if (intent.getAckMode() != null) {
+            writeByteField(buffer, FIELD_ACK_LEVEL, (byte) intent.getAckMode().ordinal());
             fieldCount++;
         }
 
@@ -210,7 +210,7 @@ public class IntentBinaryCodec {
         WalMode walMode = null;
         String shardKey = null;
         String shardId = null;
-        AckLevel ackLevel = null;
+        AckMode ackLevel = null;
         Callback callback = null;
         RedeliveryPolicy redelivery = null;
         String idempotencyKey = null;
@@ -238,7 +238,7 @@ public class IntentBinaryCodec {
                 case FIELD_WAL_MODE -> walMode = WalMode.values()[buffer.get()];
                 case FIELD_SHARD_KEY -> shardKey = readString(buffer, fieldLen);
                 case FIELD_SHARD_ID -> shardId = readString(buffer, fieldLen);
-                case FIELD_ACK_LEVEL -> ackLevel = AckLevel.values()[buffer.get()];
+                case FIELD_ACK_LEVEL -> ackLevel = AckMode.values()[buffer.get()];
                 case FIELD_CALLBACK -> {
                     byte[] callbackBytes = new byte[fieldLen];
                     buffer.get(callbackBytes);
