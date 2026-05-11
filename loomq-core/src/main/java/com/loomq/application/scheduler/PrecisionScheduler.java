@@ -769,12 +769,17 @@ public class PrecisionScheduler {
             // Trace: record delivered
             IntentTraceStore.getInstance().recordDelivered(intent.getIntentId());
 
-            switch (result) {
+            final DeliveryResult finalResult = result != null ? result : DeliveryResult.RETRY;
+            if (result == null) {
+                logger.warn("Delivery handler returned null for intent {}, treating as RETRY", intent.getIntentId());
+            }
+
+            switch (finalResult) {
                 case SUCCESS:
                     intent.transitionTo(IntentStatus.DELIVERED);
                     intent.transitionTo(IntentStatus.ACKED);
                     intentStore.update(intent);
-                    notifyObservers(o -> o.onDelivered(intent, result));
+                    notifyObservers(o -> o.onDelivered(intent, finalResult));
                     unindexIntent(intent.getIntentId(), executeAtMs(intent));
                     // Trace: record acked
                     IntentTraceStore.getInstance().recordAcked(intent.getIntentId());

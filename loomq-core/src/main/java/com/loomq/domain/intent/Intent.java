@@ -288,7 +288,7 @@ public class Intent {
      * 检查是否已过期
      */
     public boolean isExpired() {
-        return Instant.now().isAfter(deadline);
+        return deadline != null && Instant.now().isAfter(deadline);
     }
 
     /**
