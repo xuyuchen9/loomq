@@ -176,7 +176,7 @@ class WalMultiProcessCrashTest {
         }
 
         // Replay WAL
-        Path walPath = dataDir.resolve("crash-test").resolve("wal.bin");
+        Path walPath = dataDir.resolve("crash-test").resolve("wal-000001.bin");
         int recovered = 0;
         if (Files.exists(walPath)) {
             WalReplayManager replayer = new WalReplayManager();

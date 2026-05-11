@@ -141,7 +141,7 @@ class WalCrashRiskProfileTest {
         process.waitFor(10, TimeUnit.SECONDS);
 
         // Replay
-        Path walPath = testDir.resolve("crash-test").resolve("wal.bin");
+        Path walPath = testDir.resolve("crash-test").resolve("wal-000001.bin");
         int recovered = 0;
         if (Files.exists(walPath) && Files.size(walPath) > 0) {
             WalReplayManager replayer = new WalReplayManager();

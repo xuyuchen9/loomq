@@ -1,6 +1,7 @@
 package com.loomq.replication;
 
 import com.loomq.cluster.ReplicaRole;
+import com.loomq.domain.intent.AckMode;
 import com.loomq.replication.client.ReplicaClient;
 import com.loomq.replication.server.ReplicaServer;
 import org.slf4j.Logger;
@@ -157,7 +158,7 @@ public class ReplicationManager implements AutoCloseable {
      * @param ackLevel ACK 级别
      * @return CompletableFuture 在达到指定确认级别后完成
      */
-    public CompletableFuture<ReplicationResult> replicate(ReplicationRecord record, AckLevel ackLevel) {
+    public CompletableFuture<ReplicationResult> replicate(ReplicationRecord record, AckMode ackLevel) {
         if (!isPrimary()) {
             return CompletableFuture.failedFuture(
                 new IllegalStateException("Only primary can replicate"));
@@ -168,7 +169,7 @@ public class ReplicationManager implements AutoCloseable {
             logger.warn("Replica not connected, cannot achieve {} for offset={}",
                 ackLevel, record.getOffset());
 
-            if (ackLevel == AckLevel.REPLICATED) {
+            if (ackLevel == AckMode.REPLICATED) {
                 return CompletableFuture.failedFuture(
                     new IllegalStateException("Replica not connected, cannot achieve REPLICATED"));
             }

@@ -3,7 +3,7 @@ package com.loomq.infrastructure.wal;
 import com.loomq.config.WalConfig;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 import com.loomq.replication.ReplicationManager;
 import com.loomq.replication.ReplicationRecord;
 import com.loomq.replication.ReplicationRecordType;
@@ -120,7 +120,7 @@ public class IntentWal implements AutoCloseable {
                 .payload(payload)
                 .build();
 
-            return replicationManager.replicate(record, AckLevel.REPLICATED)
+            return replicationManager.replicate(record, AckMode.REPLICATED)
                 .thenApply(result -> {
                     if (result.isSuccess()) {
                         return offset;

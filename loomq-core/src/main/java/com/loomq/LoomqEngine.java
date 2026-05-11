@@ -14,8 +14,11 @@ import com.loomq.recovery.RecoveryPipeline;
 import com.loomq.snapshot.SnapshotManager.SnapshotInfo;
 import com.loomq.spi.CallbackHandler;
 import com.loomq.spi.DeliveryHandler;
+import com.loomq.spi.IntentObserver;
 import com.loomq.spi.RedeliveryDecider;
+import com.loomq.spi.WalAccessor;
 import com.loomq.store.IdempotencyResult;
+import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -54,6 +58,9 @@ public class LoomqEngine implements AutoCloseable {
     private final RecoveryPipeline recoveryPipeline;
     private final IntentCommandService commandService;
     private final ColdIntentSwapper coldSwapper;
+
+    // ========== 观察器 ==========
+    private final List<IntentObserver> observers = new CopyOnWriteArrayList<>();
 
     // ========== 回调机制 ==========
     private final Executor callbackExecutor;
@@ -85,7 +92,9 @@ public class LoomqEngine implements AutoCloseable {
             Files.createDirectories(walDir);
 
             // 初始化组件
-            this.intentStore = new IntentStore();
+            this.intentStore = builder.intentStore != null
+                ? builder.intentStore
+                : new ConcurrentIntentStore();
             this.walWriter = new SimpleWalWriter(walConfig, "shard-0");
             this.metricsCollector = MetricsCollector.getInstance();
             this.recoveryPipeline = new RecoveryPipeline(walDir);
@@ -144,7 +153,7 @@ public class LoomqEngine implements AutoCloseable {
         logger.info("╚════════════════════════════════════════════════════════╝");
 
         // 先恢复快照和 WAL 增量，再启动运行时
-        RecoveryPipeline.RecoveryReport recoveryReport = recoveryPipeline.recover(intentStore, scheduler);
+        RecoveryPipeline.RecoveryReport recoveryReport = recoveryPipeline.recover(intentStore, scheduler, walWriter);
         if (recoveryReport.restoredTotal() > 0) {
             logger.info("Recovered {} intents from snapshot/WAL (snapshot={}, wal={})",
                 recoveryReport.restoredTotal(),
@@ -156,13 +165,14 @@ public class LoomqEngine implements AutoCloseable {
         walWriter.start();
 
         // 启动调度器
+        scheduler.setObservers(observers);
         scheduler.start();
 
         // 启动冷热交换器（长延迟 Intent 内存换出/换入）
         coldSwapper.start();
 
-        // 启动定期快照
-        recoveryPipeline.startSnapshots(intentStore, walWriter::getWritePosition);
+        // 启动定期快照（快照完成后自动截断旧 WAL 段）
+        recoveryPipeline.startSnapshots(intentStore, walWriter::getWritePosition, () -> walWriter);
 
         logger.info("Engine started successfully");
     }
@@ -292,6 +302,21 @@ public class LoomqEngine implements AutoCloseable {
     }
 
     /**
+     * 注册 Intent 生命周期观察器。
+     * 可在引擎运行中随时注册/移除，线程安全。
+     */
+    public void registerObserver(IntentObserver observer) {
+        observers.add(observer);
+    }
+
+    /**
+     * 移除 Intent 生命周期观察器。
+     */
+    public void removeObserver(IntentObserver observer) {
+        observers.remove(observer);
+    }
+
+    /**
      * 检查幂等性。
      */
     public IdempotencyResult checkIdempotency(String idempotencyKey) {
@@ -305,6 +330,22 @@ public class LoomqEngine implements AutoCloseable {
      */
     public PrecisionScheduler getScheduler() {
         return scheduler;
+    }
+
+    /**
+     * 获取 Intent 存储（供服务层读写）
+     */
+    public IntentStore getIntentStore() {
+        return intentStore;
+    }
+
+    /**
+     * 获取 WAL 访问器（供服务层读取/截断 WAL）
+     *
+     * @return WalAccessor
+     */
+    public WalAccessor getWalAccessor() {
+        return walWriter;
     }
 
     /**
@@ -417,6 +458,7 @@ public class LoomqEngine implements AutoCloseable {
         private DeliveryHandler deliveryHandler;
         private RedeliveryDecider redeliveryDecider;
         private PrecisionTier defaultTier;
+        private IntentStore intentStore;
 
         public Builder walDir(Path walDir) {
             this.walDir = walDir;
@@ -455,6 +497,11 @@ public class LoomqEngine implements AutoCloseable {
 
         public Builder redeliveryDecider(RedeliveryDecider decider) {
             this.redeliveryDecider = decider;
+            return this;
+        }
+
+        public Builder intentStore(IntentStore store) {
+            this.intentStore = store;
             return this;
         }
 

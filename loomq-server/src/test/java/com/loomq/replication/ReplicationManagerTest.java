@@ -1,5 +1,6 @@
 package com.loomq.replication;
 
+import com.loomq.domain.intent.AckMode;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;
@@ -44,7 +45,7 @@ class ReplicationManagerTest {
             .build();
 
         CompletableFuture<ReplicationManager.ReplicationResult> future =
-            manager.replicate(record, AckLevel.REPLICATED);
+            manager.replicate(record, AckMode.REPLICATED);
 
         assertTrue(future.isCompletedExceptionally());
     }

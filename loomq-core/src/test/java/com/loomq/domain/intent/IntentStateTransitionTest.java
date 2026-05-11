@@ -1,6 +1,6 @@
 package com.loomq.domain.intent;
 
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -244,7 +244,7 @@ class IntentStateTransitionTest {
             null,
             "shard-a",
             "shard-1",
-            AckLevel.REPLICATED,
+            AckMode.REPLICATED,
             null,
             null,
             "idem-123",
@@ -263,7 +263,7 @@ class IntentStateTransitionTest {
         assertEquals(PrecisionTier.FAST, restored.getPrecisionTier());
         assertEquals("shard-a", restored.getShardKey());
         assertEquals("shard-1", restored.getShardId());
-        assertEquals(AckLevel.REPLICATED, restored.getAckLevel());
+        assertEquals(AckMode.REPLICATED, restored.getAckMode());
         assertEquals("idem-123", restored.getIdempotencyKey());
         assertEquals(Map.of("team", "core"), restored.getTags());
         assertEquals(3, restored.getAttempts());
@@ -276,7 +276,7 @@ class IntentStateTransitionTest {
             "intent-acked", IntentStatus.ACKED,
             Instant.now(), Instant.now(), Instant.now(), null,
             ExpiredAction.DISCARD, PrecisionTier.HIGH, null,
-            "s", "s1", AckLevel.DURABLE,
+            "s", "s1", AckMode.DURABLE,
             null, null, null, Map.of(), 1, null
         );
         assertEquals(IntentStatus.ACKED, restored.getStatus());

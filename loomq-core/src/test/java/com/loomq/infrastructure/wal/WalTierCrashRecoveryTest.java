@@ -264,7 +264,7 @@ class WalTierCrashRecoveryTest {
     }
 
     private int countRecoveredIntents() throws Exception {
-        Path walPath = dataDir.resolve("test-shard").resolve("wal.bin");
+        Path walPath = dataDir.resolve("test-shard").resolve("wal-000001.bin");
         if (!Files.exists(walPath)) return 0;
 
         int count = 0;

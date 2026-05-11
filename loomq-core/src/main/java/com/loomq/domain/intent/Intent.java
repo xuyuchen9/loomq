@@ -1,6 +1,6 @@
 package com.loomq.domain.intent;
 
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 
 import java.time.Instant;
 import java.util.Map;
@@ -88,7 +88,7 @@ public class Intent {
     /**
      * ACK 级别：ASYNC / DURABLE / REPLICATED
      */
-    private AckLevel ackLevel;
+    private AckMode ackLevel;
 
     // ========== 回调字段 ==========
 
@@ -138,7 +138,7 @@ public class Intent {
         this.updatedAt = this.createdAt;
         this.expiredAction = ExpiredAction.DISCARD;
         this.precisionTier = defaultPrecisionTier();
-        this.ackLevel = AckLevel.DURABLE;
+        this.ackLevel = AckMode.DURABLE;
         this.attempts = 0;
     }
 
@@ -150,7 +150,7 @@ public class Intent {
         this.updatedAt = this.createdAt;
         this.expiredAction = ExpiredAction.DISCARD;
         this.precisionTier = defaultPrecisionTier();
-        this.ackLevel = AckLevel.DURABLE;
+        this.ackLevel = AckMode.DURABLE;
         this.attempts = 0;
     }
 
@@ -165,7 +165,7 @@ public class Intent {
                    WalMode walMode,
                    String shardKey,
                    String shardId,
-                   AckLevel ackLevel,
+                   AckMode ackLevel,
                    Callback callback,
                    RedeliveryPolicy redelivery,
                    String idempotencyKey,
@@ -183,7 +183,7 @@ public class Intent {
         this.walMode = walMode;
         this.shardKey = shardKey;
         this.shardId = shardId;
-        this.ackLevel = ackLevel != null ? ackLevel : AckLevel.DURABLE;
+        this.ackLevel = ackLevel != null ? ackLevel : AckMode.DURABLE;
         this.callback = callback;
         this.redelivery = redelivery;
         this.idempotencyKey = idempotencyKey;
@@ -207,7 +207,7 @@ public class Intent {
                                  WalMode walMode,
                                  String shardKey,
                                  String shardId,
-                                 AckLevel ackLevel,
+                                 AckMode ackLevel,
                                  Callback callback,
                                  RedeliveryPolicy redelivery,
                                  String idempotencyKey,
@@ -401,11 +401,11 @@ public class Intent {
         this.shardId = shardId;
     }
 
-    public AckLevel getAckLevel() {
+    public AckMode getAckMode() {
         return ackLevel;
     }
 
-    public void setAckLevel(AckLevel ackLevel) {
+    public void setAckMode(AckMode ackLevel) {
         this.ackLevel = ackLevel;
     }
 

@@ -24,7 +24,7 @@ class IntentStoreTest {
 
     @BeforeEach
     void setUp() {
-        store = new IntentStore();
+        store = new ConcurrentIntentStore();
     }
 
     @AfterEach

@@ -1199,7 +1199,7 @@ $script:VerboseScenarioOutput = $VerboseOutput -or $script:PauseOnExit
 # 显示帮助
 if ($Help) {
     Write-Host @"
-LoomQ Performance Benchmark v0.8.0
+LoomQ Performance Benchmark v0.9.0
 
 Usage: .\benchmark.ps1 [Options]
 
@@ -1230,7 +1230,7 @@ Examples:
 # 横幅
 Write-Host ""
 Write-Host "+============================================================+" -ForegroundColor Magenta
-Write-Host "|          LoomQ Atomic Performance Benchmark v0.8.0         |" -ForegroundColor Magenta
+Write-Host "|          LoomQ Atomic Performance Benchmark v0.9.0         |" -ForegroundColor Magenta
 Write-Host "+============================================================+" -ForegroundColor Magenta
 Write-Host ""
 
@@ -1350,6 +1350,32 @@ try {
     if ($InternalResult.ExitCode -ne 0) {
         throw "Internal benchmark failed with exit code $($InternalResult.ExitCode)"
     }
+
+    # ---- 新增组件基准测试 (v0.9.0) ----
+    $WalResult = Invoke-BenchmarkScenario `
+        -Name "1b) WAL Write Throughput" `
+        -ServerModuleDir $ServerModuleDir `
+        -MainClass "com.loomq.benchmark.WalThroughputBenchmark" `
+        -TimeoutSec $(if ($Quick) { 60 } else { 120 }) `
+        -Quick:$Quick `
+        -VerboseOutput:$script:VerboseScenarioOutput
+
+    $StorageResult = Invoke-BenchmarkScenario `
+        -Name "1c) Storage Engine Comparison" `
+        -ServerModuleDir $ServerModuleDir `
+        -MainClass "com.loomq.benchmark.StorageBenchmark" `
+        -TimeoutSec $(if ($Quick) { 60 } else { 120 }) `
+        -Quick:$Quick `
+        -VerboseOutput:$script:VerboseScenarioOutput
+
+    $ObserverResult = Invoke-BenchmarkScenario `
+        -Name "1d) Observer Overhead" `
+        -ServerModuleDir $ServerModuleDir `
+        -MainClass "com.loomq.benchmark.ObserverOverheadBenchmark" `
+        -TimeoutSec $(if ($Quick) { 120 } else { 180 }) `
+        -Quick:$Quick `
+        -VerboseOutput:$script:VerboseScenarioOutput
+    # ---- 新增结束 ----
 
     if (-not $InternalOnly) {
         $ServerJarPath = Ensure-ServerJar -ProjectRoot $ProjectRoot -ServerModuleDir $ServerModuleDir -AllowBuild:(-not $NoCompile)
