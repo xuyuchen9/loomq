@@ -1,5 +1,6 @@
 package com.loomq.infrastructure.wal;
 
+import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.ExpiredAction;
 import com.loomq.domain.intent.Intent;
@@ -8,7 +9,6 @@ import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.domain.intent.RedeliveryPolicy;
 import com.loomq.domain.intent.WalMode;
-import com.loomq.domain.intent.AckMode;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -77,6 +77,7 @@ public class IntentBinaryCodec {
     private static final byte FIELD_ATTEMPTS = 0x10;
     private static final byte FIELD_LAST_DELIVERY_ID = 0x11;
     private static final byte FIELD_WAL_MODE = 0x12;
+    private static final byte FIELD_TRACE_ID = 0x13;
 
     // 预分配缓冲区大小（估算平均 Intent 大小）
     private static final int DEFAULT_BUFFER_SIZE = 512;
@@ -96,6 +97,10 @@ public class IntentBinaryCodec {
         // 系统字段（必编码）
         if (intent.getIntentId() != null) {
             writeStringField(buffer, FIELD_INTENT_ID, intent.getIntentId());
+            fieldCount++;
+        }
+        if (intent.getTraceId() != null) {
+            writeStringField(buffer, FIELD_TRACE_ID, intent.getTraceId());
             fieldCount++;
         }
         if (intent.getStatus() != null) {
@@ -199,6 +204,7 @@ public class IntentBinaryCodec {
      */
     public static Intent decode(byte[] data) {
         ByteBuffer buffer = ByteBuffer.wrap(data);
+        String traceId = null;
         String intentId = null;
         IntentStatus status = null;
         Instant createdAt = null;
@@ -236,6 +242,7 @@ public class IntentBinaryCodec {
                 case FIELD_EXPIRED_ACTION -> expiredAction = ExpiredAction.values()[buffer.get()];
                 case FIELD_PRECISION_TIER -> precisionTier = PRECISION_TIER_CATALOG.tierByOrdinal(buffer.get() & 0xFF);
                 case FIELD_WAL_MODE -> walMode = WalMode.values()[buffer.get()];
+                case FIELD_TRACE_ID -> traceId = readString(buffer, fieldLen);
                 case FIELD_SHARD_KEY -> shardKey = readString(buffer, fieldLen);
                 case FIELD_SHARD_ID -> shardId = readString(buffer, fieldLen);
                 case FIELD_ACK_LEVEL -> ackLevel = AckMode.values()[buffer.get()];
@@ -264,6 +271,7 @@ public class IntentBinaryCodec {
         }
 
         return Intent.restore(
+            traceId,
             intentId,
             status,
             createdAt,

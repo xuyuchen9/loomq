@@ -86,7 +86,12 @@ public final class WalReplayManager {
                         break;
                     }
 
-                    consumer.accept(IntentBinaryCodec.decode(payload));
+                    try {
+                        consumer.accept(IntentBinaryCodec.decode(payload));
+                    } catch (Exception e) {
+                        logger.warn("Skipping corrupt payload during WAL replay at segment {}, offset {}: {}",
+                            seg.index(), seg.startOffset() + localPos, e.getMessage());
+                    }
                     restored++;
                     localPos += recordSize;
                     position = seg.startOffset() + localPos;
@@ -155,7 +160,12 @@ public final class WalReplayManager {
                     break;
                 }
 
-                consumer.accept(IntentBinaryCodec.decode(payload));
+                try {
+                    consumer.accept(IntentBinaryCodec.decode(payload));
+                } catch (Exception e) {
+                    logger.warn("Skipping corrupt payload during WAL replay at offset {}: {}",
+                        position, e.getMessage());
+                }
                 restored++;
                 position += recordSize;
             }

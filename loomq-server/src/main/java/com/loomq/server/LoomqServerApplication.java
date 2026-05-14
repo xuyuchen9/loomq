@@ -5,23 +5,24 @@ import com.loomq.callback.HttpCallbackHandler;
 import com.loomq.callback.NettyHttpDeliveryHandler;
 import com.loomq.cluster.ClusterManager;
 import com.loomq.cluster.FailoverController;
-import com.loomq.cluster.ReplicationEndpoints;
 import com.loomq.cluster.ReplicaRole;
+import com.loomq.cluster.ReplicationEndpoints;
+import com.loomq.common.MetricsCollector;
 import com.loomq.config.LoomqConfig;
-import com.loomq.config.WalConfig;
 import com.loomq.config.ServerConfig;
+import com.loomq.config.WalConfig;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
-import com.loomq.common.MetricsCollector;
 import com.loomq.metrics.LoomQMetrics;
 import io.netty.handler.codec.http.HttpMethod;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Standalone Netty service bootstrap.
@@ -59,6 +60,37 @@ public class LoomqServerApplication {
             .deliveryHandler(new NettyHttpDeliveryHandler())
             .build();
 
+        // ---- Raft 共识模式（v0.9.0）----
+        final com.loomq.raft.RaftNode raftNode;
+        boolean raftEnabled = Boolean.parseBoolean(
+            resolveSetting("LOOMQ_RAFT_ENABLED", "loomq.raft.enabled", "false"));
+        if (raftEnabled) {
+            String raftNodeId = resolveSetting("LOOMQ_RAFT_NODE_ID", "loomq.raft.nodeId", nodeId);
+            String peersStr = resolveSetting("LOOMQ_RAFT_PEERS", "loomq.raft.peers", raftNodeId);
+            List<String> peers = parseRaftPeerIds(peersStr, raftNodeId);
+            List<RaftPeerTarget> peerTargets = parseRaftPeerTargets(peersStr, raftNodeId);
+
+            com.loomq.raft.RaftConfig raftConfig = new com.loomq.raft.RaftConfig(
+                raftNodeId, peers, dataDir, 150, 300, 50);
+
+            com.loomq.raft.RaftTransport raftTransport = new com.loomq.raft.RaftTransport(raftNodeId);
+            int raftPort = Integer.parseInt(
+                resolveSetting("LOOMQ_RAFT_PORT", "loomq.raft.port", "7930"));
+            raftTransport.listen("0.0.0.0", raftPort);
+
+            raftNode = new com.loomq.raft.RaftNode(raftConfig,
+                engine.getWalAccessor(), engine.getIntentStore(), raftTransport);
+            if (peerTargets.isEmpty() && peers.size() > 1) {
+                logger.warn("Raft peers were configured without connectable endpoints; use peerId@host:port to enable peer connections");
+            }
+            connectRaftPeers(raftTransport, peerTargets, raftNodeId);
+            raftNode.start();
+            logger.info("Raft mode enabled: node={}, peers={}, connectablePeers={}",
+                raftNodeId, peers, peerTargets.size());
+        } else {
+            raftNode = null;
+        }
+
         // ---- 集群/复制模式（可选）----
         final ClusterManager clusterManager;
         final com.loomq.replication.ReplicationManager replicationManager;
@@ -83,7 +115,7 @@ public class LoomqServerApplication {
             if ("primary".equalsIgnoreCase(role)) {
                 replicationManager.promoteToPrimary(replicaHost, replicaPort).join();
             } else {
-                replicationManager.demoteToReplica("0.0.0.0", replicaPort).join();
+                replicationManager.demoteToReplica(replicaHost, replicaPort).join();
             }
 
             // 集群管理器（分片路由）
@@ -95,10 +127,10 @@ public class LoomqServerApplication {
             }
 
             // Failover 控制器
-            ReplicationEndpoints endpoints = new ReplicationEndpoints(replicaHost, replicaPort, "0.0.0.0", replicaPort);
+            ReplicationEndpoints endpoints = new ReplicationEndpoints(replicaHost, replicaPort, replicaHost, replicaPort);
             failoverController = new FailoverController(
                 nodeId, "shard-0", ReplicaRole.FOLLOWER, 1,
-                30_000, 0.5, endpoints);
+                30000, 0.5, endpoints);
             failoverController.setReplicationManager(replicationManager);
             failoverController.start();
 
@@ -130,6 +162,9 @@ public class LoomqServerApplication {
             }
 
             // 关闭复制组件
+            if (raftNode != null) {
+                raftNode.close();
+            }
             if (failoverController != null) {
                 failoverController.close();
             }
@@ -158,7 +193,7 @@ public class LoomqServerApplication {
             logger.info("LoomQ Netty server started on http://{}:{}", serverConfig.host(), server.getPort());
 
             while (engine.isRunning()) {
-                Thread.sleep(1000);
+                Thread.sleep(1000L);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -231,6 +266,123 @@ public class LoomqServerApplication {
         return fallback;
     }
 
+    private static List<String> parseRaftPeerIds(String peersSpec, String selfNodeId) {
+        if (peersSpec == null || peersSpec.isBlank()) {
+            return List.of(selfNodeId);
+        }
+
+        List<String> peers = new ArrayList<>();
+        for (String raw : peersSpec.split(",")) {
+            String token = raw.trim();
+            if (token.isEmpty()) {
+                continue;
+            }
+            String nodeId = extractPeerNodeId(token);
+            if (!nodeId.isEmpty()) {
+                peers.add(nodeId);
+            }
+        }
+
+        if (peers.isEmpty()) {
+            return List.of(selfNodeId);
+        }
+        return List.copyOf(peers);
+    }
+
+    private static List<RaftPeerTarget> parseRaftPeerTargets(String peersSpec, String selfNodeId) {
+        if (peersSpec == null || peersSpec.isBlank()) {
+            return List.of();
+        }
+
+        List<RaftPeerTarget> targets = new ArrayList<>();
+        for (String raw : peersSpec.split(",")) {
+            String token = raw.trim();
+            if (token.isEmpty()) {
+                continue;
+            }
+
+            RaftPeerTarget target = parsePeerTarget(token, selfNodeId);
+            if (target != null) {
+                targets.add(target);
+            }
+        }
+        return List.copyOf(targets);
+    }
+
+    private static String extractPeerNodeId(String token) {
+        int at = token.indexOf('@');
+        int eq = token.indexOf('=');
+        int sep = at >= 0 ? at : eq;
+        if (sep > 0) {
+            return token.substring(0, sep).trim();
+        }
+        return token.trim();
+    }
+
+    private static RaftPeerTarget parsePeerTarget(String token, String selfNodeId) {
+        int at = token.indexOf('@');
+        int eq = token.indexOf('=');
+        int sep = at >= 0 ? at : eq;
+        if (sep <= 0) {
+            return null;
+        }
+
+        String peerId = token.substring(0, sep).trim();
+        if (peerId.isEmpty() || peerId.equals(selfNodeId)) {
+            return null;
+        }
+
+        String endpoint = token.substring(sep + 1).trim();
+        int colon = endpoint.lastIndexOf(':');
+        if (colon <= 0 || colon == endpoint.length() - 1) {
+            logger.warn("Invalid Raft peer endpoint '{}', expected peerId@host:port or peerId=host:port", token);
+            return null;
+        }
+
+        String host = endpoint.substring(0, colon).trim();
+        String portStr = endpoint.substring(colon + 1).trim();
+        try {
+            int port = Integer.parseInt(portStr);
+            return new RaftPeerTarget(peerId, host, port);
+        } catch (NumberFormatException e) {
+            logger.warn("Invalid Raft peer port in '{}': {}", token, portStr);
+            return null;
+        }
+    }
+
+    private static void connectRaftPeers(com.loomq.raft.RaftTransport transport,
+                                         List<RaftPeerTarget> targets,
+                                         String selfNodeId) {
+        for (RaftPeerTarget target : targets) {
+            if (target.nodeId().equals(selfNodeId)) {
+                continue;
+            }
+
+            try {
+                transport.connect(target.nodeId(), target.host(), target.port()).join();
+                logger.info("Raft peer connected: {} -> {}:{}", target.nodeId(), target.host(), target.port());
+            } catch (Exception e) {
+                logger.warn("Raft peer connect failed: {} -> {}:{}",
+                    target.nodeId(), target.host(), target.port(), e);
+            }
+        }
+    }
+
+    private static void printBanner() {
+        logger.info("");
+        logger.info("██╗      ██████╗  ██████╗ ███╗   ███╗ ██████╗ ");
+        logger.info("██║     ██╔═══██╗██╔═══██╗████╗ ████║██╔═══██╗");
+        logger.info("██║     ██║   ██║██║   ██║██╔████╔██║██║   ██║");
+        logger.info("██║     ██║   ██║██║   ██║██║╚██╔╝██║██║▄▄ ██║");
+        logger.info("███████╗╚██████╔╝╚██████╔╝██║ ╚═╝ ██║╚██████╔╝");
+        logger.info("╚══════╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝ ╚══▀▀═╝ ");
+        logger.info("");
+        logger.info(" Event Infrastructure for Delayed Execution");
+        logger.info("              Version 0.9.0");
+        logger.info("              Mode: Server (Netty)");
+        logger.info("");
+    }
+
     private static void registerSystemRoutes(RadixRouter router, LoomqEngine engine) {
         router.add(HttpMethod.GET, "/health", (method, uri, body, headers, pathParams) ->
             HEALTH_UP_RESPONSE);
@@ -284,18 +436,5 @@ public class LoomqServerApplication {
         return sb.toString();
     }
 
-    private static void printBanner() {
-        logger.info("");
-        logger.info("██╗      ██████╗  ██████╗ ███╗   ███╗ ██████╗ ");
-        logger.info("██║     ██╔═══██╗██╔═══██╗████╗ ████║██╔═══██╗");
-        logger.info("██║     ██║   ██║██║   ██║██╔████╔██║██║   ██║");
-        logger.info("██║     ██║   ██║██║   ██║██║╚██╔╝██║██║▄▄ ██║");
-        logger.info("███████╗╚██████╔╝╚██████╔╝██║ ╚═╝ ██║╚██████╔╝");
-        logger.info("╚══════╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝ ╚══▀▀═╝ ");
-        logger.info("");
-        logger.info(" Event Infrastructure for Delayed Execution");
-        logger.info("              Version 0.8.0-SNAPSHOT");
-        logger.info("              Mode: Server (Netty)");
-        logger.info("");
-    }
+    private record RaftPeerTarget(String nodeId, String host, int port) {}
 }

@@ -10,7 +10,6 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -210,7 +209,7 @@ public final class ColdIntentSwapper implements AutoCloseable {
             }
 
             // 4. 放回 IntentStore
-            intentStore.save(intent);
+            intentStore.upsert(intent);
 
             // 5. 重新调度
             scheduler.restore(intent);

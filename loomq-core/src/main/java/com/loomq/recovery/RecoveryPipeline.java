@@ -2,7 +2,6 @@ package com.loomq.recovery;
 
 import com.loomq.application.scheduler.PrecisionScheduler;
 import com.loomq.domain.intent.Intent;
-import com.loomq.infrastructure.wal.SimpleWalWriter;
 import com.loomq.snapshot.SnapshotManager;
 import com.loomq.snapshot.SnapshotManager.SnapshotInfo;
 import com.loomq.snapshot.SnapshotManager.SnapshotRestoreResult;
@@ -51,19 +50,15 @@ public final class RecoveryPipeline implements AutoCloseable {
      * 恢复 store 和调度器（段文件模式）。
      */
     public RecoveryReport recover(IntentStore store, PrecisionScheduler scheduler, WalAccessor walAccessor) {
+        store.clear();
+        scheduler.getBucketGroupManager().clear();
+
         SnapshotRestoreResult snapshotResult = snapshotManager.restoreFromSnapshot(intent -> restoreIntent(intent, store, scheduler));
         int restoredFromSnapshot = snapshotResult.restoredCount();
 
-        // 使用 WalAccessor 从段文件回放
-        SimpleWalWriter walWriter = walAccessor instanceof SimpleWalWriter sw ? sw : null;
-        int restoredFromWal;
-        if (walWriter != null) {
-            restoredFromWal = walReplayManager.replay(walWriter, snapshotResult.walOffset(),
-                intent -> restoreIntent(intent, store, scheduler));
-        } else {
-            restoredFromWal = 0;
-            logger.warn("WalAccessor is not SimpleWalWriter, cannot replay WAL");
-        }
+        // 使用 WalAccessor 接口从段文件回放
+        int restoredFromWal = walReplayManager.replay(walAccessor, snapshotResult.walOffset(),
+            intent -> restoreIntent(intent, store, scheduler));
 
         int totalRestored = restoredFromSnapshot + restoredFromWal;
         if (totalRestored > 0) {
@@ -125,7 +120,7 @@ public final class RecoveryPipeline implements AutoCloseable {
             return;
         }
 
-        store.save(intent);
+        store.upsert(intent);
         scheduler.restore(intent);
     }
 

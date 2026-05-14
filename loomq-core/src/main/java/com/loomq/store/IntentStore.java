@@ -28,6 +28,25 @@ public interface IntentStore {
     /** 删除 Intent */
     void delete(String intentId);
 
+    /**
+     * 写入或更新 Intent。
+     *
+     * 适用于“应用当前态”的场景，例如快照恢复、WAL 回放、Raft 提交应用。
+     */
+    default void upsert(Intent intent) {
+        Intent existing = findById(intent.getIntentId());
+        if (existing == null) {
+            save(intent);
+        } else {
+            update(intent);
+        }
+    }
+
+    /** 清空整个 Intent 存储（快照恢复/重置用） */
+    default void clear() {
+        getAllIntents().keySet().forEach(this::delete);
+    }
+
     /** 获取所有 Intent（恢复/快照用，大数据量场景慎用） */
     Map<String, Intent> getAllIntents();
 

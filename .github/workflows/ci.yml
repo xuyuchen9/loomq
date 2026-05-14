@@ -83,12 +83,12 @@ jobs:
           path: loomq-core/target/surefire-reports/
 
   # ============================================================
-  #  PR / Push: integration tests (~5s)
+  #  PR / Push: integration tests (~minutes on GitHub runners)
   # ============================================================
   integration-tests:
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Code

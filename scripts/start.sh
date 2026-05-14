@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # LoomQ Startup Script (Linux/macOS)
-# Version: 0.7.0
+# Version: 0.9.0
 #
 
 set -e
@@ -13,13 +13,13 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Default configuration
-JAR_FILE="loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar"
+JAR_FILE="loomq-server/target/loomq-server-0.9.0.jar"
 JVM_XMS="${JVM_XMS:-2g}"
 JVM_XMX="${JVM_XMX:-2g}"
 JVM_GC="${JVM_GC:-ZGC}"
 JVM_GC_PAUSE="${JVM_GC_PAUSE:-10}"
-LOOMQ_PORT="${LOOMQ_PORT:-7928}"
-LOOMQ_HOST="${LOOMQ_HOST:-0.0.0.0}"
+LOOMQ_PORT="${LOOMQ_SERVER_PORT:-${LOOMQ_PORT:-7928}}"
+LOOMQ_HOST="${LOOMQ_SERVER_HOST:-${LOOMQ_HOST:-0.0.0.0}}"
 
 # Function to print colored messages
 print_info() {
@@ -119,7 +119,7 @@ trap cleanup SIGTERM SIGINT
 
 # Main execution
 main() {
-    print_info "LoomQ Startup Script v0.7.0"
+    print_info "LoomQ Startup Script v0.9.0"
 
     check_java
     check_jar
@@ -140,8 +140,8 @@ Environment Variables:
   JVM_XMX              Maximum heap size (default: 2g)
   JVM_GC               Garbage collector: ZGC, G1GC, ParallelGC (default: ZGC)
   JVM_GC_PAUSE         Max GC pause target in ms (default: 10)
-  LOOMQ_PORT           Server port (default: 7928)
-  LOOMQ_HOST           Server host (default: 0.0.0.0)
+  LOOMQ_PORT / LOOMQ_SERVER_PORT   Server port (default: 7928)
+  LOOMQ_HOST / LOOMQ_SERVER_HOST   Server host (default: 0.0.0.0)
   LOOMQ_DATA_DIR       WAL data directory (default: ./data/wal)
   LOOMQ_EXTRA_PROPS    Additional JVM system properties
 

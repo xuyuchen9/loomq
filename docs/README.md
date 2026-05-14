@@ -1,13 +1,13 @@
 # LoomQ 文档
 
-本文档库包含 LoomQ v0.8.0 的当前技术文档。
+本文档库对应当前主线版本的 LoomQ。这里优先放开发、部署和运维时最常用的入口。
 
 ## 优先阅读
 
-1. [核心模型](architecture/core-model.md) — Intent / 状态机 / 语义边界
-2. [配置说明](operations/CONFIGURATION.md) — 配置参数详解
-3. [架构说明](development/ARCHITECTURE.md) — 系统架构与调度器设计
-4. [API 文档](development/API.md) — REST API 接口文档
+1. [核心模型](architecture/core-model.md) - Intent、状态机、语义边界
+2. [配置说明](operations/CONFIGURATION.md) - 配置项与环境变量
+3. [架构说明](development/ARCHITECTURE.md) - 模块分层、调度器和 Raft 结构
+4. [API 文档](development/API.md) - REST API 与错误返回
 
 ---
 
@@ -15,13 +15,14 @@
 
 | 文档 | 说明 |
 |------|------|
-| [核心模型](architecture/core-model.md) | Intent / 状态机 / 语义边界 |
-| [架构说明](development/ARCHITECTURE.md) | 系统架构、调度器、Arrow 借用、Cohort 唤醒 |
+| [核心模型](architecture/core-model.md) | Intent、状态机、语义边界 |
+| [架构说明](development/ARCHITECTURE.md) | 系统分层、调度器、Raft、快照与恢复 |
 | [API 文档](development/API.md) | REST API 接口与错误响应 |
+| [OpenAPI 规范](development/openapi.yaml) | OpenAPI 3.0 规范 |
 | [配置说明](operations/CONFIGURATION.md) | 完整配置项与精度档位参数 |
 | [指标文档](operations/metrics.md) | 指标、RTT、借用统计、Prometheus 导出 |
 | [排障指南](operations/troubleshooting.md) | 常见问题与处理 |
-| [部署指南](operations/DEPLOYMENT.md) | 生产环境部署、Docker、docker-compose |
+| [部署指南](operations/DEPLOYMENT.md) | 生产部署、Docker、Kubernetes |
 
 ---
 
@@ -32,7 +33,7 @@
 | [发布清单](engineering/release-checklist.md) | 发版前检查清单 |
 | [Benchmark 清单](engineering/benchmark-checklist.md) | 基准测试流程与数据采集 |
 | [技术债清理](development/TECH_DEBT_CLEANUP.md) | 技术债务清理记录 |
-| [OpenAPI 规范](development/openapi.yaml) | OpenAPI 3.0 规范 |
+| [OpenAPI 规范](development/openapi.yaml) | API 契约定义 |
 
 ---
 
@@ -44,7 +45,7 @@
 
 ---
 
-## 历史版本 (archive/)
+## 历史版本
 
 | 版本 | 主要特性 |
 |------|----------|
