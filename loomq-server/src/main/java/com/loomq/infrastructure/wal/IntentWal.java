@@ -101,7 +101,7 @@ public class IntentWal implements AutoCloseable {
      * @return 完成时返回写入位置
      */
     public CompletableFuture<Long> appendCreateReplicated(Intent intent) {
-        if (replicationManager == null || !replicationManager.isPrimary()) {
+        if (replicationManager == null || !replicationManager.isLeader()) {
             // 没有 ReplicationManager 或不是 Leader，降级为 DURABLE
             logger.warn("REPLICATED ack requested but no replication peer available, degrading to DURABLE for intent: {}",
                 intent.getIntentId());

@@ -84,9 +84,9 @@ class FailoverControllerCatchUpTest {
     }
 
     @Test
-    void testSetPrimaryCurrentOffset() {
-        // 验证设置 Primary offset
-        controller.setPrimaryCurrentOffset(1000);
+    void testSetLeaderCurrentOffset() {
+        // 验证设置 Leader offset
+        controller.setLeaderCurrentOffset(1000);
 
         // 启动后验证状态机
         controller.start();
@@ -151,17 +151,17 @@ class FailoverControllerCatchUpTest {
     }
 
     @Test
-    void testDemoteToReplicaStartsCatchUp() throws Exception {
-        // 创建 Primary 角色的控制器
+    void testDemoteToFollowerStartsCatchUp() throws Exception {
+        // 创建 Leader 角色的控制器
         FailoverController primaryController = createController(SHARD_ID, ReplicaRole.LEADER);
 
         primaryController.start();
 
-        // 设置 Primary offset（模拟有数据）
-        primaryController.setPrimaryCurrentOffset(1000);
+        // 设置 Leader offset（模拟有数据）
+        primaryController.setLeaderCurrentOffset(1000);
 
-        // 降级为 Replica
-        boolean demoted = primaryController.demoteToReplica();
+        // 降级为 Follower
+        boolean demoted = primaryController.demoteToFollower();
 
         // 降级后状态应该变为 REPLICA_INIT 或开始追赶
         ShardStateMachine.ShardState state = primaryController.getCurrentState();
@@ -223,7 +223,7 @@ class FailoverControllerCatchUpTest {
 
     @Test
     void testCatchUpStateTransitions() throws Exception {
-        controller.setPrimaryCurrentOffset(100);
+        controller.setLeaderCurrentOffset(100);
         controller.start();
 
         // 给一点时间让追赶可能启动

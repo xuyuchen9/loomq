@@ -67,13 +67,13 @@ public class ReplicationManager implements AutoCloseable {
     /**
      * 提升为 Leader
      */
-    public synchronized CompletableFuture<Void> promoteToPrimary(String replicaHost, int replicaPort) {
+    public synchronized CompletableFuture<Void> promoteToLeader(String replicaHost, int replicaPort) {
         if (role.get() == ReplicaRole.LEADER) {
             logger.warn("Already leader, ignoring promotion request");
             return CompletableFuture.completedFuture(null);
         }
 
-        logger.info("Promoting {} to LEADER, replica at {}:{}", nodeId, replicaHost, replicaPort);
+        logger.info("Promoting {} to LEADER, peer at {}:{}", nodeId, replicaHost, replicaPort);
 
         // 关闭 replica 服务器（如果有）
         if (replicaServer != null) {
@@ -97,7 +97,7 @@ public class ReplicationManager implements AutoCloseable {
     /**
      * 降级为 Follower
      */
-    public synchronized CompletableFuture<Void> demoteToReplica(String bindHost, int bindPort) {
+    public synchronized CompletableFuture<Void> demoteToFollower(String bindHost, int bindPort) {
         if (role.get() == ReplicaRole.FOLLOWER && replicaServer != null) {
             logger.warn("Already follower, ignoring demotion request");
             return CompletableFuture.completedFuture(null);
@@ -133,14 +133,14 @@ public class ReplicationManager implements AutoCloseable {
     /**
      * 检查是否是 Leader
      */
-    public boolean isPrimary() {
+    public boolean isLeader() {
         return role.get() == ReplicaRole.LEADER;
     }
 
     /**
      * 检查是否是 Follower
      */
-    public boolean isReplica() {
+    public boolean isFollower() {
         return role.get() == ReplicaRole.FOLLOWER;
     }
 
@@ -159,7 +159,7 @@ public class ReplicationManager implements AutoCloseable {
      * @return CompletableFuture 在达到指定确认级别后完成
      */
     public CompletableFuture<ReplicationResult> replicate(ReplicationRecord record, AckMode ackLevel) {
-        if (!isPrimary()) {
+        if (!isLeader()) {
             return CompletableFuture.failedFuture(
                 new IllegalStateException("Only leader can replicate"));
         }
@@ -328,7 +328,7 @@ public class ReplicationManager implements AutoCloseable {
      * 检查 peer 是否健康
      */
     public boolean isReplicaHealthy() {
-        if (!isPrimary() || replicaClient == null) {
+        if (!isLeader() || replicaClient == null) {
             return false;
         }
         return replicaClient.isConnected();

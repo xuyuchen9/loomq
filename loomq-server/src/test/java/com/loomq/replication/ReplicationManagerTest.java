@@ -22,8 +22,8 @@ class ReplicationManagerTest {
     @Test
     void testInitialRoleIsFollower() {
         ReplicationManager manager = new ReplicationManager("test-node");
-        assertFalse(manager.isPrimary());
-        assertTrue(manager.isReplica());
+        assertFalse(manager.isLeader());
+        assertTrue(manager.isFollower());
     }
 
     @Test

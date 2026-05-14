@@ -132,7 +132,7 @@ public class FailoverController implements AutoCloseable {
         // 根据初始角色初始化状态
         if (stateMachine.getCurrentRole() == ReplicaRole.LEADER) {
             // 如果初始是 leader，需要先完成租约获取、续约和复制角色激活
-            bootstrapPrimaryRole();
+            bootstrapLeaderRole();
         } else {
             // 如果初始是 follower，启动追赶流程
             // 从 REPLICA_INIT -> REPLICA_CATCHING_UP -> REPLICA_SYNCED
@@ -145,21 +145,21 @@ public class FailoverController implements AutoCloseable {
     /**
      * 启动时激活 leader 角色。
      */
-    private void bootstrapPrimaryRole() {
+    private void bootstrapLeaderRole() {
         leaseLifecycleManager.acquireLeaseAsync().whenComplete((lease, error) -> {
             if (error != null || lease == null) {
                 logger.error("Failed to acquire lease during startup", error);
-                demoteToReplica();
+                demoteToFollower();
                 return;
             }
 
-            if (activatePrimaryAfterLease(lease)) {
+            if (activateLeaderAfterLease(lease)) {
                 logger.info("Startup lease acquired: {} for shard {}", lease.getLeaseId(), shardId);
                 return;
             }
 
             logger.error("Failed to activate leader during startup for shard {}", shardId);
-            demoteToReplica();
+            demoteToFollower();
         });
     }
 
@@ -225,7 +225,7 @@ public class FailoverController implements AutoCloseable {
 
         // 降级为 follower（如果当前是 leader）
         if (stateMachine.isPrimary()) {
-            demoteToReplica();
+            demoteToFollower();
         }
 
         logger.info("FailoverController stopped");
@@ -300,7 +300,7 @@ public class FailoverController implements AutoCloseable {
 
             logger.info("Lease acquired: {} for shard {}", lease.getLeaseId(), shardId);
 
-            if (activatePrimaryAfterLease(lease)) {
+            if (activateLeaderAfterLease(lease)) {
                 logger.info("Promotion completed: node {} is now LEADER for shard {}",
                     nodeId, shardId);
                 future.complete(true);
@@ -321,7 +321,7 @@ public class FailoverController implements AutoCloseable {
      *
      * @return 是否成功降级
      */
-    public boolean demoteToReplica() {
+    public boolean demoteToFollower() {
         if (!running.get()) {
             return false;
         }
@@ -375,7 +375,7 @@ public class FailoverController implements AutoCloseable {
 
         // 如果当前是 leader，先降级
         if (stateMachine.isPrimary() && force) {
-            demoteToReplica();
+            demoteToFollower();
         }
 
         // 构造手动触发的故障事件并走同一条失败处理路径
@@ -400,7 +400,7 @@ public class FailoverController implements AutoCloseable {
     /**
      * 在获得租约后激活 leader 角色。
      */
-    private boolean activatePrimaryAfterLease(CoordinatorLease lease) {
+    private boolean activateLeaderAfterLease(CoordinatorLease lease) {
         boolean activated;
         if (stateMachine.isPrimaryActive()) {
             stateMachine.setCurrentLease(lease);
@@ -433,7 +433,7 @@ public class FailoverController implements AutoCloseable {
         }
 
         // 降级为 follower
-        demoteToReplica();
+        demoteToFollower();
     }
 
     // ==================== 复制管理器协调 ====================
@@ -455,7 +455,7 @@ public class FailoverController implements AutoCloseable {
         }
 
         if (stateMachine.isPrimary()) {
-            manager.promoteToPrimary(replicationEndpoints.primaryReplicaHost(), replicationEndpoints.primaryReplicaPort())
+            manager.promoteToLeader(replicationEndpoints.primaryReplicaHost(), replicationEndpoints.primaryReplicaPort())
                 .whenComplete((v, e) -> {
                     if (e != null) {
                         logger.error("Failed to promote replication manager", e);
@@ -464,7 +464,7 @@ public class FailoverController implements AutoCloseable {
                     }
                 });
         } else {
-            manager.demoteToReplica(replicationEndpoints.replicaBindHost(), replicationEndpoints.replicaBindPort())
+            manager.demoteToFollower(replicationEndpoints.replicaBindHost(), replicationEndpoints.replicaBindPort())
                 .whenComplete((v, e) -> {
                     if (e != null) {
                         logger.error("Failed to demote replication manager", e);
@@ -508,7 +508,7 @@ public class FailoverController implements AutoCloseable {
         return stateMachine.getCurrentState();
     }
 
-    public boolean isPrimary() {
+    public boolean isLeader() {
         return stateMachine.isPrimary();
     }
 
@@ -544,7 +544,7 @@ public class FailoverController implements AutoCloseable {
     /**
      * 设置 Leader 当前 offset（用于追赶计算）
      */
-    public void setPrimaryCurrentOffset(long offset) {
+    public void setLeaderCurrentOffset(long offset) {
         this.leaderCurrentOffset.set(offset);
     }
 
