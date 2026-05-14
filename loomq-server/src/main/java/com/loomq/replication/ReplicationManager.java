@@ -19,10 +19,11 @@ import java.util.function.Consumer;
 /**
  * 复制管理器
  *
- * 管理 primary/replica 角色，协调 WAL 写入与复制
+ * 这是 leader/follower ACK 流的遗留实现，保留给复制确认路径使用。
+ * Raft 启动流程已经接管了集群引导，这个类只负责复制确认和状态维护。
  *
  * 职责：
- * 1. 管理节点角色（PRIMARY / REPLICA）
+ * 1. 管理节点角色（LEADER / FOLLOWER）
  * 2. 协调 WAL 写入与复制
  * 3. 维护复制状态（offset、lag）
  * 4. 处理 ACK 等待
@@ -40,10 +41,10 @@ public class ReplicationManager implements AutoCloseable {
     // 角色状态
     private final AtomicReference<ReplicaRole> role = new AtomicReference<>(ReplicaRole.FOLLOWER);
 
-    // Primary 组件（仅 PRIMARY 角色时使用）
+    // Leader 侧客户端（仅 LEADER 角色时使用）
     private ReplicaClient replicaClient;
 
-    // Replica 组件（仅 REPLICA 角色时使用）
+    // Follower 侧服务端（仅 FOLLOWER 角色时使用）
     private ReplicaServer replicaServer;
     private Function<ReplicationRecord, Boolean> recordApplier;
 
@@ -64,15 +65,15 @@ public class ReplicationManager implements AutoCloseable {
     // ==================== 角色管理 ====================
 
     /**
-     * 提升为 Primary
+     * 提升为 Leader
      */
     public synchronized CompletableFuture<Void> promoteToPrimary(String replicaHost, int replicaPort) {
         if (role.get() == ReplicaRole.LEADER) {
-            logger.warn("Already primary, ignoring promotion request");
+            logger.warn("Already leader, ignoring promotion request");
             return CompletableFuture.completedFuture(null);
         }
 
-        logger.info("Promoting {} to PRIMARY, replica at {}:{}", nodeId, replicaHost, replicaPort);
+        logger.info("Promoting {} to LEADER, replica at {}:{}", nodeId, replicaHost, replicaPort);
 
         // 关闭 replica 服务器（如果有）
         if (replicaServer != null) {
@@ -89,20 +90,20 @@ public class ReplicationManager implements AutoCloseable {
             .thenRun(() -> {
                 role.set(ReplicaRole.LEADER);
                 running.set(true);
-                logger.info("{} successfully promoted to PRIMARY", nodeId);
+                logger.info("{} successfully promoted to LEADER", nodeId);
             });
     }
 
     /**
-     * 降级为 Replica
+     * 降级为 Follower
      */
     public synchronized CompletableFuture<Void> demoteToReplica(String bindHost, int bindPort) {
         if (role.get() == ReplicaRole.FOLLOWER && replicaServer != null) {
-            logger.warn("Already replica, ignoring demotion request");
+            logger.warn("Already follower, ignoring demotion request");
             return CompletableFuture.completedFuture(null);
         }
 
-        logger.info("Demoting {} to REPLICA, binding on {}:{}", nodeId, bindHost, bindPort);
+        logger.info("Demoting {} to FOLLOWER, binding on {}:{}", nodeId, bindHost, bindPort);
 
         // 关闭 replica 客户端（如果有）
         if (replicaClient != null) {
@@ -118,7 +119,7 @@ public class ReplicationManager implements AutoCloseable {
         return replicaServer.start().thenRun(() -> {
             role.set(ReplicaRole.FOLLOWER);
             running.set(true);
-            logger.info("{} successfully demoted to REPLICA", nodeId);
+            logger.info("{} successfully demoted to FOLLOWER", nodeId);
         });
     }
 
@@ -130,14 +131,14 @@ public class ReplicationManager implements AutoCloseable {
     }
 
     /**
-     * 检查是否是 Primary
+     * 检查是否是 Leader
      */
     public boolean isPrimary() {
         return role.get() == ReplicaRole.LEADER;
     }
 
     /**
-     * 检查是否是 Replica
+     * 检查是否是 Follower
      */
     public boolean isReplica() {
         return role.get() == ReplicaRole.FOLLOWER;
@@ -146,7 +147,7 @@ public class ReplicationManager implements AutoCloseable {
     // ==================== 复制核心 ====================
 
     /**
-     * 复制记录（Primary 调用）
+     * 复制记录（Leader 调用）
      *
      * 根据 ackLevel 决定等待策略：
      * - ASYNC: 立即返回，不等待
@@ -160,20 +161,20 @@ public class ReplicationManager implements AutoCloseable {
     public CompletableFuture<ReplicationResult> replicate(ReplicationRecord record, AckMode ackLevel) {
         if (!isPrimary()) {
             return CompletableFuture.failedFuture(
-                new IllegalStateException("Only primary can replicate"));
+                new IllegalStateException("Only leader can replicate"));
         }
 
         if (replicaClient == null || !replicaClient.isConnected()) {
-            // Replica 未连接，根据策略降级
-            logger.warn("Replica not connected, cannot achieve {} for offset={}",
+            // Peer 未连接，根据策略降级
+            logger.warn("Peer not connected, cannot achieve {} for offset={}",
                 ackLevel, record.getOffset());
 
             if (ackLevel == AckMode.REPLICATED) {
                 return CompletableFuture.failedFuture(
-                    new IllegalStateException("Replica not connected, cannot achieve REPLICATED"));
+                    new IllegalStateException("Peer not connected, cannot achieve REPLICATED"));
             }
 
-            // ASYNC/DURABLE 可以降级为本地持久化
+            // ASYNC/DURABLE can fall back to local persistence
             return CompletableFuture.completedFuture(
                 new ReplicationResult(record.getOffset(), AckStatus.PERSISTED, true));
         }
@@ -181,7 +182,7 @@ public class ReplicationManager implements AutoCloseable {
         // 更新最后复制 offset
         lastReplicatedOffset.set(record.getOffset());
 
-        // 发送给 replica
+        // 发送给 peer
         CompletableFuture<Ack> replicaFuture = replicaClient.send(record);
 
         return replicaFuture.thenApply(ack -> {
@@ -225,10 +226,10 @@ public class ReplicationManager implements AutoCloseable {
     // ==================== 回调处理 ====================
 
     /**
-     * 收到 replica 的 ACK（Primary 侧）
+     * 收到 peer 的 ACK（Leader 侧）
      */
     private void onReplicaAck(Ack ack) {
-        logger.debug("Received replica ACK: offset={}, status={}",
+        logger.debug("Received peer ACK: offset={}, status={}",
             ack.getOffset(), ack.getStatus());
 
         if (ack.isSuccess()) {
@@ -238,23 +239,23 @@ public class ReplicationManager implements AutoCloseable {
     }
 
     /**
-     * Replica 连接错误（Primary 侧）
+     * Peer 连接错误（Leader 侧）
      */
     private void onReplicaError(Throwable error) {
-        logger.error("Replica connection error", error);
+        logger.error("Peer connection error", error);
         Consumer<Throwable> callback = onReplicaErrorCallback;
         if (callback != null) {
             try {
                 callback.accept(error);
             } catch (Exception e) {
-                // 用户回调防御：回调异常不应影响 Replica 连接管理
+                // 用户回调防御：回调异常不应影响 peer 连接管理
                 logger.error("Replica error callback failed", e);
             }
         }
     }
 
     /**
-     * 收到复制记录（Replica 侧）
+     * 收到复制记录（Follower 侧）
      */
     private void onReplicationRecord(ReplicationRecord record) {
         logger.debug("Received replication record: offset={}, type={}",
@@ -279,22 +280,22 @@ public class ReplicationManager implements AutoCloseable {
     }
 
     /**
-     * 收到心跳（Replica 侧）
+     * 收到心跳（Follower 侧）
      */
     private void onHeartbeat(com.loomq.replication.protocol.HeartbeatMessage heartbeat) {
-        logger.debug("Received heartbeat from primary: nodeId={}, offset={}",
+        logger.debug("Received heartbeat from leader: nodeId={}, offset={}",
             heartbeat.getNodeId(), heartbeat.getLastAppliedOffset());
     }
 
     /**
-     * 设置记录应用器（Replica 侧使用）
+     * 设置记录应用器（Follower 侧使用）
      */
     public void setRecordApplier(Function<ReplicationRecord, Boolean> applier) {
         this.recordApplier = applier;
     }
 
     /**
-     * 设置 replica 连接错误回调
+     * 设置 peer 连接错误回调
      */
     public void setOnReplicaError(Consumer<Throwable> callback) {
         this.onReplicaErrorCallback = callback;
@@ -324,7 +325,7 @@ public class ReplicationManager implements AutoCloseable {
     }
 
     /**
-     * 检查 replica 是否健康
+     * 检查 peer 是否健康
      */
     public boolean isReplicaHealthy() {
         if (!isPrimary() || replicaClient == null) {

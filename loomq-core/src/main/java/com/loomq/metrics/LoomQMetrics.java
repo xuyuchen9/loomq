@@ -25,6 +25,9 @@ public class LoomQMetrics {
     // ==================== WAL 健康指标 ====================
     private final WalHealthMetricsRegistry walHealthMetrics = new WalHealthMetricsRegistry();
 
+    // ==================== Raft 指标 ====================
+    private final RaftMetricsRegistry raftMetrics = new RaftMetricsRegistry();
+
     public void updateWalLastFlushTime(long timestamp) {
         walHealthMetrics.updateWalLastFlushTime(timestamp);
     }
@@ -59,6 +62,24 @@ public class LoomQMetrics {
 
     public long getWalIdleTimeMs() {
         return walHealthMetrics.getWalIdleTimeMs();
+    }
+
+    // ==================== Raft 指标更新 ====================
+
+    public void updateRaftRole(String role) {
+        raftMetrics.updateRaftRole(role);
+    }
+
+    public void updateRaftTerm(long term) {
+        raftMetrics.updateRaftTerm(term);
+    }
+
+    public void updateRaftCommitIndex(long commitIndex) {
+        raftMetrics.updateRaftCommitIndex(commitIndex);
+    }
+
+    public void updateRaftLastApplied(long lastApplied) {
+        raftMetrics.updateRaftLastApplied(lastApplied);
     }
 
     // ==================== 单例模式 ====================
@@ -178,7 +199,12 @@ public class LoomQMetrics {
             walHealthMetrics.calculateAverageFlushLatency(pipelineMetrics.getWalRecordsWritten()),
             walHealthMetrics.getWalFlushLatencyMaxMs(),
             walHealthMetrics.getWalPendingWrites(),
-            walHealthMetrics.getWalRingBufferSize()
+            walHealthMetrics.getWalRingBufferSize(),
+            raftMetrics.getRaftRole(),
+            raftMetrics.getRaftTerm(),
+            raftMetrics.getRaftCommitIndex(),
+            raftMetrics.getRaftLastApplied(),
+            raftMetrics.getRaftCommitLag()
         );
     }
 
@@ -212,7 +238,12 @@ public class LoomQMetrics {
         double avgWalFlushLatencyMs,
         long maxWalFlushLatencyMs,
         long walPendingWrites,
-        long walRingBufferSize
+        long walRingBufferSize,
+        String raftRole,
+        long raftTerm,
+        long raftCommitIndex,
+        long raftLastApplied,
+        long raftCommitLag
     ) {}
 
     // ==================== 重置 ====================
@@ -222,6 +253,7 @@ public class LoomQMetrics {
         pipelineMetrics.reset();
         // WAL 健康指标重置
         walHealthMetrics.reset();
+        raftMetrics.reset();
         MetricsCollector.getInstance().resetRuntimeIntentMetrics();
     }
 }

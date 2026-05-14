@@ -36,11 +36,11 @@ public class FailoverController implements AutoCloseable {
     // 复制管理器（用于角色切换）
     private final AtomicReference<ReplicationManager> replicationManager;
 
-    // 追赶管理器（用于 replica 状态同步）
+    // 追赶管理器（用于 follower 状态同步）
     private final WalCatchUpManager catchUpManager;
 
-    // Primary 的当前 offset（用于追赶）
-    private final AtomicLong primaryCurrentOffset;
+    // Leader 的当前 offset（用于追赶）
+    private final AtomicLong leaderCurrentOffset;
 
     // 运行状态
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -74,7 +74,7 @@ public class FailoverController implements AutoCloseable {
         this.stateMachine = new ShardStateMachine(shardId, nodeId, initialRole);
         this.replicationManager = new AtomicReference<>(null);
         this.catchUpManager = new WalCatchUpManager(nodeId, shardId, stateMachine);
-        this.primaryCurrentOffset = new AtomicLong(0);
+        this.leaderCurrentOffset = new AtomicLong(0);
         this.activeFailover = new AtomicReference<>(null);
         this.replicationEndpoints = Objects.requireNonNull(replicationEndpoints, "replicationEndpoints cannot be null");
         AtomicLong routingVersionGenerator = new AtomicLong(initialRoutingVersion);
@@ -131,10 +131,10 @@ public class FailoverController implements AutoCloseable {
 
         // 根据初始角色初始化状态
         if (stateMachine.getCurrentRole() == ReplicaRole.LEADER) {
-            // 如果初始是 primary，需要先完成租约获取、续约和复制角色激活
+            // 如果初始是 leader，需要先完成租约获取、续约和复制角色激活
             bootstrapPrimaryRole();
         } else {
-            // 如果初始是 replica，启动追赶流程
+            // 如果初始是 follower，启动追赶流程
             // 从 REPLICA_INIT -> REPLICA_CATCHING_UP -> REPLICA_SYNCED
             startCatchUpIfNeeded();
         }
@@ -143,7 +143,7 @@ public class FailoverController implements AutoCloseable {
     }
 
     /**
-     * 启动时激活 primary 角色。
+     * 启动时激活 leader 角色。
      */
     private void bootstrapPrimaryRole() {
         leaseLifecycleManager.acquireLeaseAsync().whenComplete((lease, error) -> {
@@ -158,7 +158,7 @@ public class FailoverController implements AutoCloseable {
                 return;
             }
 
-            logger.error("Failed to activate primary during startup for shard {}", shardId);
+            logger.error("Failed to activate leader during startup for shard {}", shardId);
             demoteToReplica();
         });
     }
@@ -169,8 +169,8 @@ public class FailoverController implements AutoCloseable {
     private void startCatchUpIfNeeded() {
         // 获取本地最后应用的 offset
         long localOffset = stateMachine.getLastAppliedOffset();
-        // 获取 primary 当前 offset（从复制管理器或心跳中获取）
-        long targetOffset = primaryCurrentOffset.get();
+        // 获取 leader 当前 offset（从复制管理器或心跳中获取）
+        long targetOffset = leaderCurrentOffset.get();
 
         if (targetOffset <= 0 || localOffset >= targetOffset) {
             // 没有需要追赶的数据，直接切换到 SYNCED
@@ -223,7 +223,7 @@ public class FailoverController implements AutoCloseable {
             }
         }
 
-        // 降级为 replica（如果当前是 primary）
+        // 降级为 follower（如果当前是 leader）
         if (stateMachine.isPrimary()) {
             demoteToReplica();
         }
@@ -247,14 +247,14 @@ public class FailoverController implements AutoCloseable {
         logger.warn("Handling node failure: node={}, shard={}, type={}",
             event.nodeId(), event.shardId(), event.failureType());
 
-        // 检查是否是本 shard 的 primary 故障
+        // 检查是否是本 shard 的 leader 故障
         if (!event.shardId().equals(shardId)) {
             logger.debug("Ignoring failure from different shard: {} vs {}",
                 event.shardId(), shardId);
             return CompletableFuture.completedFuture(false);
         }
 
-        // 只有当自己是 replica 且 synced 时才尝试 promotion
+        // 只有当自己是 follower 且 synced 时才尝试 promotion
         if (!stateMachine.isSynced()) {
             logger.info("Not in SYNCED state, cannot promote. Current state: {}",
                 stateMachine.getCurrentState());
@@ -301,11 +301,11 @@ public class FailoverController implements AutoCloseable {
             logger.info("Lease acquired: {} for shard {}", lease.getLeaseId(), shardId);
 
             if (activatePrimaryAfterLease(lease)) {
-                logger.info("Promotion completed: node {} is now PRIMARY for shard {}",
+                logger.info("Promotion completed: node {} is now LEADER for shard {}",
                     nodeId, shardId);
                 future.complete(true);
             } else {
-                logger.error("Failed to activate PRIMARY after acquiring lease");
+                logger.error("Failed to activate LEADER after acquiring lease");
                 stateMachine.toSynced();
                 future.complete(false);
             }
@@ -317,7 +317,7 @@ public class FailoverController implements AutoCloseable {
     }
 
     /**
-     * 降级为 Replica（收到新 primary 心跳时调用）
+     * 降级为 Follower（收到新 leader 心跳时调用）
      *
      * @return 是否成功降级
      */
@@ -326,7 +326,7 @@ public class FailoverController implements AutoCloseable {
             return false;
         }
 
-        logger.info("Starting demotion to replica for shard {}...", shardId);
+        logger.info("Starting demotion to follower for shard {}...", shardId);
 
         // Step 1: 进入 DEMOTING 状态
         if (!stateMachine.toDemoting()) {
@@ -345,7 +345,7 @@ public class FailoverController implements AutoCloseable {
             // Step 5: 启动追赶流程（从 REPLICA_INIT -> CATCHING_UP -> SYNCED）
             startCatchUpIfNeeded();
 
-            logger.info("Demotion completed: node {} is now REPLICA for shard {}",
+            logger.info("Demotion completed: node {} is now FOLLOWER for shard {}",
                 nodeId, shardId);
             return true;
         }
@@ -368,12 +368,12 @@ public class FailoverController implements AutoCloseable {
 
         if (!force && stateMachine.isPrimary()) {
             return CompletableFuture.completedFuture(
-                new FailoverResult(false, "Already primary, use force=true to override", null));
+                new FailoverResult(false, "Already leader, use force=true to override", null));
         }
 
         logger.info("Manual failover triggered for shard {} (force={})", shardId, force);
 
-        // 如果当前是 primary，先降级
+        // 如果当前是 leader，先降级
         if (stateMachine.isPrimary() && force) {
             demoteToReplica();
         }
@@ -398,7 +398,7 @@ public class FailoverController implements AutoCloseable {
     // ==================== 租约管理 ====================
 
     /**
-     * 在获得租约后激活 primary 角色。
+     * 在获得租约后激活 leader 角色。
      */
     private boolean activatePrimaryAfterLease(CoordinatorLease lease) {
         boolean activated;
@@ -422,7 +422,7 @@ public class FailoverController implements AutoCloseable {
      * 处理租约过期
      */
     private void handleLeaseExpired() {
-        logger.error("Lease expired! This node is no longer the primary.");
+        logger.error("Lease expired! This node is no longer the leader.");
 
         // 转换到降级状态
         stateMachine.toPrimaryDegraded("Lease expired");
@@ -432,7 +432,7 @@ public class FailoverController implements AutoCloseable {
             leaseExpiredCallback.run();
         }
 
-        // 降级为 replica
+        // 降级为 follower
         demoteToReplica();
     }
 
@@ -460,7 +460,7 @@ public class FailoverController implements AutoCloseable {
                     if (e != null) {
                         logger.error("Failed to promote replication manager", e);
                     } else {
-                        logger.info("Replication manager promoted to PRIMARY");
+                        logger.info("Replication manager promoted to LEADER");
                     }
                 });
         } else {
@@ -469,7 +469,7 @@ public class FailoverController implements AutoCloseable {
                     if (e != null) {
                         logger.error("Failed to demote replication manager", e);
                     } else {
-                        logger.info("Replication manager demoted to REPLICA");
+                        logger.info("Replication manager demoted to FOLLOWER");
                     }
                 });
         }
@@ -542,10 +542,10 @@ public class FailoverController implements AutoCloseable {
     }
 
     /**
-     * 设置 Primary 当前 offset（用于追赶计算）
+     * 设置 Leader 当前 offset（用于追赶计算）
      */
     public void setPrimaryCurrentOffset(long offset) {
-        this.primaryCurrentOffset.set(offset);
+        this.leaderCurrentOffset.set(offset);
     }
 
     // ==================== 内部类 ====================

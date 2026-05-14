@@ -4,7 +4,7 @@
 version: '3.8'
 
 services:
-  # Single node mode
+  # Single node deployment
   loomq-single:
     build:
       context: .
@@ -47,7 +47,7 @@ services:
           cpus: '2'
           memory: 2G
 
-  # 2-node cluster mode
+  # 2-node distributed deployment
   loomq-node0:
     build:
       context: .

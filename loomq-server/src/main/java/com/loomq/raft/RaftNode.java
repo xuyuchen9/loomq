@@ -1,5 +1,6 @@
 package com.loomq.raft;
 
+import com.loomq.metrics.LoomQMetrics;
 import com.loomq.spi.WalAccessor;
 import com.loomq.store.IntentStore;
 import org.slf4j.Logger;
@@ -21,6 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class RaftNode implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(RaftNode.class);
+    private static final LoomQMetrics metrics = LoomQMetrics.getInstance();
     private static final int MAX_ENTRIES_PER_APPEND = 1000;
     private final String nodeId;
     private final WalAccessor wal;
@@ -85,6 +87,7 @@ public class RaftNode implements AutoCloseable {
 
     public void start() {
         election.start();
+        syncRaftMetrics();
         log.info("RaftNode started: node={}, term={}, logIndex={}",
             nodeId, election.currentTerm(), raftLog.lastIndex());
     }
@@ -94,6 +97,7 @@ public class RaftNode implements AutoCloseable {
         stopHeartbeat();
         heartbeatTimer.shutdown();
         election.stop();
+        metrics.updateRaftRole("OFFLINE");
         if (transport != null) {
             transport.close();
         }
@@ -232,6 +236,7 @@ public class RaftNode implements AutoCloseable {
     // ========== Vote coordination ==========
 
     private void onElectionStarted(long term) {
+        syncRaftMetrics();
         if (peers.isEmpty() || transport == null) return;
         log.info("Sending RequestVote to {} peers for term {}", peers.size(), term);
         long lastIdx = raftLog.lastIndex();
@@ -258,11 +263,13 @@ public class RaftNode implements AutoCloseable {
 
     private void onBecomeLeader(long term) {
         leaderGeneration++;
+        syncRaftMetrics();
         log.info("Node {} became LEADER at term {} (gen {})", nodeId, term, leaderGeneration);
         startHeartbeat(term);
     }
 
     private void onBecomeFollower(long term) {
+        syncRaftMetrics();
         log.info("Node {} became FOLLOWER at term {}", nodeId, term);
         leaderGeneration++;
         stopHeartbeat();
@@ -360,6 +367,7 @@ public class RaftNode implements AutoCloseable {
         if (replication.commitIndex() > before) {
             replication.applyCommitted();
         }
+        syncRaftMetrics();
     }
 
     private void stopHeartbeat() {
@@ -367,6 +375,13 @@ public class RaftNode implements AutoCloseable {
             heartbeatTask.cancel(false);
             heartbeatTask = null;
         }
+    }
+
+    private void syncRaftMetrics() {
+        metrics.updateRaftRole(election.role().name());
+        metrics.updateRaftTerm(election.currentTerm());
+        metrics.updateRaftCommitIndex(replication.commitIndex());
+        metrics.updateRaftLastApplied(replication.lastApplied());
     }
 
     // ========== Peer replication state ==========

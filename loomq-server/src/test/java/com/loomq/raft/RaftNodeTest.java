@@ -5,6 +5,7 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.infrastructure.wal.SimpleWalWriter;
+import com.loomq.metrics.LoomQMetrics;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
 import org.junit.jupiter.api.AfterEach;
@@ -166,6 +167,40 @@ class RaftNodeTest {
         assertTrue(node.getReplication().commitIndex() > 0,
             "commitIndex should advance for single-node majority");
         node.close();
+    }
+
+    @Test
+    void raftMetricsShouldReflectRoleAndCommitProgress() {
+        LoomQMetrics metrics = LoomQMetrics.getInstance();
+        metrics.reset();
+        RaftNode node = null;
+        try {
+            RaftConfig config = RaftConfig.singleNode("node-1");
+            node = new RaftNode(config, wal, store, null);
+            node.start();
+            waitForLeader(node, 3000);
+
+            LoomQMetrics.MetricsSnapshot afterStart = metrics.snapshot();
+            assertEquals("LEADER", afterStart.raftRole());
+            assertTrue(afterStart.raftTerm() > 0);
+
+            byte[] encoded = IntentBinaryCodec.encode(makeIntent("metrics-intent"));
+            long index = node.propose(encoded);
+            node.getReplication().advanceCommitIndex(
+                new long[]{node.getRaftLog().lastIndex()}, node.getElection().currentTerm());
+            node.applyCommitted();
+
+            LoomQMetrics.MetricsSnapshot afterCommit = metrics.snapshot();
+            assertEquals("LEADER", afterCommit.raftRole());
+            assertTrue(afterCommit.raftCommitIndex() >= index);
+            assertTrue(afterCommit.raftLastApplied() >= index);
+            assertEquals(0, afterCommit.raftCommitLag());
+        } finally {
+            if (node != null) {
+                node.close();
+            }
+            metrics.reset();
+        }
     }
 
     @Test

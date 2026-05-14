@@ -33,9 +33,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
- * Replica 客户端（Primary 侧）
+ * Peer 客户端（Leader 侧）
  *
- * 维护到 Replica 的连接，异步发送复制记录，接收 ACK
+ * 维护到 peer 的连接，异步发送复制记录，接收 ACK
  *
  * @author loomq
  * @since v0.4.8
@@ -99,7 +99,7 @@ public class ReplicaClient {
     }
 
     /**
-     * 连接到 Replica
+     * 连接到 peer
      */
     public CompletableFuture<Void> connect() {
         if (shutdown.get()) {
@@ -144,7 +144,7 @@ public class ReplicaClient {
             lastHeartbeat.set(null);
             lastHeartbeatTime = 0;
 
-            logger.info("Connected to replica at {}:{}", replicaHost, replicaPort);
+            logger.info("Connected to peer at {}:{}", replicaHost, replicaPort);
             return CompletableFuture.completedFuture(null);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -154,7 +154,7 @@ public class ReplicaClient {
             // Netty Bootstrap.connect() 可抛多种 checked exception (ConnectException, UnknownHostException 等)
             // 统一 wrap 为 RuntimeException 以适配 CompletableFuture 的返回签名
             cleanupAfterFailedConnect();
-            return CompletableFuture.failedFuture(new RuntimeException("Failed to connect to replica", e));
+            return CompletableFuture.failedFuture(new RuntimeException("Failed to connect to peer", e));
         }
     }
 
@@ -167,7 +167,7 @@ public class ReplicaClient {
         Channel ch = channel;
         if (!connected.get() || ch == null || !ch.isActive()) {
             return CompletableFuture.failedFuture(
-                new IllegalStateException("Not connected to replica"));
+                new IllegalStateException("Not connected to peer"));
         }
 
         long offset = record.getOffset();
@@ -304,7 +304,7 @@ public class ReplicaClient {
     }
 
     /**
-     * 获取最后收到的 replica 心跳
+     * 获取最后收到的 peer 心跳
      */
     public HeartbeatMessage getLastHeartbeat() {
         return lastHeartbeat.get();
@@ -353,7 +353,7 @@ public class ReplicaClient {
         }
 
         private void handleHeartbeat(HeartbeatMessage heartbeat) {
-            logger.debug("Received heartbeat from replica: nodeId={}, offset={}",
+            logger.debug("Received heartbeat from peer: nodeId={}, offset={}",
                 heartbeat.getNodeId(), heartbeat.getLastAppliedOffset());
 
             lastHeartbeat.set(heartbeat);
@@ -368,13 +368,13 @@ public class ReplicaClient {
                     // 发送心跳
                     HeartbeatMessage heartbeat = new HeartbeatMessage(
                         nodeId,
-                        "PRIMARY",
+                        "LEADER",
                         "ACTIVE",
                         lastReplicatedOffset.get(),
                         Instant.now().toEpochMilli()
                     );
                     ctx.writeAndFlush(heartbeat);
-                    logger.debug("Sent heartbeat to replica");
+                    logger.debug("Sent heartbeat to peer");
                 }
             }
             super.userEventTriggered(ctx, evt);
@@ -382,7 +382,7 @@ public class ReplicaClient {
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-            logger.warn("Connection to replica closed");
+            logger.warn("Connection to peer closed");
             connected.set(false);
             channel = null;
             boolean intentionalShutdown = shutdown.get();
@@ -412,7 +412,7 @@ public class ReplicaClient {
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-            logger.error("Exception in replica client", cause);
+            logger.error("Exception in peer client", cause);
 
             if (errorCallback != null) {
                 errorCallback.accept(cause);

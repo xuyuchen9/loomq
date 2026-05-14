@@ -12,7 +12,7 @@ import java.util.function.Function;
 /**
  * 复制记录应用器。
  *
- * 在 Replica 侧接收 Primary 发来的 ReplicationRecord，
+ * 在 follower 侧接收 leader 发来的 ReplicationRecord，
  * 解码 payload 为 Intent 后写入 IntentStore 并重新调度。
  *
  * 作为 {@link ReplicationManager#setRecordApplier(Function)} 的实参注入。
@@ -62,7 +62,7 @@ public final class RecordApplier implements Function<ReplicationRecord, Boolean>
             }
 
             intentStore.upsert(intent);
-            logger.debug("Replica applied intent: id={}, status={}", intent.getIntentId(), intent.getStatus());
+            logger.debug("Follower applied intent: id={}, status={}", intent.getIntentId(), intent.getStatus());
 
             // Schedule if scheduler is wired
             PrecisionScheduler sched = this.scheduler;

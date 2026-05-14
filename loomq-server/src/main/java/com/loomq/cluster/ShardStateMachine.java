@@ -22,20 +22,20 @@ import java.util.function.BiConsumer;
  *      ▼ (启动，加载本地 WAL)
  * REPLICA_CATCHING_UP ◄──────┐
  *      │                     │
- *      ▼ (追平 offset)       │ (primary 有新数据)
+ *      ▼ (追平 offset)       │ (leader 有新数据)
  * REPLICA_SYNCED ────────────┤
  *      │                     │
- *      ▼ (primary 故障，promotion)
+ *      ▼ (leader 故障，promotion)
  * PROMOTING
  *      │
  *      ▼ (路由表更新完成)
  * PRIMARY_ACTIVE
  *      │
- *      ▼ (replica 失联)
+ *      ▼ (follower 失联)
  * PRIMARY_DEGRADED
  *      │
- *      ▼ (收到新 primary 心跳)
- * DEGRADED (转为新 replica)
+ *      ▼ (收到新 leader 心跳)
+ * DEGRADED (转为新 follower)
  * ```
  *
  * @author loomq
@@ -79,14 +79,14 @@ public class ShardStateMachine {
      * 分片状态枚举
      */
     public enum ShardState {
-        // ========== Replica 侧状态 ==========
+        // ========== Follower 侧状态 ==========
         REPLICA_INIT("初始化中"),
         REPLICA_CATCHING_UP("追赶中"),
         REPLICA_SYNCED("已同步，待命"),
 
-        // ========== Primary 侧状态 ==========
+        // ========== Leader 侧状态 ==========
         PRIMARY_ACTIVE("主节点运行中"),
-        PRIMARY_DEGRADED("主节点降级（replica 失联）"),
+        PRIMARY_DEGRADED("主节点降级（follower 失联）"),
 
         // ========== 切换中状态 ==========
         PROMOTING("正在提升为主节点"),
@@ -123,7 +123,7 @@ public class ShardStateMachine {
         }
 
         /**
-         * 是否是 Replica 状态
+         * 是否是 Follower 状态
          */
         public boolean isReplica() {
             return this == REPLICA_INIT
@@ -132,7 +132,7 @@ public class ShardStateMachine {
         }
 
         /**
-         * 是否是 Primary 状态
+         * 是否是 Leader 状态
          */
         public boolean isPrimary() {
             return this == PRIMARY_ACTIVE || this == PRIMARY_DEGRADED;
@@ -286,21 +286,21 @@ public class ShardStateMachine {
     }
 
     /**
-     * 是否是 Primary（活跃或降级）
+     * 是否是 Leader（活跃或降级）
      */
     public boolean isPrimary() {
         return currentState.get().isPrimary();
     }
 
     /**
-     * 是否是活跃 Primary
+     * 是否是活跃 Leader
      */
     public boolean isPrimaryActive() {
         return currentState.get() == ShardState.PRIMARY_ACTIVE;
     }
 
     /**
-     * 是否是 Replica
+     * 是否是 Follower
      */
     public boolean isReplica() {
         ShardState state = currentState.get();
