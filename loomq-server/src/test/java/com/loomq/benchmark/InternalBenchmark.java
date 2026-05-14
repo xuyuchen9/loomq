@@ -117,7 +117,7 @@ public class InternalBenchmark {
             WalConfig walCfg = new WalConfig(
                 coldTempDir.toString(), 8, "batch", 100, false,
                 "memory_segment", 8, 128, 64, 10, 4,
-                1, false, false, "localhost", 9090, 30000, false
+                1, false
             );
             IntentStore coldStore = new ConcurrentIntentStore();
             SimpleWalWriter coldWal = new SimpleWalWriter(walCfg, "cold-bench");

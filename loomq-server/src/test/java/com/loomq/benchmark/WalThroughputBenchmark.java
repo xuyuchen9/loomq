@@ -28,7 +28,7 @@ public class WalThroughputBenchmark {
         String[] modes = {"DURABLE", "ASYNC"};
         for (int m = 0; m < modes.length; m++) {
             WalConfig cfg = new WalConfig(dir.toString(), 1, "batch", 100, false, "memory_segment",
-                1, 8, 64, 10, 4, 1, false, false, "localhost", 9090, 30000, false);
+                1, 8, 64, 10, 4, 1, false);
             SimpleWalWriter writer = new SimpleWalWriter(cfg, "bench");
             writer.start();
 

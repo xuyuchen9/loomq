@@ -59,7 +59,7 @@ class RaftNodeTest {
     @BeforeEach
     void setUp() throws Exception {
         dataDir = Files.createTempDirectory("raft-node-");
-        WalConfig cfg = new WalConfig(dataDir.toString(), 1, "batch", 100, false, "memory_segment", 1, 8, 64, 10, 4, 1, false, false, "localhost", 9090, 30000, false);
+        WalConfig cfg = new WalConfig(dataDir.toString(), 1, "batch", 100, false, "memory_segment", 1, 8, 64, 10, 4, 1, false);
         wal = new SimpleWalWriter(cfg, "raft-test");
         store = new ConcurrentIntentStore();
     }

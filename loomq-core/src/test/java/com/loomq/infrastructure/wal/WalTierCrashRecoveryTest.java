@@ -244,12 +244,7 @@ class WalTierCrashRecoveryTest {
             10,                  // memorySegmentFlushIntervalMs (10ms)
             4,                   // memorySegmentStripeCount
             1,                   // memorySegmentMinBatchSize
-            false,               // memorySegmentAdaptiveFlushEnabled
-            false,               // isReplicationEnabled
-            "localhost",         // replicaHost
-            9090,                // replicaPort
-            30000,               // replicationAckTimeoutMs
-            false                // requireReplicatedAck
+            false                // memorySegmentAdaptiveFlushEnabled
         );
         return new SimpleWalWriter(config, "test-shard");
     }

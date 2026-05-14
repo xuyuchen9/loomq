@@ -7,8 +7,8 @@ info:
     **核心特性**：
     - 延迟任务调度（100ms 精度）
     - 三种 ACK 级别：ASYNC / DURABLE / REPLICATED
-    - Primary-Replica 复制架构
-    - 自动故障切换
+    - Raft-backed replication and snapshot recovery
+    - Immediate fire-now execution
     - 幂等性保证（24h 窗口期）
   version: 0.9.0
 
@@ -169,10 +169,6 @@ paths:
       summary: 立即触发 Intent
       description: |
         立即触发指定 Intent，无视原定执行时间。
-
-        **Lease 过期处理**：
-        - HTTP 307 + Location 头指向新 Primary
-        - 响应体包含 `newPrimary` 字段供 SDK 更新路由
       operationId: fireNow
       parameters:
         - name: intentId
@@ -193,17 +189,6 @@ paths:
                   status:
                     type: string
                     example: "DISPATCHING"
-        '307':
-          description: Lease 过期，需要重定向
-          headers:
-            Location:
-              schema:
-                type: string
-              description: 新 Primary 地址
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Intent 不存在
 
@@ -226,36 +211,6 @@ paths:
                 $ref: '#/components/schemas/DeliveryResponse'
         '404':
           description: Delivery 不存在
-
-  /v1/cluster/replication:
-    get:
-      summary: 获取复制状态
-      operationId: getReplicationStatus
-      responses:
-        '200':
-          description: 复制状态
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ReplicationStatus'
-
-  /v1/shards/{shardId}:
-    get:
-      summary: 获取 Shard 详情
-      operationId: getShardDetail
-      parameters:
-        - name: shardId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Shard 详情
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ShardDetail'
 
   /health:
     get:
@@ -288,16 +243,6 @@ paths:
       responses:
         '200':
           description: 就绪
-
-  /health/replica:
-    get:
-      summary: 复制链路健康检查
-      operationId: replicaHealth
-      responses:
-        '200':
-          description: 复制链路正常
-        '503':
-          description: 复制链路异常
 
 components:
   schemas:
@@ -464,47 +409,6 @@ components:
         errorMessage:
           type: string
 
-    ReplicationStatus:
-      type: object
-      properties:
-        shardId:
-          type: string
-        role:
-          type: string
-          enum: [PRIMARY, REPLICA]
-        primaryNode:
-          type: string
-        replicaNode:
-          type: string
-        replicationLagMs:
-          type: integer
-        lastReplicatedOffset:
-          type: integer
-
-    ShardDetail:
-      type: object
-      properties:
-        shardId:
-          type: string
-        primaryNode:
-          type: string
-        replicaNode:
-          type: string
-        role:
-          type: string
-        leaseVersion:
-          type: integer
-        routingVersion:
-          type: integer
-        lastAppliedOffset:
-          type: integer
-        lastReplicatedOffset:
-          type: integer
-        replicationLagMs:
-          type: integer
-        pendingIntents:
-          type: integer
-
     ErrorResponse:
       type: object
       required:
@@ -534,17 +438,3 @@ components:
             message: "Idempotency key conflict: intent already in terminal state"
             details:
               intentId: "intent_01J9XYZABC"
-
-    FencingExpired:
-      description: Lease 过期
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-          example:
-            code: "50304"
-            message: "Lease expired, current primary is 10.0.1.100"
-            details:
-              intentId: "intent_01J9XYZABC"
-              redirectTo: "http://10.0.1.100:7928/v1/intents/intent_01J9XYZABC/fire-now"
-              newPrimary: "10.0.1.100:7928"

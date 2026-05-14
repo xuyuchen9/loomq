@@ -19,19 +19,13 @@ public record WalConfig(
         long memorySegmentFlushIntervalMs,
         int memorySegmentStripeCount,
         int memorySegmentMinBatchSize,
-        boolean memorySegmentAdaptiveFlushEnabled,
-        boolean isReplicationEnabled,
-        String replicaHost,
-        int replicaPort,
-        long replicationAckTimeoutMs,
-        boolean requireReplicatedAck
+        boolean memorySegmentAdaptiveFlushEnabled
 ) {
 
     public WalConfig {
         dataDir = requireText(dataDir, "dataDir");
         flushStrategy = requireText(flushStrategy, "flushStrategy");
         engine = requireText(engine, "engine");
-        replicaHost = requireText(replicaHost, "replicaHost");
 
         requirePositive(segmentSizeMb, "segmentSizeMb");
         requirePositive(batchFlushIntervalMs, "batchFlushIntervalMs");
@@ -41,8 +35,6 @@ public record WalConfig(
         requirePositive(memorySegmentFlushIntervalMs, "memorySegmentFlushIntervalMs");
         requirePositive(memorySegmentStripeCount, "memorySegmentStripeCount");
         requirePositive(memorySegmentMinBatchSize, "memorySegmentMinBatchSize");
-        requirePositive(replicaPort, "replicaPort");
-        requirePositive(replicationAckTimeoutMs, "replicationAckTimeoutMs");
     }
 
     public static WalConfig defaultConfig() {
@@ -59,12 +51,7 @@ public record WalConfig(
                 10,
                 16,
                 100,
-                true,
-                false,
-                "localhost",
-                9090,
-                30000,
-                false
+                true
         );
     }
 
@@ -83,12 +70,7 @@ public record WalConfig(
                 ConfigSupport.longValue(source, 10, "wal.memory_segment.flush_interval_ms", "wal.memory_segment.flushIntervalMs", "memorySegmentFlushIntervalMs"),
                 ConfigSupport.intValue(source, 16, "wal.memory_segment.stripe_count", "wal.memory_segment.stripeCount", "memorySegmentStripeCount"),
                 ConfigSupport.intValue(source, 100, "wal.memory_segment.min_batch_size", "wal.memory_segment.minBatchSize", "memorySegmentMinBatchSize"),
-                ConfigSupport.booleanValue(source, true, "wal.memory_segment.adaptive_flush_enabled", "wal.memory_segment.adaptiveFlushEnabled", "memorySegmentAdaptiveFlushEnabled"),
-                ConfigSupport.booleanValue(source, false, "wal.replication.enabled", "wal.replicationEnabled", "replicationEnabled"),
-                ConfigSupport.string(source, "localhost", "wal.replication.replica_host", "wal.replication.replicaHost", "replicaHost"),
-                ConfigSupport.intValue(source, 9090, "wal.replication.replica_port", "wal.replication.replicaPort", "replicaPort"),
-                ConfigSupport.longValue(source, 30000, "wal.replication.ack_timeout_ms", "wal.replication.ackTimeoutMs", "replicationAckTimeoutMs"),
-                ConfigSupport.booleanValue(source, false, "wal.replication.require_replicated_ack", "wal.replication.requireReplicatedAck", "requireReplicatedAck")
+                ConfigSupport.booleanValue(source, true, "wal.memory_segment.adaptive_flush_enabled", "wal.memory_segment.adaptiveFlushEnabled", "memorySegmentAdaptiveFlushEnabled")
         );
     }
 
@@ -106,12 +88,7 @@ public record WalConfig(
                 memorySegmentFlushIntervalMs,
                 memorySegmentStripeCount,
                 memorySegmentMinBatchSize,
-                memorySegmentAdaptiveFlushEnabled,
-                isReplicationEnabled,
-                replicaHost,
-                replicaPort,
-                replicationAckTimeoutMs,
-                requireReplicatedAck
+                memorySegmentAdaptiveFlushEnabled
         );
     }
 
@@ -129,12 +106,7 @@ public record WalConfig(
                 memorySegmentFlushIntervalMs,
                 memorySegmentStripeCount,
                 memorySegmentMinBatchSize,
-                memorySegmentAdaptiveFlushEnabled,
-                isReplicationEnabled,
-                replicaHost,
-                replicaPort,
-                replicationAckTimeoutMs,
-                requireReplicatedAck
+                memorySegmentAdaptiveFlushEnabled
         );
     }
 
@@ -152,12 +124,7 @@ public record WalConfig(
                 memorySegmentFlushIntervalMs,
                 memorySegmentStripeCount,
                 memorySegmentMinBatchSize,
-                memorySegmentAdaptiveFlushEnabled,
-                isReplicationEnabled,
-                replicaHost,
-                replicaPort,
-                replicationAckTimeoutMs,
-                requireReplicatedAck
+                memorySegmentAdaptiveFlushEnabled
         );
     }
 

@@ -8,10 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- **Raft consensus for cluster mode**
+- **Raft consensus for the current runtime**
   - Leader election, AppendEntries replication, InstallSnapshot catch-up
   - Peer connection bootstrap and generation-safe response handling
-  - Snapshot boundary recovery and follower failover regressions
+  - Snapshot boundary recovery and follower catch-up regressions
 
 - **Pluggable IntentStore**
   - `ConcurrentIntentStore` for in-memory mode

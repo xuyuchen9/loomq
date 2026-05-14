@@ -56,7 +56,7 @@ public class RaftBenchmark {
 
     private static WalConfig defaultWalConfig(Path dir) {
         return new WalConfig(dir.toString(), 128, "batch", 100, false, "memory_segment",
-            128, 512, 64, 10, 4, 1, false, false, "localhost", 9090, 30000, false);
+            128, 512, 64, 10, 4, 1, false);
     }
 
     // ================================================================

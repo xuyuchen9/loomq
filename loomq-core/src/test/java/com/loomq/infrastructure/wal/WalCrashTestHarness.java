@@ -35,7 +35,7 @@ public final class WalCrashTestHarness {
 
         WalConfig config = new WalConfig(
             dataDir.toString(), 8, "batch", 100, false, "memory_segment",
-            8, 32, 64, flushIntervalMs, 4, 1, false, false, "localhost", 9090, 30000, false
+            8, 32, 64, flushIntervalMs, 4, 1, false
         );
 
         SimpleWalWriter writer = new SimpleWalWriter(config, "crash-test");

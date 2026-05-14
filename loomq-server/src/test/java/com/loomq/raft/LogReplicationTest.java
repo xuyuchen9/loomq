@@ -41,7 +41,7 @@ class LogReplicationTest {
     void setUp() throws Exception {
         dataDir = Files.createTempDirectory("raft-repl-");
         WalConfig cfg = new WalConfig(dataDir.toString(), 1, "batch", 100, false, "memory_segment",
-            1, 8, 64, 10, 4, 1, false, false, "localhost", 9090, 30000, false);
+            1, 8, 64, 10, 4, 1, false);
         wal = new SimpleWalWriter(cfg, "raft-test");
         store = new ConcurrentIntentStore();
         raftLog = new RaftLog(wal);

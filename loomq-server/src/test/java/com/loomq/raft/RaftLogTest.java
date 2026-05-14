@@ -34,7 +34,7 @@ class RaftLogTest {
     void setUp() throws Exception {
         dataDir = Files.createTempDirectory("raft-log-");
         WalConfig cfg = new WalConfig(dataDir.toString(), 1, "batch", 100, false, "memory_segment",
-            1, 8, 64, 10, 4, 1, false, false, "localhost", 9090, 30000, false);
+            1, 8, 64, 10, 4, 1, false);
         wal = new SimpleWalWriter(cfg, "raft-test");
         log = new RaftLog(wal);
     }
@@ -164,8 +164,7 @@ class RaftLogTest {
         wal.close();
 
         WalConfig cfg = new WalConfig(dataDir.toString(), 1, "batch", 100, false,
-            "memory_segment", 1, 8, 64, 10, 4, 1, false, false,
-            "localhost", 9090, 30000, false);
+            "memory_segment", 1, 8, 64, 10, 4, 1, false);
         SimpleWalWriter wal2 = new SimpleWalWriter(cfg, "raft-test");
         try {
             assertEquals(7, wal2.getLastLogEntryTerm(),
@@ -193,8 +192,7 @@ class RaftLogTest {
         wal.close();
 
         WalConfig cfg = new WalConfig(dataDir.toString(), 1, "batch", 100, false,
-            "memory_segment", 1, 8, 64, 10, 4, 1, false, false,
-            "localhost", 9090, 30000, false);
+            "memory_segment", 1, 8, 64, 10, 4, 1, false);
         SimpleWalWriter wal2 = new SimpleWalWriter(cfg, "raft-test");
         try {
             assertEquals(3, wal2.getLastLogTerm(), "term should load from old format");
@@ -235,8 +233,7 @@ class RaftLogTest {
         wal.close();
 
         WalConfig cfg = new WalConfig(dataDir.toString(), 1, "batch", 100, false,
-            "memory_segment", 1, 8, 64, 10, 4, 1, false, false,
-            "localhost", 9090, 30000, false);
+            "memory_segment", 1, 8, 64, 10, 4, 1, false);
         SimpleWalWriter wal2 = new SimpleWalWriter(cfg, "raft-test");
         try {
             assertEquals(3, wal2.getSnapshotIndex(), "snapshot index should survive restart");

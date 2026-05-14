@@ -4,7 +4,7 @@
 version: '3.8'
 
 services:
-  # Single node deployment
+  # Single-node Raft-capable deployment
   loomq-single:
     build:
       context: .
@@ -14,6 +14,9 @@ services:
     ports:
       - "7928:7928"
     environment:
+      - LOOMQ_NODE_ID=node-1
+      - LOOMQ_RAFT_ENABLED=true
+      - LOOMQ_RAFT_NODE_ID=node-1
       - LOOMQ_SERVER_HOST=0.0.0.0
       - LOOMQ_SERVER_PORT=7928
       - LOOMQ_WAL_DATA_DIR=/app/data/wal
@@ -24,8 +27,6 @@ services:
       - JVM_XMX=2g
       - JVM_GC=ZGC
       - JVM_GC_PAUSE=10
-      - LOOMQ_SHARD_INDEX=0
-      - LOOMQ_TOTAL_SHARDS=1
     volumes:
       - loomq-data:/app/data/wal
       - ./config:/app/config:ro
@@ -46,57 +47,6 @@ services:
         reservations:
           cpus: '2'
           memory: 2G
-
-  # 2-node distributed deployment
-  loomq-node0:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: loomq:0.9.0
-    container_name: loomq-node0
-    ports:
-      - "7928:7928"
-    environment:
-      - LOOMQ_SERVER_HOST=0.0.0.0
-      - LOOMQ_SERVER_PORT=7928
-      - LOOMQ_SHARD_INDEX=0
-      - LOOMQ_TOTAL_SHARDS=2
-      - LOOMQ_NODES=shard-0:loomq-node0:7928,shard-1:loomq-node1:7928
-      - JVM_XMS=2g
-      - JVM_XMX=2g
-      - JVM_GC=ZGC
-    volumes:
-      - loomq-node0-data:/app/data/wal
-    networks:
-      - loomq-cluster
-    restart: unless-stopped
-    profiles:
-      - cluster
-
-  loomq-node1:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: loomq:0.9.0
-    container_name: loomq-node1
-    ports:
-      - "7929:7928"
-    environment:
-      - LOOMQ_SERVER_HOST=0.0.0.0
-      - LOOMQ_SERVER_PORT=7928
-      - LOOMQ_SHARD_INDEX=1
-      - LOOMQ_TOTAL_SHARDS=2
-      - LOOMQ_NODES=shard-0:loomq-node0:7928,shard-1:loomq-node1:7928
-      - JVM_XMS=2g
-      - JVM_XMX=2g
-      - JVM_GC=ZGC
-    volumes:
-      - loomq-node1-data:/app/data/wal
-    networks:
-      - loomq-cluster
-    restart: unless-stopped
-    profiles:
-      - cluster
 
   # Prometheus monitoring
   prometheus:
@@ -143,10 +93,6 @@ services:
 volumes:
   loomq-data:
     driver: local
-  loomq-node0-data:
-    driver: local
-  loomq-node1-data:
-    driver: local
   prometheus-data:
     driver: local
   grafana-data:
@@ -154,6 +100,4 @@ volumes:
 
 networks:
   loomq-network:
-    driver: bridge
-  loomq-cluster:
     driver: bridge
