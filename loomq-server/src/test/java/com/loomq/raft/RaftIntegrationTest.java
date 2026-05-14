@@ -17,6 +17,7 @@ import com.loomq.http.netty.HttpErrorResponse;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.infrastructure.wal.SimpleWalWriter;
+import com.loomq.spi.DeliveryHandler;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
 import io.netty.handler.codec.http.HttpMethod;
@@ -27,6 +28,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
@@ -41,6 +43,8 @@ class RaftIntegrationTest {
 
     private List<RaftNode> nodes = new ArrayList<>();
     private List<Path> dirs = new ArrayList<>();
+    private static final DeliveryHandler NOOP_DELIVERY_HANDLER =
+        intent -> CompletableFuture.completedFuture(DeliveryHandler.DeliveryResult.SUCCESS);
 
     /** Allocate an available TCP port dynamically (reuse-friendly) */
     private static int allocatePort() throws IOException {
@@ -67,6 +71,17 @@ class RaftIntegrationTest {
             Thread.sleep(100);
         }
         return null;
+    }
+
+    private static void waitForLeaderHint(RaftNode node, String leaderId, long maxWaitMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + maxWaitMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (leaderId.equals(node.snapshotStatus().leaderId())) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+        fail("Timed out waiting for follower to learn leader " + leaderId);
     }
 
     /** Access private "transport" field via reflection (tests should be in same package) */
@@ -374,7 +389,11 @@ class RaftIntegrationTest {
             .orElseThrow();
 
         Path engineDir = Files.createTempDirectory("raft-read-engine-");
-        LoomqEngine engine = LoomqEngine.builder().nodeId("raft-read-engine").walDir(engineDir).build();
+        LoomqEngine engine = LoomqEngine.builder()
+            .nodeId("raft-read-engine")
+            .walDir(engineDir)
+            .deliveryHandler(NOOP_DELIVERY_HANDLER)
+            .build();
         try {
             Intent intent = new Intent("raft-read-1");
             intent.setPrecisionTier(com.loomq.domain.intent.PrecisionTier.STANDARD);
@@ -385,6 +404,8 @@ class RaftIntegrationTest {
             Object leaderResult = leaderHandler.getIntent(HttpMethod.GET, "/v1/intents/raft-read-1",
                 new byte[0], Map.of(), Map.of("intentId", "raft-read-1"));
             assertInstanceOf(IntentResponse.class, leaderResult, "leader should serve reads");
+
+            waitForLeaderHint(follower, leader.snapshotStatus().nodeId(), 5_000);
 
             IntentHandler followerHandler = new IntentHandler(engine, follower);
             Object followerResult = followerHandler.getIntent(HttpMethod.GET, "/v1/intents/raft-read-1",
@@ -450,8 +471,14 @@ class RaftIntegrationTest {
             .findFirst()
             .orElseThrow();
 
+        waitForLeaderHint(follower, leader.snapshotStatus().nodeId(), 5_000);
+
         Path engineDir = Files.createTempDirectory("raft-failover-read-engine-");
-        LoomqEngine engine = LoomqEngine.builder().nodeId("raft-failover-read-engine").walDir(engineDir).build();
+        LoomqEngine engine = LoomqEngine.builder()
+            .nodeId("raft-failover-read-engine")
+            .walDir(engineDir)
+            .deliveryHandler(NOOP_DELIVERY_HANDLER)
+            .build();
         try {
             Intent intent = new Intent("raft-read-2");
             intent.setPrecisionTier(com.loomq.domain.intent.PrecisionTier.STANDARD);

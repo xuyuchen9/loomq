@@ -32,6 +32,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private final LogReplication replication;
     private final RaftLog raftLog;
     private final RaftTransport transport;
+    private final RaftRuntimeListener runtimeListener;
     private final List<String> peers;
     private final ScheduledExecutorService heartbeatTimer;
     private final long heartbeatMs;
@@ -45,10 +46,16 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private volatile long leaderGeneration = 0;
 
     public RaftNode(RaftConfig config, WalAccessor wal, IntentStore store, RaftTransport transport) {
+        this(config, wal, store, transport, null);
+    }
+
+    public RaftNode(RaftConfig config, WalAccessor wal, IntentStore store, RaftTransport transport,
+                    RaftRuntimeListener runtimeListener) {
         this.nodeId = config.nodeId();
         this.wal = wal;
         this.store = store;
         this.transport = transport;
+        this.runtimeListener = runtimeListener;
         this.peers = config.peers();
         this.heartbeatMs = config.heartbeatMs();
         this.peerStates = new ConcurrentHashMap<>();
@@ -60,7 +67,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         this.raftLog = new RaftLog(wal);
         this.election = new LeaderElection(nodeId, wal, config.peers(),
             config.electionMinMs(), config.electionMaxMs());
-        this.replication = new LogReplication(nodeId, wal, raftLog, store, election);
+        this.replication = new LogReplication(nodeId, wal, raftLog, store, election, runtimeListener);
         this.heartbeatTimer = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "raft-heartbeat-" + nodeId);
             t.setDaemon(true);
@@ -99,6 +106,9 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     public void start() {
         election.start();
         syncRaftMetrics();
+        if (runtimeListener != null && role() == RaftRole.FOLLOWER) {
+            notifyRuntimeRole();
+        }
         log.info("RaftNode started: node={}, term={}, logIndex={}",
             nodeId, election.currentTerm(), raftLog.lastIndex());
     }
@@ -108,6 +118,8 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         stopHeartbeat();
         heartbeatTimer.shutdown();
         election.stop();
+        replication.failPendingWaiters(new IllegalStateException("Raft node closed"));
+        notifyRuntimeRole(RaftRole.FOLLOWER);
         metrics.updateRaftRole("OFFLINE");
         metrics.updateRaftLeaderId(null);
         metrics.updateRaftReplicationLag(0);
@@ -138,7 +150,14 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
     /** Leader 提交一条 entry 到本地 WAL 并返回 index */
     public long propose(byte[] entry) {
+        if (!isLeader()) {
+            throw new IllegalStateException("Raft proposals must be issued by the leader");
+        }
         long index = raftLog.appendEntry(election.currentTerm(), entry);
+        if (peerStates.isEmpty()) {
+            replication.advanceCommitIndex(new long[]{index}, election.currentTerm());
+            replication.applyCommitted();
+        }
         log.debug("Proposed entry at index {}", index);
         return index;
     }
@@ -289,12 +308,15 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private void onBecomeLeader(long term) {
         leaderGeneration++;
         syncRaftMetrics();
+        notifyRuntimeRole();
         log.info("Node {} became LEADER at term {} (gen {})", nodeId, term, leaderGeneration);
         startHeartbeat(term);
     }
 
     private void onBecomeFollower(long term) {
         syncRaftMetrics();
+        replication.failPendingWaiters(new IllegalStateException("Leadership lost"));
+        notifyRuntimeRole();
         log.info("Node {} became FOLLOWER at term {}", nodeId, term);
         leaderGeneration++;
         stopHeartbeat();
@@ -325,7 +347,12 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                             continue;
                         }
 
+                        if (ps.appendInFlight) {
+                            continue;
+                        }
+
                         long requestGeneration = ++ps.requestGeneration;
+                        ps.appendInFlight = true;
 
                         // Read entries the peer is missing (batch-limited)
                         long nextIdx = ps.nextIndex;
@@ -346,7 +373,13 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
                         transport.sendAppendEntries(ps.peerId, currentTerm, nodeId,
                                 prevLogIndex, prevLogTerm, entries, commitIdx)
-                            .thenAccept(result -> {
+                            .whenComplete((result, throwable) -> {
+                                ps.appendInFlight = false;
+                                if (throwable != null) {
+                                    log.error("AppendEntries failed for peer {}: {}", ps.peerId,
+                                        throwable.getMessage(), throwable);
+                                    return;
+                                }
                                 if (requestGeneration != ps.requestGeneration) return;
                                 // Bail out if this response belongs to a past leadership term
                                 if (myGeneration != leaderGeneration) return;
@@ -369,6 +402,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                                 }
                             });
                     } catch (Exception peerEx) {
+                        ps.appendInFlight = false;
                         log.error("Heartbeat failed for peer {}: {}", ps.peerId,
                             peerEx.getMessage(), peerEx);
                         // Continue to next peer — don't let one peer failure stop others
@@ -414,6 +448,16 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         metrics.updateRaftReplicationLag(status.replicationLag());
         metrics.updateRaftConnectedPeers(status.connectedPeers());
         metrics.updateRaftTotalPeers(status.totalPeers());
+    }
+
+    private void notifyRuntimeRole() {
+        notifyRuntimeRole(role());
+    }
+
+    private void notifyRuntimeRole(RaftRole role) {
+        if (runtimeListener != null) {
+            runtimeListener.onRoleChanged(role, election.currentTerm());
+        }
     }
 
     @Override
@@ -470,6 +514,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         volatile long nextIndex = 1;
         volatile long matchIndex;
         volatile long requestGeneration = 0;
+        volatile boolean appendInFlight = false;
 
         PeerReplicationState(String peerId) {
             this.peerId = peerId;

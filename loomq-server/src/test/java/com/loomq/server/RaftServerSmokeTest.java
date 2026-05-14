@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.loomq.LoomqEngine;
-import com.loomq.callback.NettyHttpDeliveryHandler;
 import com.loomq.config.ServerConfig;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;
@@ -13,6 +12,8 @@ import com.loomq.raft.RaftConfig;
 import com.loomq.raft.RaftNode;
 import com.loomq.raft.RaftStatusProvider;
 import com.loomq.raft.RaftTransport;
+import com.loomq.raft.RaftWriteCoordinator;
+import com.loomq.spi.DeliveryHandler;
 import java.lang.reflect.Method;
 import java.net.ServerSocket;
 import java.net.URI;
@@ -24,6 +25,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -40,7 +42,7 @@ class RaftServerSmokeTest {
         LoomqEngine engine = LoomqEngine.builder()
             .nodeId("raft-smoke-node")
             .walDir(walDir)
-            .deliveryHandler(new NettyHttpDeliveryHandler())
+            .deliveryHandler(intent -> CompletableFuture.completedFuture(DeliveryHandler.DeliveryResult.SUCCESS))
             .build();
 
         int raftPort = allocatePort();
@@ -51,6 +53,7 @@ class RaftServerSmokeTest {
             engine.getWalAccessor(),
             engine.getIntentStore(),
             transport);
+        RaftWriteCoordinator writeCoordinator = new RaftWriteCoordinator(raftNode, engine.getIntentStore());
 
         NettyHttpServer server = null;
         try {
@@ -60,7 +63,7 @@ class RaftServerSmokeTest {
             assertTrue(raftNode.isLeader(), "single-node Raft should become leader");
 
             RadixRouter router = new RadixRouter();
-            new IntentHandler(engine, raftNode).register(router);
+            new IntentHandler(engine, raftNode, writeCoordinator).register(router);
             registerSystemRoutes(router, engine, raftNode);
 
             server = new NettyHttpServer(testConfig(), router);
@@ -79,6 +82,7 @@ class RaftServerSmokeTest {
             assertTrue(health.body().contains("\"status\":\"OK\""));
             assertTrue(health.body().contains("\"raft\""));
             assertTrue(health.body().contains("\"role\":\"LEADER\""));
+            assertTrue(health.body().contains("\"acceptingWrites\":true"));
 
             HttpResponse<String> deepHealth = client.send(
                 HttpRequest.newBuilder()
@@ -100,6 +104,8 @@ class RaftServerSmokeTest {
             assertEquals(200, metrics.statusCode());
             assertTrue(metrics.body().contains("\"raftRole\":\"LEADER\""));
             assertTrue(metrics.body().contains("\"raftLeaderId\":\"raft-smoke-node\""));
+            assertTrue(metrics.body().contains("\"raftPendingWrites\""));
+            assertTrue(metrics.body().contains("\"raftWriteProposalLatencyMs\""));
 
             String intentId = "raft-smoke-" + System.nanoTime();
             Instant executeAt = Instant.now().plusSeconds(5);
@@ -123,6 +129,66 @@ class RaftServerSmokeTest {
 
             assertEquals(201, created.statusCode());
             assertTrue(created.body().contains(intentId));
+
+            HttpResponse<String> patched = client.send(
+                HttpRequest.newBuilder()
+                    .uri(URI.create("http://127.0.0.1:" + server.getPort() + "/v1/intents/" + intentId))
+                    .header("Content-Type", "application/json")
+                    .method("PATCH", HttpRequest.BodyPublishers.ofString("""
+                        {
+                          "deadline":"%s",
+                          "tags":{"scenario":"smoke-patch"}
+                        }
+                        """.formatted(executeAt.plusSeconds(60))))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(200, patched.statusCode());
+            assertTrue(patched.body().contains(intentId));
+
+            HttpResponse<String> cancelled = client.send(
+                HttpRequest.newBuilder()
+                    .uri(URI.create("http://127.0.0.1:" + server.getPort() + "/v1/intents/" + intentId + "/cancel"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(200, cancelled.statusCode());
+            assertTrue(cancelled.body().contains("\"status\":\"CANCELED\""));
+
+            String fireNowId = "raft-smoke-fire-" + System.nanoTime();
+            Instant fireExecuteAt = Instant.now().plusSeconds(30);
+            String firePayload = """
+                {
+                  "intentId":"%s",
+                  "executeAt":"%s",
+                  "deadline":"%s",
+                  "precisionTier":"STANDARD",
+                  "shardKey":"orders"
+                }
+                """.formatted(fireNowId, fireExecuteAt, fireExecuteAt.plusSeconds(60));
+
+            HttpResponse<String> fireCreated = client.send(
+                HttpRequest.newBuilder()
+                    .uri(URI.create("http://127.0.0.1:" + server.getPort() + "/v1/intents"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(firePayload))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(201, fireCreated.statusCode());
+
+            HttpResponse<String> fired = client.send(
+                HttpRequest.newBuilder()
+                    .uri(URI.create("http://127.0.0.1:" + server.getPort() + "/v1/intents/" + fireNowId + "/fire-now"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(200, fired.statusCode());
+            assertTrue(fired.body().contains("\"status\":\"DISPATCHING\""));
 
             HttpResponse<String> fetched = client.send(
                 HttpRequest.newBuilder()

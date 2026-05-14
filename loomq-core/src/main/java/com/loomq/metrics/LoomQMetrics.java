@@ -97,6 +97,22 @@ public class LoomQMetrics {
         raftMetrics.updateRaftTotalPeers(totalPeers);
     }
 
+    public void updateRaftPendingWrites(long pendingWrites) {
+        raftMetrics.updateRaftPendingWrites(pendingWrites);
+    }
+
+    public void recordRaftWriteProposalLatency(long latencyMs) {
+        raftMetrics.recordRaftWriteProposalLatency(latencyMs);
+    }
+
+    public void incrementRaftWriteTimeouts() {
+        raftMetrics.incrementRaftWriteTimeouts();
+    }
+
+    public void incrementRaftWriteStepDownAborts() {
+        raftMetrics.incrementRaftWriteStepDownAborts();
+    }
+
     // ==================== 单例模式 ====================
     private static final LoomQMetrics INSTANCE = new LoomQMetrics();
 
@@ -223,7 +239,12 @@ public class LoomQMetrics {
             raftMetrics.getRaftCommitLag(),
             raftMetrics.getRaftReplicationLag(),
             raftMetrics.getRaftConnectedPeers(),
-            raftMetrics.getRaftTotalPeers()
+            raftMetrics.getRaftTotalPeers(),
+            raftMetrics.getRaftPendingWrites(),
+            raftMetrics.getRaftAverageWriteProposalLatencyMs(),
+            raftMetrics.getRaftWriteProposalLatencyMaxMs(),
+            raftMetrics.getRaftWriteTimeouts(),
+            raftMetrics.getRaftWriteStepDownAborts()
         );
     }
 
@@ -266,7 +287,12 @@ public class LoomQMetrics {
         long raftCommitLag,
         long raftReplicationLag,
         int raftConnectedPeers,
-        int raftTotalPeers
+        int raftTotalPeers,
+        long raftPendingWrites,
+        double raftWriteProposalLatencyMs,
+        long raftWriteProposalLatencyMaxMs,
+        long raftWriteTimeouts,
+        long raftWriteStepDownAborts
     ) {}
 
     // ==================== 重置 ====================

@@ -5,6 +5,12 @@ import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.metrics.LoomQMetrics;
 import com.loomq.spi.WalAccessor;
 import com.loomq.store.IntentStore;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,12 +24,20 @@ public class LogReplication {
     private final RaftLog raftLog;
     private final IntentStore store;
     private final LeaderElection election;
+    private final RaftRuntimeListener runtimeListener;
     private final AtomicLong commitIndex = new AtomicLong(0);
     private final AtomicLong lastApplied = new AtomicLong(0);
+    private final ConcurrentMap<Long, CompletableFuture<Void>> appliedWaiters = new ConcurrentHashMap<>();
 
     public LogReplication(String nodeId, WalAccessor wal, RaftLog raftLog, IntentStore store, LeaderElection election) {
+        this(nodeId, wal, raftLog, store, election, null);
+    }
+
+    public LogReplication(String nodeId, WalAccessor wal, RaftLog raftLog, IntentStore store,
+                          LeaderElection election, RaftRuntimeListener runtimeListener) {
         this.nodeId = nodeId; this.wal = wal; this.raftLog = raftLog;
         this.store = store; this.election = election;
+        this.runtimeListener = runtimeListener;
     }
 
     public long commitIndex() { return commitIndex.get(); }
@@ -38,6 +52,53 @@ public class LogReplication {
         lastApplied.set(index);
         metrics.updateRaftCommitIndex(index);
         metrics.updateRaftLastApplied(index);
+    }
+
+    /**
+     * Wait until a given log index has been applied to the local state machine.
+     */
+    public boolean awaitApplied(long index, long timeoutMs) {
+        if (lastApplied.get() >= index) {
+            return true;
+        }
+
+        CompletableFuture<Void> waiter = new CompletableFuture<>();
+        CompletableFuture<Void> existing = appliedWaiters.putIfAbsent(index, waiter);
+        if (existing != null) {
+            waiter = existing;
+        }
+
+        if (lastApplied.get() >= index) {
+            appliedWaiters.remove(index, waiter);
+            return true;
+        }
+
+        try {
+            waiter.get(timeoutMs, TimeUnit.MILLISECONDS);
+            return true;
+        } catch (TimeoutException e) {
+            appliedWaiters.remove(index, waiter);
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            appliedWaiters.remove(index, waiter);
+            return false;
+        } catch (ExecutionException e) {
+            throw new RuntimeException("Raft applied wait failed", e.getCause());
+        }
+    }
+
+    /**
+     * Fail all pending application waiters, used when leadership is lost.
+     */
+    public void failPendingWaiters(Throwable cause) {
+        if (cause == null) {
+            cause = new IllegalStateException("Raft leadership lost");
+        }
+        for (CompletableFuture<Void> waiter : appliedWaiters.values()) {
+            waiter.completeExceptionally(cause);
+        }
+        appliedWaiters.clear();
     }
 
     /**
@@ -128,13 +189,38 @@ public class LogReplication {
             if (entryPayload == null || entryPayload.length == 0) continue;
             try {
                 Intent intent = IntentBinaryCodec.decode(entryPayload);
+                boolean isNew = store.findById(intent.getIntentId()) == null;
                 store.upsert(intent);
+                if (runtimeListener != null) {
+                    try {
+                        runtimeListener.onCommittedIntent(intent, isNew, election.role() == RaftRole.LEADER);
+                    } catch (Exception listenerEx) {
+                        log.error("Runtime listener failed while applying committed entry at index {}",
+                            applied, listenerEx);
+                    }
+                }
+                completeAppliedWaiter(applied);
                 log.debug("Applied committed entry at index {}: intentId={}", applied, intent.getIntentId());
             } catch (Exception e) {
                 log.error("Failed to apply committed entry at index {}", applied, e);
+                failAppliedWaiter(applied, e);
             }
         }
         metrics.updateRaftCommitIndex(commitIndex.get());
         metrics.updateRaftLastApplied(lastApplied.get());
+    }
+
+    private void completeAppliedWaiter(long appliedIndex) {
+        CompletableFuture<Void> waiter = appliedWaiters.remove(appliedIndex);
+        if (waiter != null) {
+            waiter.complete(null);
+        }
+    }
+
+    private void failAppliedWaiter(long appliedIndex, Throwable cause) {
+        CompletableFuture<Void> waiter = appliedWaiters.remove(appliedIndex);
+        if (waiter != null) {
+            waiter.completeExceptionally(cause != null ? cause : new IllegalStateException("Raft apply failed"));
+        }
     }
 }
