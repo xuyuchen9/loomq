@@ -5,15 +5,14 @@ import com.loomq.replication.ReplicationRecord;
 import com.loomq.replication.ReplicationRecordType;
 import com.loomq.replication.client.ReplicaClient;
 import com.loomq.replication.server.ReplicaServer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Raft RPC Transport. Wraps existing ReplicaClient/ReplicaServer for Raft messages. */
 public class RaftTransport implements AutoCloseable {

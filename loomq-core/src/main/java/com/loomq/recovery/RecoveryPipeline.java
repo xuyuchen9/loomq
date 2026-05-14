@@ -7,9 +7,6 @@ import com.loomq.snapshot.SnapshotManager.SnapshotInfo;
 import com.loomq.snapshot.SnapshotManager.SnapshotRestoreResult;
 import com.loomq.spi.WalAccessor;
 import com.loomq.store.IntentStore;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.nio.file.Path;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -17,6 +14,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 恢复管线。

@@ -4,16 +4,15 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.spi.DeliveryContext;
 import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.RedeliveryDecider;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import reactor.core.publisher.Mono;
-import reactor.netty.http.client.HttpClient;
-
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.concurrent.CompletableFuture;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import reactor.core.publisher.Mono;
+import reactor.netty.http.client.HttpClient;
 
 /**
  * Netty 异步 HTTP 投递处理器。

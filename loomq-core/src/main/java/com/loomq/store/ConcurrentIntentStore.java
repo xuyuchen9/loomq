@@ -2,9 +2,6 @@ package com.loomq.store;
 
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
@@ -14,6 +11,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 基于 ConcurrentHashMap 的 Intent 内存存储。

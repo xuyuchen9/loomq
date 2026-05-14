@@ -6,13 +6,12 @@ import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.storage.RocksDBIntentStore;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Random;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 @Tag("benchmark")
 public class StorageBenchmark {

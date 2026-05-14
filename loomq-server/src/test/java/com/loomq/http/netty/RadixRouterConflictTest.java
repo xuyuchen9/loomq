@@ -1,12 +1,11 @@
 package com.loomq.http.netty;
 
-import io.netty.handler.codec.http.HttpMethod;
-import org.junit.jupiter.api.Test;
-
-import java.util.Map;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+
+import io.netty.handler.codec.http.HttpMethod;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
 
 /**
  * 测试路由冲突场景

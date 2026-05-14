@@ -3,9 +3,6 @@ package com.loomq.snapshot;
 import com.loomq.domain.intent.Intent;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.store.IntentStore;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -27,6 +24,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Snapshot 管理器。

@@ -1,9 +1,8 @@
 package com.loomq.http.netty;
 
 import io.netty.handler.codec.http.HttpMethod;
-import org.junit.jupiter.api.Test;
-
 import java.util.Map;
+import org.junit.jupiter.api.Test;
 
 /**
  * 调试路由器
