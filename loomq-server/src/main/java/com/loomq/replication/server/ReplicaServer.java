@@ -196,6 +196,12 @@ public class ReplicaServer {
                 workerGroup.shutdownGracefully();
             }
 
+            primaryChannel.set(null);
+            serverChannel = null;
+            bossGroup = null;
+            workerGroup = null;
+            lastHeartbeatTime.set(0);
+
             logger.info("ReplicaServer shutdown complete");
         }
     }

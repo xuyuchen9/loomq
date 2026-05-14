@@ -341,11 +341,17 @@ public class ReplicationManager implements AutoCloseable {
 
         if (replicaClient != null) {
             replicaClient.shutdown();
+            replicaClient = null;
         }
 
         if (replicaServer != null) {
             replicaServer.shutdown();
+            replicaServer = null;
         }
+
+        role.set(ReplicaRole.FOLLOWER);
+        lastReplicatedOffset.set(-1);
+        lastAckedOffset.set(-1);
 
         logger.info("ReplicationManager closed");
     }

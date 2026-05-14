@@ -106,6 +106,9 @@ public class ReplicaClient {
             return CompletableFuture.failedFuture(
                 new IllegalStateException("Client is shutdown"));
         }
+        if (isConnected()) {
+            return CompletableFuture.completedFuture(null);
+        }
 
         // A single event loop is enough for one outbound Raft connection.
         eventLoopGroup = new NioEventLoopGroup(EVENT_LOOP_THREADS);
@@ -136,6 +139,10 @@ public class ReplicaClient {
             ChannelFuture future = bootstrap.connect(replicaHost, replicaPort).sync();
             channel = future.channel();
             connected.set(true);
+            lastReplicatedOffset.set(-1);
+            lastAckedOffset.set(-1);
+            lastHeartbeat.set(null);
+            lastHeartbeatTime = 0;
 
             logger.info("Connected to replica at {}:{}", replicaHost, replicaPort);
             return CompletableFuture.completedFuture(null);
@@ -157,7 +164,8 @@ public class ReplicaClient {
      * @return CompletableFuture 在收到 ACK 或超时后完成
      */
     public CompletableFuture<Ack> send(ReplicationRecord record) {
-        if (!connected.get() || channel == null || !channel.isActive()) {
+        Channel ch = channel;
+        if (!connected.get() || ch == null || !ch.isActive()) {
             return CompletableFuture.failedFuture(
                 new IllegalStateException("Not connected to replica"));
         }
@@ -173,11 +181,18 @@ public class ReplicaClient {
         }
 
         // 超时后返回项目自己的 TIMEOUT ACK，而不是抛 Java 超时异常
-        ScheduledFuture<?> timeoutFuture = eventLoopGroup.schedule(() -> {
-            if (future.complete(Ack.timeout(offset))) {
-                logger.debug("ACK timeout for offset={}", offset);
-            }
-        }, ackTimeoutMs, TimeUnit.MILLISECONDS);
+        ScheduledFuture<?> timeoutFuture;
+        try {
+            timeoutFuture = ch.eventLoop().schedule(() -> {
+                if (future.complete(Ack.timeout(offset))) {
+                    logger.debug("ACK timeout for offset={}", offset);
+                }
+            }, ackTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (RuntimeException e) {
+            pendingAcks.remove(offset, future);
+            future.completeExceptionally(e);
+            return future;
+        }
 
         future.whenComplete((ack, ex) -> {
             timeoutFuture.cancel(false);
@@ -185,7 +200,7 @@ public class ReplicaClient {
         });
 
         // 发送记录
-        channel.writeAndFlush(record).addListener(writeFuture -> {
+        ch.writeAndFlush(record).addListener(writeFuture -> {
             if (!writeFuture.isSuccess()) {
                 future.completeExceptionally(writeFuture.cause());
             }
@@ -215,6 +230,13 @@ public class ReplicaClient {
                 eventLoopGroup.shutdownGracefully();
             }
 
+            channel = null;
+            eventLoopGroup = null;
+            lastReplicatedOffset.set(-1);
+            lastAckedOffset.set(-1);
+            lastHeartbeat.set(null);
+            lastHeartbeatTime = 0;
+
             // 完成所有待处理的请求
             pendingAcks.forEach((offset, future) -> {
                 if (!future.isDone()) {
@@ -238,6 +260,10 @@ public class ReplicaClient {
             eventLoopGroup.shutdownGracefully();
             eventLoopGroup = null;
         }
+        lastReplicatedOffset.set(-1);
+        lastAckedOffset.set(-1);
+        lastHeartbeat.set(null);
+        lastHeartbeatTime = 0;
     }
 
     /**
@@ -358,9 +384,26 @@ public class ReplicaClient {
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {
             logger.warn("Connection to replica closed");
             connected.set(false);
+            channel = null;
+            boolean intentionalShutdown = shutdown.get();
+            if (eventLoopGroup != null) {
+                eventLoopGroup.shutdownGracefully();
+                eventLoopGroup = null;
+            }
+            lastReplicatedOffset.set(-1);
+            lastAckedOffset.set(-1);
+            lastHeartbeat.set(null);
+            lastHeartbeatTime = 0;
+
+            pendingAcks.forEach((offset, future) -> {
+                if (!future.isDone()) {
+                    future.completeExceptionally(new IllegalStateException("Connection closed"));
+                }
+            });
+            pendingAcks.clear();
 
             // 通知错误
-            if (errorCallback != null) {
+            if (!intentionalShutdown && errorCallback != null) {
                 errorCallback.accept(new IllegalStateException("Connection closed"));
             }
 
