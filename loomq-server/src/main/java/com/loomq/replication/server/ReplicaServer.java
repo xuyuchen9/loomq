@@ -42,6 +42,8 @@ import java.util.function.Consumer;
 public class ReplicaServer {
 
     private static final Logger logger = LoggerFactory.getLogger(ReplicaServer.class);
+    private static final int BOSS_THREADS = 1;
+    private static final int WORKER_THREADS = 1;
 
     // 配置
     private final String nodeId;
@@ -117,8 +119,10 @@ public class ReplicaServer {
     }
 
     private void doStart(CompletableFuture<Void> startedFuture) {
-        bossGroup = new NioEventLoopGroup(1);
-        workerGroup = new NioEventLoopGroup();
+        // Raft RPC traffic is tiny; keep the event loop footprint small so test
+        // runners do not spend memory/CPU on idle Netty workers.
+        bossGroup = new NioEventLoopGroup(BOSS_THREADS);
+        workerGroup = new NioEventLoopGroup(WORKER_THREADS);
 
         try {
             ServerBootstrap bootstrap = new ServerBootstrap();
@@ -191,6 +195,12 @@ public class ReplicaServer {
             if (workerGroup != null) {
                 workerGroup.shutdownGracefully();
             }
+
+            primaryChannel.set(null);
+            serverChannel = null;
+            bossGroup = null;
+            workerGroup = null;
+            lastHeartbeatTime.set(0);
 
             logger.info("ReplicaServer shutdown complete");
         }

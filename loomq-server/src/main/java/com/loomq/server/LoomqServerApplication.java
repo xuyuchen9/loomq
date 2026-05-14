@@ -3,10 +3,6 @@ package com.loomq.server;
 import com.loomq.LoomqEngine;
 import com.loomq.callback.HttpCallbackHandler;
 import com.loomq.callback.NettyHttpDeliveryHandler;
-import com.loomq.cluster.ClusterManager;
-import com.loomq.cluster.FailoverController;
-import com.loomq.cluster.ReplicaRole;
-import com.loomq.cluster.ReplicationEndpoints;
 import com.loomq.common.MetricsCollector;
 import com.loomq.config.LoomqConfig;
 import com.loomq.config.ServerConfig;
@@ -50,6 +46,7 @@ public class LoomqServerApplication {
         MetricsCollector.getInstance().setWalDataDir(dataDir);
         MetricsCollector.getInstance().setSchedulerMaxPendingIntents(config.getSchedulerConfig().maxPendingIntents());
         logRuntimeConfiguration(config, nodeId, dataDir, walConfig);
+        validateSupportedStartupModes();
 
         HttpCallbackHandler callbackHandler = new HttpCallbackHandler();
         LoomqEngine engine = LoomqEngine.builder()
@@ -91,56 +88,6 @@ public class LoomqServerApplication {
             raftNode = null;
         }
 
-        // ---- 集群/复制模式（可选）----
-        final ClusterManager clusterManager;
-        final com.loomq.replication.ReplicationManager replicationManager;
-        final FailoverController failoverController;
-
-        boolean clusterEnabled = Boolean.parseBoolean(
-            resolveSetting("LOOMQ_CLUSTER_ENABLED", "loomq.cluster.enabled", "false"));
-        if (clusterEnabled) {
-            String replicaHost = resolveSetting("LOOMQ_REPLICA_HOST", "loomq.replica.host", "localhost");
-            int replicaPort = Integer.parseInt(
-                resolveSetting("LOOMQ_REPLICA_PORT", "loomq.replica.port", "7929"));
-            String role = resolveSetting("LOOMQ_ROLE", "loomq.role", "primary");
-
-            // 复制管理器
-            replicationManager = new com.loomq.replication.ReplicationManager(nodeId);
-            com.loomq.replication.RecordApplier applier =
-                new com.loomq.replication.RecordApplier(engine.getIntentStore());
-            applier.setScheduler(engine.getScheduler());
-            replicationManager.setRecordApplier(applier);
-
-            // 角色初始化
-            if ("primary".equalsIgnoreCase(role)) {
-                replicationManager.promoteToPrimary(replicaHost, replicaPort).join();
-            } else {
-                replicationManager.demoteToReplica(replicaHost, replicaPort).join();
-            }
-
-            // 集群管理器（分片路由）
-            clusterManager = ClusterManager.singleNode(serverConfig.port());
-            try {
-                clusterManager.start();
-            } catch (Exception e) {
-                logger.warn("ClusterManager start failed (non-fatal)", e);
-            }
-
-            // Failover 控制器
-            ReplicationEndpoints endpoints = new ReplicationEndpoints(replicaHost, replicaPort, replicaHost, replicaPort);
-            failoverController = new FailoverController(
-                nodeId, "shard-0", ReplicaRole.FOLLOWER, 1,
-                30000, 0.5, endpoints);
-            failoverController.setReplicationManager(replicationManager);
-            failoverController.start();
-
-            logger.info("Replication enabled: role={}, replica={}:{}", role, replicaHost, replicaPort);
-        } else {
-            clusterManager = null;
-            replicationManager = null;
-            failoverController = null;
-        }
-
         RadixRouter router = new RadixRouter();
         new IntentHandler(engine).register(router);
         registerSystemRoutes(router, engine);
@@ -161,22 +108,8 @@ public class LoomqServerApplication {
                 logger.warn("Error while closing callback handler", e);
             }
 
-            // 关闭复制组件
             if (raftNode != null) {
                 raftNode.close();
-            }
-            if (failoverController != null) {
-                failoverController.close();
-            }
-            if (replicationManager != null) {
-                try {
-                    replicationManager.close();
-                } catch (Exception e) {
-                    logger.warn("Error closing replication manager", e);
-                }
-            }
-            if (clusterManager != null) {
-                clusterManager.stop();
             }
 
             try {
@@ -264,6 +197,16 @@ public class LoomqServerApplication {
         }
 
         return fallback;
+    }
+
+    static void validateSupportedStartupModes() {
+        boolean legacyReplicationEnabled = Boolean.parseBoolean(
+            resolveSetting("LOOMQ_CLUSTER_ENABLED", "loomq.cluster.enabled", "false"));
+        if (legacyReplicationEnabled) {
+            throw new IllegalStateException(
+                "Legacy cluster/replication mode is no longer supported. " +
+                    "Enable Raft with LOOMQ_RAFT_ENABLED and LOOMQ_RAFT_PEERS instead.");
+        }
     }
 
     private static List<String> parseRaftPeerIds(String peersSpec, String selfNodeId) {

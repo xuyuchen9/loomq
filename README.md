@@ -28,7 +28,7 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 | Category | Examples |
 |----------|----------|
 | **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics, pluggable storage (in-memory + RocksDB), WAL segment rotation with snapshot compaction, IntentObserver lifecycle hooks |
-| **Beta** | Raft consensus, replication, shard routing, failover, primary-backup cluster mode |
+| **Beta** | Raft consensus, replication, shard routing, failover |
 | **Not yet committed** | distributed coordination primitives, lock/lease semantics |
 
 ---

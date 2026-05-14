@@ -62,7 +62,7 @@ The current standalone API is intent-based.
 |-------|------|
 | `executeAt` | **Required.** Must be in the future |
 | `deadline` | Optional. If set, must be after `executeAt` |
-| `shardKey` | Optional. Used for shard routing in cluster mode |
+| `shardKey` | Optional. Used for shard routing in distributed deployments |
 | `callback.url` | Required when `callback` is provided |
 | `precisionTier` | Optional. Defaults to `STANDARD`. One of: ULTRA, FAST, HIGH, STANDARD, ECONOMY |
 | `ackLevel` | Optional. Defaults to `ASYNC`. One of: ASYNC, DURABLE, REPLICATED |
