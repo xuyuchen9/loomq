@@ -93,19 +93,6 @@ recovery:
   checkpoint_interval_sec: 60
 
 # -----------------------------------------------------
-# Cluster Configuration
-# -----------------------------------------------------
-cluster:
-  enabled: false
-  shard_index: ${LOOMQ_SHARD_INDEX:0}
-  total_shards: ${LOOMQ_TOTAL_SHARDS:1}
-  nodes: ${LOOMQ_NODES:}
-  heartbeat_interval_ms: 5000
-  heartbeat_timeout_ms: 15000
-  flapping_threshold: 3
-  flapping_window_ms: 30000
-
-# -----------------------------------------------------
 # Security Configuration
 # -----------------------------------------------------
 security:

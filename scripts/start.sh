@@ -20,6 +20,8 @@ JVM_GC="${JVM_GC:-ZGC}"
 JVM_GC_PAUSE="${JVM_GC_PAUSE:-10}"
 LOOMQ_PORT="${LOOMQ_SERVER_PORT:-${LOOMQ_PORT:-7928}}"
 LOOMQ_HOST="${LOOMQ_SERVER_HOST:-${LOOMQ_HOST:-0.0.0.0}}"
+LOOMQ_NODE_ID="${LOOMQ_NODE_ID:-node-1}"
+LOOMQ_DATA_DIR="${LOOMQ_DATA_DIR:-./data/wal}"
 
 # Function to print colored messages
 print_info() {
@@ -63,10 +65,9 @@ check_jar() {
 
 # Function to create data directory
 setup_directories() {
-    DATA_DIR="${LOOMQ_DATA_DIR:-./data/wal}"
-    if [ ! -d "$DATA_DIR" ]; then
-        print_info "Creating data directory: $DATA_DIR"
-        mkdir -p "$DATA_DIR"
+    if [ ! -d "$LOOMQ_DATA_DIR" ]; then
+        print_info "Creating data directory: $LOOMQ_DATA_DIR"
+        mkdir -p "$LOOMQ_DATA_DIR"
     fi
 }
 
@@ -80,9 +81,10 @@ show_config() {
     echo "  JVM Heap:        $JVM_XMS / $JVM_XMX"
     echo "  GC Type:         $JVM_GC"
     echo "  Max GC Pause:    ${JVM_GC_PAUSE}ms"
+    echo "  Node ID:         $LOOMQ_NODE_ID"
     echo "  Server Host:     $LOOMQ_HOST"
     echo "  Server Port:     $LOOMQ_PORT"
-    echo "  Data Directory:  ${LOOMQ_DATA_DIR:-./data/wal}"
+    echo "  Data Directory:  $LOOMQ_DATA_DIR"
     echo "=========================================="
     echo ""
 }
@@ -97,7 +99,9 @@ start_loomq() {
     JVM_ARGS="${JVM_ARGS} -XX:MaxGCPauseMillis=${JVM_GC_PAUSE}"
 
     # System properties
-    SYS_PROPS="-Dloomq.server.host=${LOOMQ_HOST}"
+    SYS_PROPS="-Dloomq.node.id=${LOOMQ_NODE_ID}"
+    SYS_PROPS="${SYS_PROPS} -Dloomq.data.dir=${LOOMQ_DATA_DIR}"
+    SYS_PROPS="${SYS_PROPS} -Dloomq.server.host=${LOOMQ_HOST}"
     SYS_PROPS="${SYS_PROPS} -Dloomq.server.port=${LOOMQ_PORT}"
 
     # Add extra system properties if provided
@@ -140,6 +144,11 @@ Environment Variables:
   JVM_XMX              Maximum heap size (default: 2g)
   JVM_GC               Garbage collector: ZGC, G1GC, ParallelGC (default: ZGC)
   JVM_GC_PAUSE         Max GC pause target in ms (default: 10)
+  LOOMQ_NODE_ID        Logical node identifier (default: node-1)
+  LOOMQ_RAFT_ENABLED   Enable Raft mode (default: false)
+  LOOMQ_RAFT_NODE_ID   Raft node identifier (defaults to LOOMQ_NODE_ID)
+  LOOMQ_RAFT_PEERS     Raft peer list, e.g. node-1@host:7930,...
+  LOOMQ_RAFT_PORT      Raft RPC port (default: 7930)
   LOOMQ_PORT / LOOMQ_SERVER_PORT   Server port (default: 7928)
   LOOMQ_HOST / LOOMQ_SERVER_HOST   Server host (default: 0.0.0.0)
   LOOMQ_DATA_DIR       WAL data directory (default: ./data/wal)
@@ -152,8 +161,8 @@ Examples:
   # Start with custom heap size
   JVM_XMS=4g JVM_XMX=4g ./scripts/start.sh
 
-  # Start cluster node
-  LOOMQ_PORT=8081 LOOMQ_SHARD_INDEX=1 ./scripts/start.sh
+  # Start a Raft node
+  LOOMQ_NODE_ID=node-2 LOOMQ_RAFT_ENABLED=true ./scripts/start.sh
 
 Options:
   -h, --help    Show this help message

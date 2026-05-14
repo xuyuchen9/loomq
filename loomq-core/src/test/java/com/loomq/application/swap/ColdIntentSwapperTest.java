@@ -55,7 +55,7 @@ class ColdIntentSwapperTest {
         WalConfig config = new WalConfig(
             dataDir.toString(), 8, "batch", 100, false,
             "memory_segment", 8, 32, 64, 10, 4,
-            1, false, false, "localhost", 9090, 30000, false
+            1, false
         );
         walWriter = new SimpleWalWriter(config, "swap-test");
         walWriter.start();

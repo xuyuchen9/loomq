@@ -53,7 +53,7 @@ Parameters:
 
 Environment Variables:
   All parameters can also be set via environment variables with prefix:
-  JVM_XMS, JVM_XMX, JVM_GC, JVM_GC_PAUSE, LOOMQ_PORT or LOOMQ_SERVER_PORT, LOOMQ_HOST or LOOMQ_SERVER_HOST, LOOMQ_NODE_ID, LOOMQ_DATA_DIR
+  JVM_XMS, JVM_XMX, JVM_GC, JVM_GC_PAUSE, LOOMQ_PORT or LOOMQ_SERVER_PORT, LOOMQ_HOST or LOOMQ_SERVER_HOST, LOOMQ_NODE_ID, LOOMQ_DATA_DIR, LOOMQ_RAFT_ENABLED, LOOMQ_RAFT_NODE_ID, LOOMQ_RAFT_PEERS, LOOMQ_RAFT_PORT
 
 Examples:
   # Start with defaults
@@ -62,8 +62,9 @@ Examples:
   # Start with custom heap size
   .\scripts\start.ps1 -JVM_XMS 4g -JVM_XMX 4g
 
-  # Start cluster node
-  .\scripts\start.ps1 -Port 8081
+  # Start a Raft node
+  $env:LOOMQ_RAFT_ENABLED = "true"
+  .\scripts\start.ps1 -NodeId node-2
 
   # Using environment variables
   \$env:JVM_XMX = "4g"
@@ -117,6 +118,7 @@ function Show-Config {
     Write-Host "  JVM Heap:        $JVM_XMS / $JVM_XMX"
     Write-Host "  GC Type:         $JVM_GC"
     Write-Host "  Max GC Pause:    ${JVM_GC_PAUSE}ms"
+    Write-Host "  Node ID:         $NodeId"
     Write-Host "  Server Host:     $ListenHost"
     Write-Host "  Server Port:     $Port"
     Write-Host "  Data Directory:  $DataDir"

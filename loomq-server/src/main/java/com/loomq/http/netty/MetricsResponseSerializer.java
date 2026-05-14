@@ -55,6 +55,11 @@ public final class MetricsResponseSerializer {
     private static final byte[] FIELD_MAX_WAL_FLUSH_LATENCY = "\"maxWalFlushLatencyMs\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_WAL_PENDING_WRITES = "\"walPendingWrites\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_WAL_RING_BUFFER_SIZE = "\"walRingBufferSize\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_ROLE = "\"raftRole\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_TERM = "\"raftTerm\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_COMMIT_INDEX = "\"raftCommitIndex\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_LAST_APPLIED = "\"raftLastApplied\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_COMMIT_LAG = "\"raftCommitLag\"".getBytes(StandardCharsets.UTF_8);
 
     private MetricsResponseSerializer() {}
 
@@ -88,7 +93,12 @@ public final class MetricsResponseSerializer {
         first = writeDoubleField(buf, first, FIELD_AVG_WAL_FLUSH_LATENCY, snapshot.avgWalFlushLatencyMs());
         first = writeLongField(buf, first, FIELD_MAX_WAL_FLUSH_LATENCY, snapshot.maxWalFlushLatencyMs());
         first = writeLongField(buf, first, FIELD_WAL_PENDING_WRITES, snapshot.walPendingWrites());
-        writeLongField(buf, first, FIELD_WAL_RING_BUFFER_SIZE, snapshot.walRingBufferSize());
+        first = writeLongField(buf, first, FIELD_WAL_RING_BUFFER_SIZE, snapshot.walRingBufferSize());
+        first = writeStringField(buf, first, FIELD_RAFT_ROLE, snapshot.raftRole());
+        first = writeLongField(buf, first, FIELD_RAFT_TERM, snapshot.raftTerm());
+        first = writeLongField(buf, first, FIELD_RAFT_COMMIT_INDEX, snapshot.raftCommitIndex());
+        first = writeLongField(buf, first, FIELD_RAFT_LAST_APPLIED, snapshot.raftLastApplied());
+        writeLongField(buf, first, FIELD_RAFT_COMMIT_LAG, snapshot.raftCommitLag());
 
         buf.writeBytes(CLOSE_OBJECT);
     }
@@ -148,6 +158,12 @@ public final class MetricsResponseSerializer {
     private static boolean writeBooleanField(ByteBuf buf, boolean first, byte[] fieldName, boolean value) {
         writeFieldPrefix(buf, first, fieldName);
         ByteBufUtil.writeUtf8(buf, Boolean.toString(value));
+        return false;
+    }
+
+    private static boolean writeStringField(ByteBuf buf, boolean first, byte[] fieldName, String value) {
+        writeFieldPrefix(buf, first, fieldName);
+        writeQuotedString(buf, value);
         return false;
     }
 

@@ -8,7 +8,6 @@ This document describes the current codebase structure as of v0.9.0.
 flowchart TB
     Server["loomq-server"] --> Http["Netty HTTP / REST / webhook delivery"]
     Server --> Raft["RaftNode / LeaderElection / LogReplication / RaftTransport"]
-    Server --> Cluster["ClusterManager / ReplicationManager / FailoverController"]
     Server --> Engine["LoomqEngine bootstrap"]
 
     Engine --> Scheduler["PrecisionScheduler"]
@@ -42,7 +41,6 @@ flowchart TB
 - HTTP transport and routing: Netty server, REST handlers, JSON serialization
 - webhook delivery: `NettyHttpDeliveryHandler`, `HttpCallbackHandler`
 - Raft consensus wiring: leader election, log replication, snapshot install
-- optional cluster / failover orchestration
 - standalone bootstrap: `LoomqServerApplication`
 
 ## Runtime Flows
@@ -80,10 +78,10 @@ The kernel is designed to stay shell-friendly:
 - `CallbackHandler` - reports lifecycle events back to the host
 - `RedeliveryDecider` - decides whether to retry after failure
 - `IntentStore` - chooses between in-memory and durable local storage
-- Raft / cluster wiring stays in `loomq-server` so the embedded kernel remains reusable
+- Raft wiring stays in `loomq-server` so the embedded kernel remains reusable
 
 ## Configuration Path
 
-The standalone server loads configuration, prints a runtime summary, and passes the effective settings into `LoomqEngine`, Raft, and the cluster components.
+The standalone server loads configuration, prints a runtime summary, and passes the effective settings into `LoomqEngine` and the Raft components.
 
 For the canonical key list, see [Configuration Reference](../operations/CONFIGURATION.md).

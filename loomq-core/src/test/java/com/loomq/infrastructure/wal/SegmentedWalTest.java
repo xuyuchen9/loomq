@@ -26,8 +26,7 @@ class SegmentedWalTest {
         // 1MB segment for testing rotation
         WalConfig config = new WalConfig(
             dataDir.toString(), 1, "batch", 100, false, "memory_segment",
-            1, 8, 64, 10, 4, 1, false,
-            false, "localhost", 9090, 30000, false
+            1, 8, 64, 10, 4, 1, false
         );
         writer = new SimpleWalWriter(config, "seg-test");
     }

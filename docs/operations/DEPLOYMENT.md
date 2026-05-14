@@ -101,7 +101,7 @@ java -Xms2g -Xmx2g -XX:+UseZGC -jar loomq-server/target/loomq-server-0.9.0.jar
 
 Tune heap size according to your pending-intent target and WAL retention window.
 
-## Raft / Cluster Deployment
+## Raft Deployment
 
 Raft is enabled through the server process and should be deployed with stable node identities.
 
@@ -128,7 +128,7 @@ export LOOMQ_RAFT_PORT=7930
 ### Notes
 
 - Use a stable host name or IP for every node.
-- Open the Raft port between peers before starting the cluster.
+- Open the Raft port between peers before starting the Raft group.
 - Keep `LOOMQ_DATA_DIR` persistent so snapshots and WAL metadata survive restarts.
 
 ## Container Deployment
@@ -150,7 +150,7 @@ docker run -d \
 
 ### Docker Compose
 
-Use the repository `docker-compose.yml` for the single-node or multi-node stack.
+Use the repository `docker-compose.yml` for the single-node stack and optional monitoring profile.
 
 ## Kubernetes Deployment
 
@@ -197,11 +197,22 @@ spec:
           image: loomq:0.9.0
           ports:
             - containerPort: 7928
+            - containerPort: 7930
           env:
             - name: LOOMQ_NODE_ID
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: LOOMQ_RAFT_ENABLED
+              value: "true"
+            - name: LOOMQ_RAFT_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: LOOMQ_RAFT_PORT
+              value: "7930"
+            - name: LOOMQ_RAFT_PEERS
+              value: "loomq-0@loomq-0.loomq-headless:7930,loomq-1@loomq-1.loomq-headless:7930,loomq-2@loomq-2.loomq-headless:7930"
             - name: LOOMQ_DATA_DIR
               value: /data/wal
             - name: LOOMQ_SCHEDULER_MAX_PENDING_INTENTS

@@ -5,7 +5,7 @@ LoomQ 当前使用两层配置来源：
 1. `classpath:application.yml`
 2. `file:./config/application.yml`
 
-同时，少量环境变量或启动参数也会覆盖配置，例如 `LOOMQ_NODE_ID`、`LOOMQ_DATA_DIR`、`loomq.node.id` 和 `loomq.data.dir`。
+同时，少量环境变量或启动参数也会覆盖配置，例如 `LOOMQ_NODE_ID`、`LOOMQ_DATA_DIR`、`LOOMQ_RAFT_ENABLED`、`LOOMQ_RAFT_NODE_ID`、`LOOMQ_RAFT_PEERS`、`LOOMQ_RAFT_PORT`、`loomq.node.id`、`loomq.data.dir` 和 `loomq.raft.*`。
 
 ## 配置优先级
 
@@ -28,6 +28,16 @@ LoomQ 当前使用两层配置来源：
 | `server.virtual_threads` | `true` | 是否启用虚拟线程处理请求 | 默认开启 |
 | `server.max_request_size` | `10485760` | 请求体大小上限，字节 | 按回调体积上限设置 |
 | `server.thread_pool_size` | `200` | 非虚拟线程模式下的线程池大小 | 仅在关闭虚拟线程时使用 |
+
+### Identity / Raft
+
+| Key | 默认值 | 作用 | 生产建议 |
+|-----|--------|------|----------|
+| `nodeId` / `loomq.node.id` | `node-1` | 本地节点标识 | 与部署环境中的实例名保持稳定映射 |
+| `raft.enabled` / `loomq.raft.enabled` | `false` | 是否启用 Raft 模式 | Raft 部署应显式开启 |
+| `raft.nodeId` / `loomq.raft.nodeId` | `node-1` | Raft 本地节点 ID | 与 `nodeId` 保持一致更简单 |
+| `raft.peers` / `loomq.raft.peers` | 本机节点 ID | Raft peer 列表，支持 `peerId@host:port` | 多节点部署必须配置完整 peer 列表 |
+| `raft.port` / `loomq.raft.port` | `7930` | Raft RPC 监听端口 | 与防火墙和 peer 连接规划一致 |
 
 ### Netty
 
@@ -68,11 +78,6 @@ LoomQ 当前使用两层配置来源：
 | `wal.memory_segment.stripe_count` | `16` | 条带数量 | 影响等待和唤醒分布 |
 | `wal.memory_segment.min_batch_size` | `100` | 最小批量 | 与吞吐目标相关 |
 | `wal.memory_segment.adaptive_flush_enabled` | `true` | 自适应刷盘 | 建议保持开启 |
-| `wal.replication.enabled` | `false` | 复制是否开启 | 当前按实验能力看待 |
-| `wal.replication.replica_host` | `localhost` | 副本地址 | 仅在复制启用时有意义 |
-| `wal.replication.replica_port` | `9090` | 副本端口 | 仅在复制启用时有意义 |
-| `wal.replication.ack_timeout_ms` | `30000` | ACK 超时，毫秒 | 仅在复制启用时有意义 |
-| `wal.replication.require_replicated_ack` | `false` | 是否必须复制 ACK | 仅在复制启用时有意义 |
 
 ### Scheduler
 
@@ -120,11 +125,10 @@ AdapTBF 跨层借用约束（当前硬编码）：
 | `recovery.auto_start` | `true` | 启动时是否自动恢复 |
 | `recovery.checkpoint_interval_sec` | `60` | 检查点间隔，秒 |
 
-### Cluster / Security / Metrics / Health / Logging
+### Security / Metrics / Health / Logging
 
-这些项已经在配置文件里预留，适合后续扩展：
+这些项当前都在配置文件里支持：
 
-- `cluster.*`
 - `security.*`
 - `metrics.*`
 - `health.*`

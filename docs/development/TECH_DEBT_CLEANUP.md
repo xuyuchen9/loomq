@@ -1,4 +1,4 @@
-# 技术债清理记录
+# 技术债清理记录（归档）
 
 > 开始时间: 2026-04-10
 > 执行者: Claude Code
@@ -7,9 +7,9 @@
 > Historical note: this document records one specific cleanup pass from an earlier stage of the project.
 > It is preserved for context and does not describe the current codebase state verbatim.
 
-## 背景
+## 历史背景
 
-项目经过多次迭代，存在大量重复/废弃代码：
+历史上项目经过多次迭代，存在大量重复/废弃代码：
 - 32 个技术债问题（9 高、13 中、10 低）
 - 双引擎并存（V1/V2）
 - 双 Metrics 收集器

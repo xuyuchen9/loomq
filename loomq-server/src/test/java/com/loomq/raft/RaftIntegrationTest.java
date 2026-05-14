@@ -120,7 +120,7 @@ class RaftIntegrationTest {
         dirs.add(dir);
 
         WalConfig cfg = new WalConfig(dir.toString(), 1, "batch", 100, false, "memory_segment",
-            1, 8, 64, 10, 4, 1, false, false, "localhost", 9090, 30000, false);
+            1, 8, 64, 10, 4, 1, false);
         SimpleWalWriter wal = new SimpleWalWriter(cfg, "raft-test");
         IntentStore store = new ConcurrentIntentStore();
 

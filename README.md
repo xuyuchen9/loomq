@@ -28,7 +28,7 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 | Category | Examples |
 |----------|----------|
 | **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics, pluggable storage (in-memory + RocksDB), WAL segment rotation with snapshot compaction, IntentObserver lifecycle hooks |
-| **Beta** | Raft consensus, replication, shard routing, failover |
+| **Beta** | Raft leader election, log replication, snapshot catch-up |
 | **Not yet committed** | distributed coordination primitives, lock/lease semantics |
 
 ---
@@ -322,7 +322,7 @@ loomq-core (embeddable kernel, zero HTTP/JSON deps)
 |-----------|--------|---------|
 | `DeliveryHandler` | `deliverAsync(Intent)` → `CompletableFuture<DeliveryResult>` | How intents are dispatched (HTTP, MQ, local) |
 | `IntentObserver` | `onScheduled/onDelivered/onDeadLettered/onExpired/onDeliveryFailed` | Lifecycle event observation for service layers |
-| `WalAccessor` | `readRecord/listSegments/truncateBefore` | WAL read access for replication and recovery |
+| `WalAccessor` | `readRecord/listSegments/truncateBefore` | WAL read access for recovery and Raft snapshot boundary management |
 | `CallbackHandler` | `onIntentEvent(Intent, EventType, Throwable)` | Lifecycle event notification |
 | `RedeliveryDecider` | `shouldRedeliver(DeliveryContext)` → `boolean` | Custom retry policy |
 
@@ -352,7 +352,7 @@ See [Configuration Reference](docs/operations/CONFIGURATION.md) for the complete
 # Build and run single node
 make docker-build && make docker-run
 
-# Cluster + monitoring stack (Prometheus + Grafana)
+# Single-node + monitoring stack (Prometheus + Grafana)
 docker-compose --profile full up -d
 ```
 
@@ -385,14 +385,14 @@ make docker-build   # Build Docker image
 - [x] Pluggable storage engine: `IntentStore` interface + `ConcurrentIntentStore` + `RocksDBIntentStore`
 - [x] `IntentObserver` SPI for lifecycle hooks
 - [x] `WalAccessor` SPI for WAL read/truncation
-- [x] Primary-backup replication integration
+- [x] Raft leader election and log replication
 - [x] Observable backpressure (no silent drops)
 - [x] Expiry index: O(log n) expired intent scanning
 - [x] Benchmark suite: WAL throughput, storage comparison, observer overhead
 
 ### Future
-- Multi-node clustering with Raft consensus
-- **Loomqex**: lock/lease semantics built on the stable kernel boundary
+- Dynamic Raft membership management
+- Linearizable leader-read path
 - Kubernetes operator
 - Web-based management console
 

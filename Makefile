@@ -24,8 +24,7 @@ help:
 	@echo "  run-jar              - Run the existing JAR"
 	@echo "  docker-build         - Build Docker image"
 	@echo "  docker-run           - Run Docker container (single node)"
-	@echo "  docker-run-cluster   - Run Docker compose cluster"
-	@echo "  docker-compose-up    - Start with docker-compose"
+	@echo "  docker-compose-up    - Start the single-node docker-compose stack"
 	@echo "  docker-compose-down  - Stop docker-compose"
 	@echo "  docker-compose-logs  - View docker-compose logs"
 	@echo "  format               - Format code (if configured)"
@@ -80,9 +79,6 @@ docker-run: docker-build
 		-e JVM_XMS=2g \
 		-e JVM_XMX=2g \
 		$(DOCKER_IMAGE)
-
-docker-run-cluster: docker-build
-	$(DOCKER_COMPOSE) --profile cluster up -d
 
 docker-compose-up: docker-build
 	$(DOCKER_COMPOSE) up -d
