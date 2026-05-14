@@ -8,7 +8,7 @@ import com.loomq.domain.intent.ExpiredAction;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.BeforeEach;
@@ -123,7 +123,7 @@ class IntentResponseSerializerTest {
         intent.setDeadline(Instant.parse("2026-04-10T13:30:45Z"));
         intent.setExpiredAction(ExpiredAction.DEAD_LETTER);
         intent.setPrecisionTier(PrecisionTier.HIGH);
-        intent.setAckLevel(AckLevel.DURABLE);
+        intent.setAckMode(AckMode.DURABLE);
         intent.setLastDeliveryId("delivery-1");
         intent.incrementAttempts();
         intent.transitionTo(IntentStatus.SCHEDULED);

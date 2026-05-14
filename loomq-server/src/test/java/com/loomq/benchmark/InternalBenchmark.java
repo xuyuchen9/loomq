@@ -11,6 +11,7 @@ import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.infrastructure.wal.SimpleWalWriter;
 import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.DeliveryHandler.DeliveryResult;
+import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
 
 import java.nio.file.Files;
@@ -47,7 +48,7 @@ public class InternalBenchmark {
         System.out.println("线程数: " + threads + ", 时长: " + durationSec + " 秒");
         System.out.println();
 
-        IntentStore throughputStore = new IntentStore();
+        IntentStore throughputStore = new ConcurrentIntentStore();
         AtomicInteger count = new AtomicInteger(0);
         CountDownLatch latch = new CountDownLatch(threads);
         long startTime = System.currentTimeMillis();
@@ -84,7 +85,7 @@ public class InternalBenchmark {
         System.out.println("保留数量: " + retainedCount);
         pauseForGc();
         long before = usedHeapBytes();
-        IntentStore memoryStore = new IntentStore();
+        IntentStore memoryStore = new ConcurrentIntentStore();
         List<Intent> retained = new ArrayList<>(retainedCount);
 
         for (int i = 0; i < retainedCount; i++) {
@@ -118,7 +119,7 @@ public class InternalBenchmark {
                 "memory_segment", 8, 128, 64, 10, 4,
                 1, false, false, "localhost", 9090, 30000, false
             );
-            IntentStore coldStore = new IntentStore();
+            IntentStore coldStore = new ConcurrentIntentStore();
             SimpleWalWriter coldWal = new SimpleWalWriter(walCfg, "cold-bench");
             coldWal.start();
 

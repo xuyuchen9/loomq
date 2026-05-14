@@ -6,8 +6,9 @@ import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 import com.loomq.spi.DeliveryHandler;
+import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,7 +71,7 @@ public class EmbeddedDemo {
         logger.info("╚════════════════════════════════════════════════════════╝");
 
         // 1. 创建存储
-        intentStore = new IntentStore();
+        intentStore = new ConcurrentIntentStore();
         logger.info("[1/3] IntentStore initialized");
 
         // 2. 创建调度器
@@ -114,7 +115,7 @@ public class EmbeddedDemo {
         intent.setExecuteAt(Instant.now().plusMillis(delayMs));
         intent.setDeadline(Instant.now().plusMillis(delayMs + 60000)); // 默认1分钟过期
         intent.setPrecisionTier(tier);
-        intent.setAckLevel(AckLevel.ASYNC); // 嵌入式模式使用 ASYNC
+        intent.setAckMode(AckMode.ASYNC); // 嵌入式模式使用 ASYNC
 
         // 使用特殊 URL 格式标识嵌入式回调
         String callbackId = "embedded://" + intent.getIntentId();

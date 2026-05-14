@@ -7,6 +7,7 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.spi.DeliveryHandler;
+import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -48,7 +49,7 @@ class BackPressureTest {
 
     @BeforeEach
     void setUp() {
-        intentStore = new IntentStore();
+        intentStore = new ConcurrentIntentStore();
         scheduler = new PrecisionScheduler(intentStore, mockHandler, null);
         metrics = MetricsCollector.getInstance();
         scheduler.start();

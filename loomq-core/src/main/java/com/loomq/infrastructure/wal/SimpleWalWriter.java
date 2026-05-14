@@ -1,6 +1,7 @@
 package com.loomq.infrastructure.wal;
 
 import com.loomq.config.WalConfig;
+import com.loomq.spi.WalAccessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,62 +13,67 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.zip.CRC32;
 
 /**
- * 极简 WAL 写入器 - 第一性原理实现
+ * 极简 WAL 写入器 — 段文件轮转支持。
  *
  * 格式：| Length (4B) | Payload (N) | CRC32 (4B) |
- * 总计：8 字节固定头部开销
+ * 总计：8 字节固定头部开销。
+ *
+ * 段文件：wal-000001.bin, wal-000002.bin, ... 每个段独立 mmap。
+ * Snapshot 后截断旧段释放磁盘空间。
  *
  * 核心设计：
  * 1. 不做字段解析，只做字节搬运
  * 2. 批量刷盘摊平 fsync 开销
  * 3. MemorySegment 零拷贝写入
- * 4. 分段条件变量精确唤醒
+ * 4. 段文件轮转，支持截断
+ * 5. 实现 WalAccessor SPI 供服务层读取
  *
  * @author loomq
  * @since v0.6.1
  */
-public class SimpleWalWriter implements AutoCloseable {
+public class SimpleWalWriter implements AutoCloseable, WalAccessor {
 
     private static final Logger logger = LoggerFactory.getLogger(SimpleWalWriter.class);
 
     // ========== 格式常量 ==========
-    private static final int HEADER_SIZE = 4;  // Length field
-    private static final int CHECKSUM_SIZE = 4; // CRC32
+    private static final int HEADER_SIZE = 4;
+    private static final int CHECKSUM_SIZE = 4;
     private static final int RECORD_OVERHEAD = HEADER_SIZE + CHECKSUM_SIZE;
 
-    /** WAL record overhead per entry: 4B length + 4B CRC32 = 8 bytes. */
     public static final int RECORD_FIXED_OVERHEAD = HEADER_SIZE + CHECKSUM_SIZE;
 
-    /** Calculate total WAL record length for a given payload size. */
     public static int recordLength(int payloadLength) {
         return RECORD_FIXED_OVERHEAD + payloadLength;
     }
 
     // ========== 默认配置 ==========
-    private static final long DEFAULT_INITIAL_SIZE = 64 * 1024 * 1024;  // 64MB
-    private static final long DEFAULT_MAX_SIZE = 1024 * 1024 * 1024;    // 1GB
-    private static final long DEFAULT_FLUSH_THRESHOLD = 64 * 1024;      // 64KB
+    private static final long DEFAULT_SEGMENT_SIZE = 256 * 1024 * 1024L; // 256MB per segment
+    private static final long DEFAULT_FLUSH_THRESHOLD = 64 * 1024;       // 64KB
     private static final long DEFAULT_FLUSH_INTERVAL_MS = 10;
 
     // ========== 文件管理 ==========
     private final Path dataDir;
-    private final Path walPath;
-    private final long initialSize;
-    private final long maxSize;
+    private final String shardId;
+    private final long segmentSize;        // 每段最大字节
     private final Arena arena;
-    private FileChannel fileChannel;
-    private MemorySegment mappedRegion;
-    private volatile long mappedSize;
-    private int segmentSeq = 0;
 
-    // ========== 写入状态 ==========
+    // ========== 段文件管理 ==========
+    private final List<Segment> segments = new CopyOnWriteArrayList<>();
+    private volatile Segment currentSegment;
+    private int nextSegmentIndex = 1;
+
+    // ========== 写入状态（全局偏移）==========
     private final AtomicLong writePosition = new AtomicLong(0);
     private volatile long flushedPosition = 0;
     private volatile long lastFsyncTimestampMs = 0;
@@ -108,61 +114,115 @@ public class SimpleWalWriter implements AutoCloseable {
         }
     }
 
+    /**
+     * 单个 WAL 段。
+     */
+    private static class Segment {
+        final int index;
+        final Path path;
+        final long startGlobalOffset;  // 全局偏移起始
+        final long size;               // 文件大小（bytes）
+        FileChannel channel;
+        MemorySegment mappedRegion;
+        volatile boolean closed;
+
+        Segment(int index, Path path, long startGlobalOffset, long size) {
+            this.index = index;
+            this.path = path;
+            this.startGlobalOffset = startGlobalOffset;
+            this.size = size;
+        }
+
+        /** 全局偏移的最后位置（不含） */
+        long endGlobalOffset() {
+            return startGlobalOffset + size;
+        }
+
+        /** 全局偏移转段内偏移 */
+        long toLocal(long globalPos) {
+            return globalPos - startGlobalOffset;
+        }
+    }
+
+    // ========== 构造函数 ==========
+
     public SimpleWalWriter(WalConfig config, String shardId) throws IOException {
         this.dataDir = Path.of(config.dataDir(), shardId);
-        this.initialSize = config.memorySegmentInitialSizeMb() * 1024L * 1024L;
-        this.maxSize = config.memorySegmentMaxSizeMb() * 1024L * 1024L;
+        this.shardId = shardId;
+        this.segmentSize = config.memorySegmentInitialSizeMb() * 1024L * 1024L;
         this.flushThreshold = config.memorySegmentFlushThresholdKb() * 1024L;
         this.flushIntervalNs = config.memorySegmentFlushIntervalMs() * 1_000_000L;
 
-        // 初始化分段条件变量
         this.flushConditions = new StripedCondition(config.memorySegmentStripeCount());
-
-        // 创建目录
-        Files.createDirectories(dataDir);
-
-        // 初始化 Arena
         this.arena = Arena.ofShared();
 
-        // 创建 WAL 文件路径（简化：单段文件）
-        this.walPath = dataDir.resolve("wal.bin");
+        Files.createDirectories(dataDir);
 
-        // 打开 WAL 文件
-        openWalFile();
+        // 创建首个段
+        rotateToNewSegment(0);
 
-        // 创建刷盘线程（延迟启动）
         this.flushThread = Thread.ofPlatform()
             .name("wal-flusher-" + shardId)
             .daemon(true)
             .unstarted(this::flushLoop);
 
-        logger.info("SimpleWalWriter created: path={}, initialSize={}MB, flushThreshold={}KB",
-            walPath, initialSize / 1024 / 1024, flushThreshold / 1024);
+        logger.info("SimpleWalWriter created: dir={}, segmentSize={}MB, flushThreshold={}KB",
+            dataDir, segmentSize / 1024 / 1024, flushThreshold / 1024);
     }
 
-    private void openWalFile() throws IOException {
-        // 创建文件
-        this.fileChannel = FileChannel.open(walPath,
+    // ========== 段文件管理 ==========
+
+    private void rotateToNewSegment(long startGlobalOffset) throws IOException {
+        String filename = String.format("wal-%06d.bin", nextSegmentIndex);
+        Path path = dataDir.resolve(filename);
+
+        FileChannel channel = FileChannel.open(path,
             StandardOpenOption.CREATE,
             StandardOpenOption.READ,
             StandardOpenOption.WRITE);
+        channel.truncate(segmentSize);
 
-        // 预分配空间
-        fileChannel.truncate(initialSize);
+        MemorySegment mapped = channel.map(FileChannel.MapMode.READ_WRITE, 0, segmentSize, arena);
 
-        // 内存映射
-        this.mappedRegion = fileChannel.map(FileChannel.MapMode.READ_WRITE, 0, initialSize, arena);
-        this.mappedSize = initialSize;
-        this.writePosition.set(0);
-        this.flushedPosition = 0;
-        this.lastFsyncTimestampMs = System.currentTimeMillis();
+        Segment seg = new Segment(nextSegmentIndex, path, startGlobalOffset, segmentSize);
+        seg.channel = channel;
+        seg.mappedRegion = mapped;
 
-        logger.info("Opened WAL file: {}", walPath);
+        segments.add(seg);
+        currentSegment = seg;
+        nextSegmentIndex++;
+
+        logger.debug("Created WAL segment: {} (global offset {})", filename, startGlobalOffset);
     }
 
-    /**
-     * 启动写入器
-     */
+    /** 确保当前段有足够空间，必要时轮转 */
+    private void ensureSegmentCapacity(long globalEndPos) {
+        Segment seg = currentSegment;
+        if (globalEndPos <= seg.endGlobalOffset()) {
+            return;
+        }
+
+        synchronized (this) {
+            seg = currentSegment;
+            if (globalEndPos <= seg.endGlobalOffset()) {
+                return;
+            }
+
+            try {
+                // 刷当前段
+                seg.mappedRegion.force();
+                // 从全局角度记录刷盘进度：当前段刷盘后最小保证至少到 segment.startGlobalOffset
+                // 实际上更安全的是只记录之前 flushedPosition，段切换不改变已确认的刷盘位置
+
+                rotateToNewSegment(seg.endGlobalOffset());
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to rotate WAL segment", e);
+            }
+        }
+    }
+
+    // ========== 写入 API ==========
+
     public void start() {
         if (running.compareAndSet(false, true)) {
             flushThread.start();
@@ -170,26 +230,17 @@ public class SimpleWalWriter implements AutoCloseable {
         }
     }
 
-    /**
-     * 异步写入 - 不等待刷盘
-     */
     public CompletableFuture<Long> writeAsync(byte[] payload) {
         long position = writeInternal(payload);
         return CompletableFuture.completedFuture(position);
     }
 
-    /**
-     * DURABLE 写入 - 等待刷盘完成
-     */
     public CompletableFuture<Long> writeDurable(byte[] payload) {
         long position = writeInternal(payload);
         awaitFlush(position);
         return CompletableFuture.completedFuture(position);
     }
 
-    /**
-     * 内部写入方法
-     */
     private long writeInternal(byte[] payload) {
         if (closed.get()) {
             throw new IllegalStateException("Writer is closed");
@@ -198,75 +249,56 @@ public class SimpleWalWriter implements AutoCloseable {
         int payloadLen = payload.length;
         int recordSize = RECORD_OVERHEAD + payloadLen;
 
-        // 分配空间
         long startPos = writePosition.getAndAdd(recordSize);
         long endPos = startPos + recordSize;
 
-        // 确保容量
-        ensureCapacity(endPos);
+        ensureSegmentCapacity(endPos);
 
-        // 写入记录
-        MemorySegment region = mappedRegion;
+        Segment seg = currentSegment;
+        long localPos = seg.toLocal(startPos);
 
-        // 使用 1 字节对齐避免内存对齐问题（JDK 22+）
+        MemorySegment region = seg.mappedRegion;
         var INT_UNALIGNED = java.lang.foreign.ValueLayout.JAVA_INT.withByteAlignment(1);
 
-        // Length (大端序)
-        region.set(INT_UNALIGNED, startPos, payloadLen);
+        region.set(INT_UNALIGNED, localPos, payloadLen);
 
-        // Payload
         MemorySegment payloadSegment = MemorySegment.ofArray(payload);
-        MemorySegment.copy(payloadSegment, 0, region, startPos + HEADER_SIZE, payloadLen);
+        MemorySegment.copy(payloadSegment, 0, region, localPos + HEADER_SIZE, payloadLen);
 
-        // CRC32
         int crc = calculateCrc(payload);
-        region.set(INT_UNALIGNED, startPos + HEADER_SIZE + payloadLen, crc);
+        region.set(INT_UNALIGNED, localPos + HEADER_SIZE + payloadLen, crc);
 
         stats.recordWrite(recordSize);
-
         return startPos;
     }
 
-    /**
-     * 计算 CRC32
-     */
     private int calculateCrc(byte[] data) {
         CRC32 crc32 = new CRC32();
         crc32.update(data);
         return (int) crc32.getValue();
     }
 
-    /**
-     * 等待指定位置刷盘完成
-     *
-     * 使用 StripedCondition 分段等待 + 超时兜底，虚拟线程友好
-     */
+    // ========== 刷盘 ==========
+
     private void awaitFlush(long position) {
         if (flushedPosition >= position) {
             return;
         }
 
-        // 唤醒刷盘线程
         LockSupport.unpark(flushThread);
 
-        // 慢速路径：使用 StripedCondition 分段等待，带超时保护
-        // 如果 StripedCondition 信号丢失，超时机制确保不会无限等待
-        long deadline = System.nanoTime() + 5_000_000_000L; // 5秒超时
+        long deadline = System.nanoTime() + 5_000_000_000L;
         while (flushedPosition < position) {
             if (System.nanoTime() > deadline) {
                 throw new RuntimeException("Timeout waiting for flush, position=" + position + ", flushed=" + flushedPosition);
             }
 
             try {
-                // 尝试使用 StripedCondition 等待（更高效）
-                // 但带超时，防止信号丢失
                 long remainingNs = deadline - System.nanoTime();
                 if (remainingNs <= 0) break;
 
-                // 使用带超时的等待
                 boolean signaled = flushConditions.awaitNanos(position, () -> flushedPosition, Math.min(remainingNs, 100_000_000L));
                 if (!signaled) {
-                    // 超时未收到信号，再次唤醒刷盘线程
                     LockSupport.unpark(flushThread);
                 }
             } catch (InterruptedException e) {
@@ -276,63 +308,6 @@ public class SimpleWalWriter implements AutoCloseable {
         }
     }
 
-    /**
-     * 确保容量足够
-     */
-    private void ensureCapacity(long required) {
-        if (required <= mappedSize) {
-            return;
-        }
-
-        if (required > maxSize) {
-            throw new IllegalStateException("WAL segment exceeds max size: " + required);
-        }
-
-        synchronized (this) {
-            if (required <= mappedSize) {
-                return;
-            }
-
-            try {
-                expandMapping(required);
-            } catch (IOException e) {
-                throw new RuntimeException("Failed to expand WAL", e);
-            }
-        }
-    }
-
-    /**
-     * 扩展映射
-     */
-    private void expandMapping(long required) throws IOException {
-        long newSize = Math.min(Math.max(mappedSize * 2, required), maxSize);
-
-        logger.info("Expanding WAL from {}MB to {}MB", mappedSize / 1024 / 1024, newSize / 1024 / 1024);
-
-        // 先刷盘
-        mappedRegion.force();
-
-        // 扩展文件
-        fileChannel.truncate(newSize);
-
-        // 重新映射
-        MemorySegment newRegion = fileChannel.map(FileChannel.MapMode.READ_WRITE, 0, newSize, arena);
-        mappedRegion = newRegion;
-        mappedSize = newSize;
-    }
-
-    /**
-     * 刷盘循环
-     *
-     * 批量刷盘策略：
-     * 1. 待刷数据 >= threshold：立即刷盘
-     * 2. 待刷数据 > 0 且有等待者：立即刷盘（DURABLE 请求）
-     * 3. 待刷数据 > 0 但无等待者：短暂休眠后重试
-     * 4. 无数据：休眠等待
-     *
-     * 注意：park() 和 unpark() 存在竞态条件，unpark() 的信号可能在 park() 之前被消费。
-     * 解决方案：在 park() 前再次检查等待者，避免信号丢失导致死锁。
-     */
     private void flushLoop() {
         logger.info("Flush loop started, threshold={}KB, interval={}ms",
             flushThreshold / 1024, flushIntervalNs / 1_000_000);
@@ -343,104 +318,88 @@ public class SimpleWalWriter implements AutoCloseable {
                 long currentFlushPos = flushedPosition;
                 long pendingBytes = currentWritePos - currentFlushPos;
 
-                // 刷盘条件：
-                // 1. 待刷数据达到阈值
-                // 2. 或有待刷数据且有等待者（DURABLE 请求）
                 boolean hasWaiters = flushConditions.getWaiterCount() > 0;
                 boolean shouldFlush = pendingBytes >= flushThreshold ||
                                       (pendingBytes > 0 && hasWaiters);
 
                 if (shouldFlush) {
-                    // 执行刷盘
                     long startNs = System.nanoTime();
-                    mappedRegion.force();
+                    // Flush current segment (only segment with unflushed data)
+                    Segment seg = currentSegment;
+                    if (seg != null) {
+                        seg.mappedRegion.force();
+                    }
                     long elapsedNs = System.nanoTime() - startNs;
 
-                    // 更新刷盘位置
                     flushedPosition = currentWritePos;
                     lastFsyncTimestampMs = System.currentTimeMillis();
 
                     stats.recordFlush(elapsedNs);
-
-                    // 唤醒等待者
                     flushConditions.signalRange(currentFlushPos, currentWritePos);
 
                     logger.debug("Flushed {} bytes in {} µs", pendingBytes, elapsedNs / 1000);
                 } else if (pendingBytes > 0) {
-                    // 有数据但未达阈值，检查是否有等待者出现
-                    // 注意：这里再次检查避免 park/unpark 竞态条件
                     if (flushConditions.getWaiterCount() > 0) {
-                        continue;  // 有等待者，立即重新检查
+                        continue;
                     }
                     LockSupport.parkNanos(flushIntervalNs);
                 } else {
-                    // 无数据，短暂休眠
                     LockSupport.parkNanos(flushIntervalNs);
                 }
 
             } catch (Exception e) {
-                // 刷盘循环安全网：单次 force() 失败不应杀死刷盘线程
                 logger.error("Flush loop error", e);
-                LockSupport.parkNanos(10_000_000L); // 10ms
+                LockSupport.parkNanos(10_000_000L);
             }
         }
 
         logger.info("Flush loop ended");
     }
 
-    // ========== 状态查询 ==========
+    // ========== 截断 ==========
 
+    /**
+     * 删除 globalOffset 之前的所有段文件。
+     * 仅在 globalOffset 已被快照覆盖后调用，调用方确保数据安全。
+     */
+    public void truncateBefore(long globalOffset) {
+        if (globalOffset <= 0) return;
+
+        List<Segment> toRemove = new ArrayList<>();
+        for (Segment seg : segments) {
+            // 保留包含 globalOffset 及之后的段
+            if (seg.endGlobalOffset() <= globalOffset && seg != currentSegment) {
+                toRemove.add(seg);
+            }
+        }
+
+        for (Segment seg : toRemove) {
+            try {
+                seg.mappedRegion.force();
+                seg.channel.close();
+                Files.deleteIfExists(seg.path);
+                segments.remove(seg);
+                logger.info("Truncated WAL segment: {} (offset range {} - {})",
+                    seg.path.getFileName(), seg.startGlobalOffset, seg.endGlobalOffset());
+            } catch (IOException e) {
+                logger.error("Failed to truncate WAL segment: {}", seg.path, e);
+            }
+        }
+    }
+
+    // ========== WalAccessor 实现 ==========
+
+    @Override
     public long getWritePosition() {
         return writePosition.get();
     }
 
+    @Override
     public long getFlushedPosition() {
         return flushedPosition;
     }
 
-    public Stats getStats() {
-        return stats;
-    }
-
-    /** Unflushed bytes at risk on crash. */
-    public long getUnflushedBytes() {
-        return writePosition.get() - flushedPosition;
-    }
-
-    /** Milliseconds since last fsync completed. */
-    public long getLastFsyncMsAgo() {
-        long last = lastFsyncTimestampMs;
-        return last > 0 ? System.currentTimeMillis() - last : 0;
-    }
-
-    /**
-     * WAL health status.
-     * OK: unflushed < threshold, fsync within 2x flush interval
-     * WARNING: unflushed 1-3x threshold or fsync delayed
-     * CRITICAL: unflushed > 3x threshold
-     */
-    public String getWalHealth() {
-        long unflushed = getUnflushedBytes();
-        long ago = getLastFsyncMsAgo();
-        if (unflushed > flushThreshold * 3 || ago > 5000) return "CRITICAL";
-        if (unflushed > flushThreshold || ago > flushIntervalNs / 1_000_000 * 3) return "WARNING";
-        return "OK";
-    }
-
-    // ========== 冷热交换：按位置读取 WAL 记录 ==========
-
-    /**
-     * 按文件绝对位置读取一条 WAL 记录，校验 CRC32 后返回 payload 字节。
-     *
-     * 用于长延迟 Intent 的内存换入：Intent 在创建时已持久化到 WAL，
-     * 换出内存后仅保留 (intentId, walPosition, recordLength)。到期前通过此方法
-     * 从 WAL 文件中读回完整 Intent 并解码恢复。
-     *
-     * @param position     WAL 文件中的记录起始位置（writeInternal 返回值）
-     * @param recordLength 整条记录的长度 = HEADER_SIZE + payloadLen + CHECKSUM_SIZE
-     * @return payload 字节数组（不含 header 和 checksum）
-     * @throws IOException 如果读取失败或 CRC 校验不通过
-     */
+    @Override
     public byte[] readRecord(long position, int recordLength) throws IOException {
         if (position < 0 || recordLength <= RECORD_OVERHEAD) {
             throw new IllegalArgumentException(
@@ -449,12 +408,18 @@ public class SimpleWalWriter implements AutoCloseable {
 
         int payloadLen = recordLength - RECORD_OVERHEAD;
 
-        // Read header (4-byte length field) to cross-validate.
-        // WAL format uses native byte order (JAVA_INT), which is LITTLE_ENDIAN on x86.
-        // ByteBuffer.getInt() defaults to BIG_ENDIAN — must match the write byte order.
+        // 定位段文件
+        Segment seg = findSegment(position);
+        if (seg == null) {
+            throw new IOException("No segment found for position " + position);
+        }
+
+        long localPos = seg.toLocal(position);
+        FileChannel channel = seg.channel;
+
         ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE)
             .order(java.nio.ByteOrder.nativeOrder());
-        int headerBytes = fileChannel.read(headerBuf, position);
+        int headerBytes = channel.read(headerBuf, localPos);
         if (headerBytes != HEADER_SIZE) {
             throw new IOException("Failed to read header at position " + position);
         }
@@ -466,9 +431,8 @@ public class SimpleWalWriter implements AutoCloseable {
                 ": stored=" + storedLen + ", expected=" + payloadLen);
         }
 
-        // Read payload
         ByteBuffer payloadBuf = ByteBuffer.allocate(payloadLen);
-        int payloadBytes = fileChannel.read(payloadBuf, position + HEADER_SIZE);
+        int payloadBytes = channel.read(payloadBuf, localPos + HEADER_SIZE);
         if (payloadBytes != payloadLen) {
             throw new IOException("Failed to read payload at position " + position);
         }
@@ -476,10 +440,9 @@ public class SimpleWalWriter implements AutoCloseable {
         byte[] payload = new byte[payloadLen];
         payloadBuf.get(payload);
 
-        // Read and verify CRC (also native byte order)
         ByteBuffer crcBuf = ByteBuffer.allocate(CHECKSUM_SIZE)
             .order(java.nio.ByteOrder.nativeOrder());
-        int crcBytes = fileChannel.read(crcBuf, position + HEADER_SIZE + payloadLen);
+        int crcBytes = channel.read(crcBuf, localPos + HEADER_SIZE + payloadLen);
         if (crcBytes != CHECKSUM_SIZE) {
             throw new IOException("Failed to read CRC at position " + position);
         }
@@ -494,6 +457,51 @@ public class SimpleWalWriter implements AutoCloseable {
         }
 
         return payload;
+    }
+
+    @Override
+    public List<WalSegment> listSegments() {
+        List<WalSegment> result = new ArrayList<>(segments.size());
+        for (Segment seg : segments) {
+            result.add(new WalSegment(
+                seg.index, seg.path,
+                seg.startGlobalOffset, seg.endGlobalOffset(),
+                seg.size));
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    /** 根据全局偏移查找所在段 */
+    private Segment findSegment(long globalPos) {
+        for (Segment seg : segments) {
+            if (globalPos >= seg.startGlobalOffset && globalPos < seg.endGlobalOffset()) {
+                return seg;
+            }
+        }
+        return null;
+    }
+
+    // ========== 健康状态 ==========
+
+    public Stats getStats() {
+        return stats;
+    }
+
+    public long getUnflushedBytes() {
+        return writePosition.get() - flushedPosition;
+    }
+
+    public long getLastFsyncMsAgo() {
+        long last = lastFsyncTimestampMs;
+        return last > 0 ? System.currentTimeMillis() - last : 0;
+    }
+
+    public String getWalHealth() {
+        long unflushed = getUnflushedBytes();
+        long ago = getLastFsyncMsAgo();
+        if (unflushed > flushThreshold * 3 || ago > 5000) return "CRITICAL";
+        if (unflushed > flushThreshold || ago > flushIntervalNs / 1_000_000 * 3) return "WARNING";
+        return "OK";
     }
 
     // ========== 关闭 ==========
@@ -516,23 +524,26 @@ public class SimpleWalWriter implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
 
-        // 最终刷盘
-        try {
-            if (mappedRegion != null) {
-                mappedRegion.force();
+        // 最终刷盘所有段
+        for (Segment seg : segments) {
+            try {
+                if (seg.mappedRegion != null) {
+                    seg.mappedRegion.force();
+                }
+            } catch (Exception e) {
+                logger.error("Final flush failed for segment {}", seg.path, e);
             }
-        } catch (Exception e) {
-            // 最后一次刷盘：已关闭中，无恢复路径，只记录日志
-            logger.error("Final flush failed", e);
         }
 
-        // 关闭资源
-        try {
-            if (fileChannel != null && fileChannel.isOpen()) {
-                fileChannel.close();
+        // 关闭所有段
+        for (Segment seg : segments) {
+            try {
+                if (seg.channel != null && seg.channel.isOpen()) {
+                    seg.channel.close();
+                }
+            } catch (IOException e) {
+                logger.error("Close channel failed for segment {}", seg.path, e);
             }
-        } catch (IOException e) {
-            logger.error("Close file channel failed", e);
         }
 
         arena.close();

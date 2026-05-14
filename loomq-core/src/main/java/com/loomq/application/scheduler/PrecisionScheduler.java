@@ -8,6 +8,7 @@ import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.spi.DefaultRedeliveryDecider;
+import com.loomq.spi.IntentObserver;
 import com.loomq.spi.RedeliveryDecider;
 import com.loomq.store.IntentStore;
 import com.loomq.tracing.IntentTraceStore;
@@ -21,8 +22,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.ServiceLoader;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -54,6 +59,9 @@ public class PrecisionScheduler {
     private final DeliveryHandler deliveryHandler;
     private final RedeliveryDecider redeliveryDecider;
 
+    // Intent 生命周期观察器列表（线程安全）
+    private final List<IntentObserver> observers = new CopyOnWriteArrayList<>();
+
     // 共享虚拟线程池（所有档位共享）
     private final ExecutorService sharedExecutor;
 
@@ -72,6 +80,9 @@ public class PrecisionScheduler {
 
     // 过期检查分频计数器
     private final Map<PrecisionTier, AtomicLong> expiredCheckCounters;
+
+    // 按 executeAt 索引活跃 intent（替代全量扫描）
+    private final ConcurrentSkipListMap<Long, Set<String>> intentExpiryIndex = new ConcurrentSkipListMap<>();
 
     // Cohort-based batched wakeup (CSA-inspired): replaces per-intent VT sleep
     private final CohortManager cohortManager;
@@ -368,6 +379,9 @@ public class PrecisionScheduler {
             intent.transitionTo(IntentStatus.SCHEDULED);
         }
 
+        notifyObservers(o -> o.onScheduled(intent));
+        indexIntent(intent);
+
         if (delayMs <= 0) {
             // 已到期，直接投递
             addToBucketAndDispatch(intent);
@@ -410,6 +424,7 @@ public class PrecisionScheduler {
         }
 
         bucketGroupManager.add(intent);
+        indexIntent(intent);
     }
 
     /**
@@ -458,8 +473,14 @@ public class PrecisionScheduler {
                     if (!offered) {
                         metrics.incrementDispatchQueueOfferFailed(tier);
                         metrics.incrementBackpressureEvent(tier);
-                        logRateLimited("Backpressure: dispatch queue full for tier {}, dropping intent {} after retries",
+                        logger.error("CRITICAL: Backpressure — dispatch queue full for tier {}, requeuing intent {} for next scan cycle",
                             tier, intent.getIntentId());
+                        notifyObservers(o -> o.onDeliveryFailed(intent,
+                            new com.loomq.common.exception.BackPressureException(
+                                "Dispatch queue full for tier " + tier, null, 1000)));
+                        // 回退状态，下次 scan cycle 重新入队
+                        intent.transitionTo(IntentStatus.SCHEDULED);
+                        intentStore.update(intent);
                     }
                 }
 
@@ -630,6 +651,48 @@ public class PrecisionScheduler {
 
     public BorrowStats getBorrowStats() { return borrowStats; }
 
+    /** 设置 Intent 生命周期观察器列表（由 LoomqEngine 调用） */
+    public void setObservers(List<IntentObserver> observers) {
+        this.observers.clear();
+        if (observers != null) {
+            this.observers.addAll(observers);
+        }
+    }
+
+    /** 安全通知所有观察器，单个异常不影响其他 observer 和调度循环 */
+    private void notifyObservers(java.util.function.Consumer<IntentObserver> action) {
+        for (IntentObserver o : observers) {
+            try {
+                action.accept(o);
+            } catch (Exception e) {
+                logger.error("Observer error", e);
+            }
+        }
+    }
+
+    /** 将 intent 按 executeAt 加入过期索引 */
+    private void indexIntent(Intent intent) {
+        if (intent.getExecuteAt() == null) return;
+        long key = intent.getExecuteAt().toEpochMilli();
+        intentExpiryIndex.computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet())
+                         .add(intent.getIntentId());
+    }
+
+    /** 从过期索引移除 intent */
+    private void unindexIntent(String intentId, long executeAtMs) {
+        Set<String> ids = intentExpiryIndex.get(executeAtMs);
+        if (ids != null) {
+            ids.remove(intentId);
+            if (ids.isEmpty()) {
+                intentExpiryIndex.remove(executeAtMs);
+            }
+        }
+    }
+
+    private static long executeAtMs(Intent intent) {
+        return intent.getExecuteAt() != null ? intent.getExecuteAt().toEpochMilli() : 0L;
+    }
+
     /**
      * 记录 due→dispatch lag
      */
@@ -657,16 +720,22 @@ public class PrecisionScheduler {
      * 适配轻量级 dispatch() 中中间态不持久化的设计。
      */
     private void checkExpiredIntents(PrecisionTier tier) {
-        for (Intent intent : intentStore.getAllIntents().values()) {
-            if (intent.getPrecisionTier() != tier) continue;
-            if (!intent.isExpired()) continue;
-            if (intent.getStatus().isTerminal()) continue;
+        long nowMs = System.currentTimeMillis();
+        var expiredEntries = intentExpiryIndex.headMap(nowMs, true);
+        for (var entry : expiredEntries.entrySet()) {
+            for (String intentId : entry.getValue()) {
+                Intent intent = intentStore.findById(intentId);
+                if (intent == null) continue;  // 惰性清理：可能已被删除
+                if (intent.getPrecisionTier() != tier) continue;
+                if (!intent.isExpired()) continue;
+                if (intent.getStatus().isTerminal()) continue;
 
-            if (intent.getStatus() == IntentStatus.DUE ||
-                intent.getStatus() == IntentStatus.DELIVERED ||
-                intent.getStatus() == IntentStatus.SCHEDULED ||
-                intent.getStatus() == IntentStatus.DISPATCHING) {
-                handleExpired(intent);
+                if (intent.getStatus() == IntentStatus.DUE ||
+                    intent.getStatus() == IntentStatus.DELIVERED ||
+                    intent.getStatus() == IntentStatus.SCHEDULED ||
+                    intent.getStatus() == IntentStatus.DISPATCHING) {
+                    handleExpired(intent);
+                }
             }
         }
     }
@@ -675,6 +744,7 @@ public class PrecisionScheduler {
      * 异步投递异常处理。
      */
     private void handleDeliveryException(Intent intent, PrecisionTier tier, Throwable ex) {
+        notifyObservers(o -> o.onDeliveryFailed(intent, ex));
         if (ex instanceof java.util.concurrent.TimeoutException) {
             logger.warn("Delivery timeout for intent {}", intent.getIntentId());
         } else {
@@ -699,11 +769,18 @@ public class PrecisionScheduler {
             // Trace: record delivered
             IntentTraceStore.getInstance().recordDelivered(intent.getIntentId());
 
-            switch (result) {
+            final DeliveryResult finalResult = result != null ? result : DeliveryResult.RETRY;
+            if (result == null) {
+                logger.warn("Delivery handler returned null for intent {}, treating as RETRY", intent.getIntentId());
+            }
+
+            switch (finalResult) {
                 case SUCCESS:
                     intent.transitionTo(IntentStatus.DELIVERED);
                     intent.transitionTo(IntentStatus.ACKED);
                     intentStore.update(intent);
+                    notifyObservers(o -> o.onDelivered(intent, finalResult));
+                    unindexIntent(intent.getIntentId(), executeAtMs(intent));
                     // Trace: record acked
                     IntentTraceStore.getInstance().recordAcked(intent.getIntentId());
                     IntentTraceStore.getInstance().updateStatus(intent.getIntentId(), IntentStatus.ACKED);
@@ -726,12 +803,16 @@ public class PrecisionScheduler {
                 case DEAD_LETTER:
                     intent.transitionTo(IntentStatus.DEAD_LETTERED);
                     intentStore.update(intent);
+                    notifyObservers(o -> o.onDeadLettered(intent));
+                    unindexIntent(intent.getIntentId(), executeAtMs(intent));
                     logger.warn("Intent {} dead-lettered", intent.getIntentId());
                     break;
 
                 case EXPIRED:
                     intent.transitionTo(IntentStatus.EXPIRED);
                     intentStore.update(intent);
+                    notifyObservers(o -> o.onExpired(intent));
+                    unindexIntent(intent.getIntentId(), executeAtMs(intent));
                     logger.info("Intent {} expired", intent.getIntentId());
                     break;
             }
@@ -774,6 +855,8 @@ public class PrecisionScheduler {
      * 处理过期任务
      */
     private void handleExpired(Intent intent) {
+        notifyObservers(o -> o.onExpired(intent));
+        unindexIntent(intent.getIntentId(), executeAtMs(intent));
         logger.info("Intent expired: id={}, deadline={}", intent.getIntentId(), intent.getDeadline());
 
         switch (intent.getExpiredAction()) {

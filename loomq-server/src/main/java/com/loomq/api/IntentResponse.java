@@ -6,7 +6,7 @@ import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.WalMode;
 import com.loomq.http.netty.DirectSerializedResponse;
 import com.loomq.http.netty.IntentResponseSerializer;
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 import io.netty.buffer.ByteBuf;
 
 import java.time.Instant;
@@ -25,7 +25,7 @@ public record IntentResponse(
     com.loomq.domain.intent.ExpiredAction expiredAction,
     PrecisionTier precisionTier,
     WalMode walMode,
-    AckLevel ackLevel,
+    AckMode ackLevel,
     int attempts,
     String lastDeliveryId,
     Instant createdAt,
@@ -41,7 +41,7 @@ public record IntentResponse(
             intent.getExpiredAction(),
             intent.getPrecisionTier(),
             intent.getWalMode(),
-            intent.getAckLevel(),
+            intent.getAckMode(),
             intent.getAttempts(),
             intent.getLastDeliveryId(),
             intent.getCreatedAt(),

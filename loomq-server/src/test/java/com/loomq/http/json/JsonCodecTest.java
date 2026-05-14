@@ -8,7 +8,7 @@ import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.RedeliveryPolicy;
 import com.loomq.http.netty.DirectSerializedResponse;
 import com.loomq.http.netty.IntentResponseSerializer;
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -49,7 +49,7 @@ class JsonCodecTest {
         assertEquals(Instant.parse("2026-04-20T11:00:00Z"), request.deadline());
         assertEquals(PrecisionTier.FAST, request.precisionTier());
         assertEquals("orders", request.shardKey());
-        assertEquals(AckLevel.DURABLE, request.ackLevel());
+        assertEquals(AckMode.DURABLE, request.ackLevel());
         assertEquals("http://localhost:9999/webhook", request.callback().getUrl());
         assertEquals("POST", request.callback().getMethod());
         assertEquals("1", request.callback().getHeaders().get("X-Test"));
@@ -65,7 +65,7 @@ class JsonCodecTest {
         intent.setExecuteAt(Instant.parse("2026-04-20T10:00:00Z"));
         intent.setDeadline(Instant.parse("2026-04-20T11:00:00Z"));
         intent.setPrecisionTier(PrecisionTier.STANDARD);
-        intent.setAckLevel(AckLevel.DURABLE);
+        intent.setAckMode(AckMode.DURABLE);
         intent.setCallback(new Callback("http://localhost:9999/webhook"));
         intent.setRedelivery(new RedeliveryPolicy());
         intent.setTags(Map.of("env", "test"));
@@ -85,7 +85,7 @@ class JsonCodecTest {
         intent.setDeadline(Instant.parse("2026-04-20T11:00:00Z"));
         intent.setExpiredAction(com.loomq.domain.intent.ExpiredAction.DEAD_LETTER);
         intent.setPrecisionTier(PrecisionTier.HIGH);
-        intent.setAckLevel(AckLevel.REPLICATED);
+        intent.setAckMode(AckMode.REPLICATED);
         intent.setLastDeliveryId("delivery-1");
         intent.incrementAttempts();
         intent.setTags(Map.of("env", "test"));

@@ -5,7 +5,7 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
-import com.loomq.replication.AckLevel;
+import com.loomq.domain.intent.AckMode;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -34,7 +34,7 @@ class IntentBinaryCodecTest {
         original.setDeadline(deadline);
         original.setShardKey("test-shard");
         original.setPrecisionTier(PrecisionTier.STANDARD);
-        original.setAckLevel(AckLevel.DURABLE);
+        original.setAckMode(AckMode.DURABLE);
         original.setIdempotencyKey("test-idem-123");
         original.transitionTo(IntentStatus.SCHEDULED);
 
@@ -51,7 +51,7 @@ class IntentBinaryCodecTest {
         assertEquals(original.getDeadline(), decoded.getDeadline());
         assertEquals(original.getShardKey(), decoded.getShardKey());
         assertEquals(original.getPrecisionTier(), decoded.getPrecisionTier());
-        assertEquals(original.getAckLevel(), decoded.getAckLevel());
+        assertEquals(original.getAckMode(), decoded.getAckMode());
         assertEquals(original.getIdempotencyKey(), decoded.getIdempotencyKey());
     }
 
@@ -130,7 +130,7 @@ class IntentBinaryCodecTest {
         intent.setDeadline(Instant.ofEpochMilli(System.currentTimeMillis() + 3600000));
         intent.setShardKey("size-test");
         intent.setPrecisionTier(PrecisionTier.STANDARD);
-        intent.setAckLevel(AckLevel.DURABLE);
+        intent.setAckMode(AckMode.DURABLE);
         intent.setIdempotencyKey("idem-key-12345");
         intent.transitionTo(IntentStatus.SCHEDULED);
 
