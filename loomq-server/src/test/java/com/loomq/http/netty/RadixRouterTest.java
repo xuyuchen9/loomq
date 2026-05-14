@@ -1,14 +1,13 @@
 package com.loomq.http.netty;
 
-import io.netty.handler.codec.http.HttpMethod;
-import org.junit.jupiter.api.Test;
-
-import java.util.Map;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import io.netty.handler.codec.http.HttpMethod;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
 
 /**
  * RadixRouter 单元测试

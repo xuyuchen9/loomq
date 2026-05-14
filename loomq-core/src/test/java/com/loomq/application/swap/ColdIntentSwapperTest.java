@@ -1,30 +1,33 @@
 package com.loomq.application.swap;
 
-import com.loomq.application.scheduler.BucketGroupManager;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.loomq.application.scheduler.PrecisionScheduler;
 import com.loomq.config.WalConfig;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.infrastructure.wal.SimpleWalWriter;
 import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.CompletableFuture;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * ColdIntentSwapper 单元测试。

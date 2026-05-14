@@ -1,12 +1,13 @@
 # LoomQ Makefile
 # Version: 0.9.0
 
-.PHONY: help build test clean run docker-build docker-run docker-compose-up docker-compose-down
+.PHONY: help build test clean run docker-build docker-run docker-compose-up docker-compose-down format check-format
 
 # Variables
 JAR_FILE := loomq-server/target/loomq-server-0.9.0.jar
 DOCKER_IMAGE := loomq:0.9.0
 DOCKER_COMPOSE := docker-compose
+SPOTLESS_PLUGIN := com.diffplug.spotless:spotless-maven-plugin:3.0.0
 
 # Default target
 help:
@@ -27,8 +28,9 @@ help:
 	@echo "  docker-compose-up    - Start the single-node docker-compose stack"
 	@echo "  docker-compose-down  - Stop docker-compose"
 	@echo "  docker-compose-logs  - View docker-compose logs"
-	@echo "  format               - Format code (if configured)"
-	@echo "  check                - Run checks (tests + lint)"
+	@echo "  format               - Apply Spotless formatting"
+	@echo "  check-format         - Verify Spotless formatting"
+	@echo "  check                - Run formatting checks + tests"
 	@echo "  release              - Prepare release"
 
 # Build targets
@@ -89,13 +91,15 @@ docker-compose-down:
 docker-compose-logs:
 	$(DOCKER_COMPOSE) logs -f
 
-# Utilities
 format:
-	@echo "Code formatting not configured. Add spotless plugin to pom.xml."
+	mvn -B -ntp $(SPOTLESS_PLUGIN):apply
 
-check: test
+check-format:
+	mvn -B -ntp $(SPOTLESS_PLUGIN):check
+
+check: check-format test
 	@echo "All checks passed!"
 
-release: clean build
+release: check-format build
 	@echo "Release build complete: $(JAR_FILE)"
 	@echo "Docker image: $(DOCKER_IMAGE)"

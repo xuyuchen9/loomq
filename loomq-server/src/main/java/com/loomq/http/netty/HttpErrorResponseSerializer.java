@@ -4,8 +4,6 @@ import com.loomq.api.ErrorResponse;
 import com.loomq.http.json.JsonCodec;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
-
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 /**

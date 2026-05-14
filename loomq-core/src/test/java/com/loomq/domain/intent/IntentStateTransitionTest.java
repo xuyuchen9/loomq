@@ -1,13 +1,12 @@
 package com.loomq.domain.intent;
 
-import org.junit.jupiter.api.Test;
-
-import java.time.Instant;
-import java.util.Map;
-
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import java.time.Instant;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
 
 class IntentStateTransitionTest {
 

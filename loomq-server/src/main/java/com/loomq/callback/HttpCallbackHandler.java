@@ -4,9 +4,6 @@ import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
 import com.loomq.http.json.JsonCodec;
 import com.loomq.spi.CallbackHandler;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -16,6 +13,8 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * HTTP 回调处理器。

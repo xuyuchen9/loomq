@@ -1,5 +1,8 @@
 package com.loomq.server;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.loomq.LoomqEngine;
 import com.loomq.callback.NettyHttpDeliveryHandler;
 import com.loomq.config.ServerConfig;
@@ -7,11 +10,6 @@ import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
 import io.netty.handler.codec.http.HttpMethod;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -20,9 +18,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Properties;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 @Tag("integration")
 class NettyServerSmokeTest {

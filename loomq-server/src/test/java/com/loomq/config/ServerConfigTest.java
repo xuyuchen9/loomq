@@ -1,11 +1,10 @@
 package com.loomq.config;
 
-import org.junit.jupiter.api.Test;
-
-import java.util.Properties;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import java.util.Properties;
+import org.junit.jupiter.api.Test;
 
 class ServerConfigTest {
 

@@ -3,15 +3,12 @@ package com.loomq;
 import com.loomq.spi.CallbackHandler;
 import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.RedeliveryDecider;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
-import java.util.concurrent.Executor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * LoomQ 引擎工厂。

@@ -2,7 +2,6 @@ package com.loomq.http.netty;
 
 import com.loomq.api.IntentActionResponse;
 import io.netty.buffer.ByteBuf;
-
 import java.nio.charset.StandardCharsets;
 
 /**

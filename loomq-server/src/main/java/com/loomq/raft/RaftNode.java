@@ -3,9 +3,6 @@ package com.loomq.raft;
 import com.loomq.metrics.LoomQMetrics;
 import com.loomq.spi.WalAccessor;
 import com.loomq.store.IntentStore;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -14,6 +11,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Raft 节点 — 组合选举、日志复制、状态机应用。

@@ -1,17 +1,12 @@
 package com.loomq.scheduler;
 
+import com.loomq.application.scheduler.PrecisionScheduler;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.DefaultRedeliveryDecider;
+import com.loomq.spi.DeliveryHandler;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
-import com.loomq.application.scheduler.PrecisionScheduler;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Tag;
-
 import java.io.IOException;
 import java.time.Instant;
 import java.util.HashMap;
@@ -21,6 +16,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 /**
  * Real HTTP benchmark — per-tier serial execution.

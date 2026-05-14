@@ -9,7 +9,6 @@ import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.domain.intent.RedeliveryPolicy;
 import com.loomq.domain.intent.WalMode;
-
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;

@@ -1,22 +1,21 @@
 package com.loomq.storage;
 
-import com.loomq.domain.intent.Intent;
-import com.loomq.domain.intent.IntentStatus;
-import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.store.IdempotencyResult;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.Instant;
-import java.util.Map;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.loomq.domain.intent.Intent;
+import com.loomq.domain.intent.IntentStatus;
+import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.store.IdempotencyResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
+import java.util.Map;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 class RocksDBIntentStoreTest {
 

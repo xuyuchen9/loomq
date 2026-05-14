@@ -8,6 +8,7 @@ Use this before tagging or publishing a LoomQ release.
 - Check that public docs do not describe experimental features as stable.
 - Verify any config changes are reflected in `docs/operations/CONFIGURATION.md`.
 - Verify any API changes are reflected in `docs/development/API.md`.
+- Run the formatting gate (`make check-format` or `mvn -B -ntp com.diffplug.spotless:spotless-maven-plugin:3.0.0:check`) before tagging.
 
 ## Build
 
@@ -31,6 +32,5 @@ Use this before tagging or publishing a LoomQ release.
 
 ## Final Gate
 
-- Tag only after build, smoke test, and docs are aligned.
+- Tag only after build, smoke test, docs, and formatting checks are aligned.
 - If a change affects persistence or recovery, include a short rollback note in the release discussion.
-

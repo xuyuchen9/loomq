@@ -3,7 +3,6 @@ package com.loomq.http.netty;
 import com.loomq.api.IntentResponse;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
-
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;

@@ -1,23 +1,22 @@
 package com.loomq.http.json;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.loomq.api.CreateIntentRequest;
 import com.loomq.api.IntentResponse;
+import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.RedeliveryPolicy;
 import com.loomq.http.netty.DirectSerializedResponse;
 import com.loomq.http.netty.IntentResponseSerializer;
-import com.loomq.domain.intent.AckMode;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Map;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 
 class JsonCodecTest {
 

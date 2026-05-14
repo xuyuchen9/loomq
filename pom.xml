@@ -23,6 +23,7 @@
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <spotless.version>3.0.0</spotless.version>
 
         <!-- Test Configuration -->
         <test.groups></test.groups>
@@ -74,6 +75,53 @@
                 </plugin>
             </plugins>
         </pluginManagement>
+        <plugins>
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <version>${spotless.version}</version>
+                <configuration>
+                    <formats>
+                        <format>
+                            <includes>
+                                <include>.editorconfig</include>
+                                <include>.env.example</include>
+                                <include>.gitattributes</include>
+                                <include>.github/**/*.yml</include>
+                                <include>CHANGELOG.md</include>
+                                <include>CLAUDE.md</include>
+                                <include>CONTRIBUTING.md</include>
+                                <include>Dockerfile</include>
+                                <include>Dockerfile.benchmark</include>
+                                <include>Makefile</include>
+                                <include>README.md</include>
+                                <include>README.zh.md</include>
+                                <include>SECURITY.md</include>
+                                <include>docs/development/ARCHITECTURE.md</include>
+                                <include>docs/development/API.md</include>
+                                <include>docs/development/TECH_DEBT_CLEANUP.md</include>
+                                <include>docs/development/openapi.yaml</include>
+                                <include>docs/engineering/release-checklist.md</include>
+                                <include>docs/operations/CONFIGURATION.md</include>
+                                <include>docs/operations/DEPLOYMENT.md</include>
+                                <include>loomq-server/src/main/resources/**/*.yml</include>
+                                <include>loomq-server/src/main/resources/**/*.yaml</include>
+                                <include>monitoring/**/*.yml</include>
+                                <include>monitoring/**/*.yaml</include>
+                                <include>scripts/**/*.ps1</include>
+                                <include>scripts/**/*.sh</include>
+                            </includes>
+                            <trimTrailingWhitespace/>
+                            <endWithNewline/>
+                        </format>
+                    </formats>
+                    <java>
+                        <importOrder/>
+                        <removeUnusedImports/>
+                    </java>
+                </configuration>
+            </plugin>
+        </plugins>
     </build>
 
     <profiles>

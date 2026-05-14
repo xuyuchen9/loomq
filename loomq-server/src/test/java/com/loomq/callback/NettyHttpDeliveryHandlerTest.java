@@ -1,26 +1,23 @@
 package com.loomq.callback;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.spi.DeliveryContext;
 import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.spi.RedeliveryDecider;
-
+import java.io.IOException;
+import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.netty.http.client.HttpClient;
-
-import java.io.IOException;
-import java.time.Duration;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class NettyHttpDeliveryHandlerTest {
 

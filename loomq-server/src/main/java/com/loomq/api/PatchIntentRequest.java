@@ -1,7 +1,6 @@
 package com.loomq.api;
 
 import com.loomq.domain.intent.RedeliveryPolicy;
-
 import java.time.Instant;
 import java.util.Map;
 

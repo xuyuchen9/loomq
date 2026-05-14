@@ -1,14 +1,13 @@
 package com.loomq.http;
 
-import com.loomq.domain.intent.Callback;
-import com.loomq.domain.intent.Intent;
-import org.junit.jupiter.api.Test;
-
-import java.net.http.HttpRequest;
-import java.util.Map;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+
+import com.loomq.domain.intent.Callback;
+import com.loomq.domain.intent.Intent;
+import java.net.http.HttpRequest;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
 
 /**
  * HttpCallbackClient 单元测试

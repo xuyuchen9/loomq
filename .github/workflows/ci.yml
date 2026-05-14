@@ -21,10 +21,32 @@ concurrency:
 
 jobs:
   # ============================================================
+  #  PR / Push / Schedule: format gate
+  # ============================================================
+  format-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'oracle'
+          cache: maven
+
+      - name: Spotless Check
+        run: mvn -B -ntp com.diffplug.spotless:spotless-maven-plugin:3.0.0:check
+
+  # ============================================================
   #  PR / Push: fast unit tests (parallel matrix, ~10s each)
   # ============================================================
   fast-tests:
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+    needs: format-check
     strategy:
       fail-fast: true
       matrix:
@@ -58,6 +80,7 @@ jobs:
   # ============================================================
   slow-tests:
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+    needs: format-check
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -87,6 +110,7 @@ jobs:
   # ============================================================
   integration-tests:
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+    needs: format-check
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -117,6 +141,7 @@ jobs:
   # ============================================================
   benchmark-quick:
     if: ${{ github.event_name == 'pull_request' }}
+    needs: format-check
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -155,6 +180,7 @@ jobs:
   # ============================================================
   package:
     if: ${{ github.event_name == 'push' }}
+    needs: format-check
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -177,6 +203,7 @@ jobs:
   # ============================================================
   full-regression:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    needs: format-check
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -208,7 +235,7 @@ jobs:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: full-regression
+    needs: [format-check, full-regression]
 
     steps:
       - name: Checkout Code

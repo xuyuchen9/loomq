@@ -1,13 +1,12 @@
 package com.loomq.http.netty;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
 import io.netty.handler.codec.http.HttpMethod;
-import org.junit.jupiter.api.Test;
-
 import java.util.Map;
-
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import org.junit.jupiter.api.Test;
 
 /**
  * 比较方法引用和 lambda

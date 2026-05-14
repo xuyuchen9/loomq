@@ -1,7 +1,6 @@
 package com.loomq.http;
 
 import com.loomq.domain.intent.Intent;
-
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;

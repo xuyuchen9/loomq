@@ -1,12 +1,9 @@
 package com.loomq.infrastructure.wal;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import com.loomq.domain.intent.Intent;
 import com.loomq.recovery.WalReplayManager;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
@@ -15,8 +12,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Scientific multi-window WAL crash-recovery test.
