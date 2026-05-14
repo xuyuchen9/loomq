@@ -2,11 +2,11 @@ package com.loomq.embedded;
 
 import com.loomq.application.scheduler.BucketGroupManager;
 import com.loomq.application.scheduler.PrecisionScheduler;
+import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.domain.intent.AckMode;
 import com.loomq.spi.DeliveryHandler;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;

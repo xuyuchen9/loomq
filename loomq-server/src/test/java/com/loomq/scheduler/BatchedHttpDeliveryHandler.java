@@ -1,7 +1,6 @@
 package com.loomq.scheduler;
 
 import com.loomq.domain.intent.Intent;
-import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.spi.DeliveryHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

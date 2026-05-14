@@ -1,5 +1,7 @@
 package com.loomq.http.netty;
 
+import com.loomq.http.json.JsonCodec;
+import com.loomq.metrics.LoomQMetrics;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
@@ -15,8 +17,6 @@ import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.ReferenceCountUtil;
-import com.loomq.http.json.JsonCodec;
-import com.loomq.metrics.LoomQMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

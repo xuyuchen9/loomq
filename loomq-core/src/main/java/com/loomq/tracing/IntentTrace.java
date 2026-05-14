@@ -2,7 +2,6 @@ package com.loomq.tracing;
 
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-
 import java.time.Instant;
 
 /**

@@ -1,7 +1,6 @@
 package com.loomq.spi;
 
 import com.loomq.domain.intent.Intent;
-
 import java.util.concurrent.CompletableFuture;
 
 /**

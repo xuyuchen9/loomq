@@ -8,7 +8,6 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
-import com.loomq.domain.intent.PrecisionTierProfile;
 import com.loomq.domain.intent.WalMode;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.infrastructure.wal.SimpleWalWriter;

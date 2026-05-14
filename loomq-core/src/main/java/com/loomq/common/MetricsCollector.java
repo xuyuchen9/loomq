@@ -1,7 +1,6 @@
 package com.loomq.common;
 
 import com.loomq.domain.intent.PrecisionTier;
-
 import java.util.Map;
 
 /**

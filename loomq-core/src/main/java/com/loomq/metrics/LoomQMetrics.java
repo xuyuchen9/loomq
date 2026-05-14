@@ -1,10 +1,9 @@
 package com.loomq.metrics;
 
 import com.loomq.common.MetricsCollector;
-
-import java.util.Map;
-import java.util.LinkedHashMap;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * LoomQ 可观测性指标 (v0.5)

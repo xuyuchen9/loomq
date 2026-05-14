@@ -1,11 +1,10 @@
 package com.loomq.api;
 
+import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.RedeliveryPolicy;
 import com.loomq.domain.intent.WalMode;
-import com.loomq.domain.intent.AckMode;
-
 import java.time.Instant;
 import java.util.Map;
 

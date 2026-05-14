@@ -2,7 +2,6 @@ package com.loomq.store;
 
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
-
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;

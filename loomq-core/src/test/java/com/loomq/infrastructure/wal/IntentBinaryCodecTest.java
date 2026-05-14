@@ -1,11 +1,10 @@
 package com.loomq.infrastructure.wal;
 
+import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.infrastructure.wal.IntentBinaryCodec;
-import com.loomq.domain.intent.AckMode;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;

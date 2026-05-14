@@ -2,11 +2,11 @@ package com.loomq.scheduler;
 
 import com.loomq.LoomqEngine;
 import com.loomq.callback.NettyHttpDeliveryHandler;
-import com.loomq.common.MetricsCollector;
+import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.spi.DeliveryHandler.DeliveryResult;
+import com.loomq.domain.intent.RedeliveryPolicy;
 import com.loomq.spi.RedeliveryDecider;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -17,15 +17,12 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import reactor.netty.http.client.HttpClient;
 
-import com.loomq.domain.intent.AckMode;
-import com.loomq.domain.intent.RedeliveryPolicy;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

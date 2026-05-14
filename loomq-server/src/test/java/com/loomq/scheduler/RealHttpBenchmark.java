@@ -1,16 +1,16 @@
 package com.loomq.scheduler;
 
+import com.loomq.application.scheduler.PrecisionScheduler;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.DefaultRedeliveryDecider;
+import com.loomq.spi.DeliveryHandler;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
-import com.loomq.application.scheduler.PrecisionScheduler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.time.Instant;

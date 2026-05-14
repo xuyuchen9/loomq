@@ -6,7 +6,6 @@ import com.loomq.domain.intent.IntentStatus;
 import com.loomq.spi.DeliveryContext;
 import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.spi.RedeliveryDecider;
-
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import org.junit.jupiter.api.AfterEach;
@@ -17,7 +16,6 @@ import reactor.netty.http.client.HttpClient;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

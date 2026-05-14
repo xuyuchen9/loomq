@@ -13,7 +13,6 @@ import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;

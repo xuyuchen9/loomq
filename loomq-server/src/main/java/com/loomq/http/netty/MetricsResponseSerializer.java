@@ -3,8 +3,6 @@ package com.loomq.http.netty;
 import com.loomq.metrics.LoomQMetrics;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
-
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
