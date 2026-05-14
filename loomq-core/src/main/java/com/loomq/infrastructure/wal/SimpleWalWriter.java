@@ -2,9 +2,6 @@ package com.loomq.infrastructure.wal;
 
 import com.loomq.config.WalConfig;
 import com.loomq.spi.WalAccessor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -23,6 +20,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.zip.CRC32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 极简 WAL 写入器 — 段文件轮转支持。

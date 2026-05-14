@@ -2,8 +2,8 @@ package com.loomq.http.netty;
 
 import com.loomq.LoomqEngine;
 import com.loomq.api.CreateIntentRequest;
-import com.loomq.api.IntentActionResponse;
 import com.loomq.api.ErrorResponse;
+import com.loomq.api.IntentActionResponse;
 import com.loomq.api.IntentResponse;
 import com.loomq.api.IntentValidator;
 import com.loomq.api.PatchIntentRequest;
@@ -15,19 +15,16 @@ import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.http.json.JsonCodec;
-import com.loomq.domain.intent.AckMode;
 import com.loomq.store.IdempotencyResult;
 import com.loomq.tracing.IntentTrace;
 import com.loomq.tracing.IntentTraceStore;
 import io.netty.handler.codec.http.HttpMethod;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Intent API handler for the Netty stack.

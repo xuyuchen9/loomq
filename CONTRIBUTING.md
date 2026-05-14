@@ -9,7 +9,7 @@ Thanks for your interest in contributing. LoomQ is a durable time kernel for dis
 - Git
 
 ```bash
-git clone https://github.com/loomq/loomq.git
+git clone https://github.com/xuyuchen9/loomq.git
 cd loomq
 mvn clean package -DskipTests
 ```

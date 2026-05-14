@@ -1,11 +1,11 @@
 package com.loomq.scheduler;
 
-import com.loomq.common.exception.SchedulerException;
-import org.junit.jupiter.api.Test;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.loomq.common.exception.SchedulerException;
+import org.junit.jupiter.api.Test;
 
 /**
  * SchedulerException 单元测试

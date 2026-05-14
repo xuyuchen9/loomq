@@ -53,7 +53,7 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 ### Build from Source
 
 ```bash
-git clone https://github.com/loomq/loomq.git
+git clone https://github.com/xuyuchen9/loomq.git
 cd loomq
 mvn clean package -DskipTests
 ```
@@ -367,6 +367,8 @@ docker-compose --profile full up -d
 ```bash
 make build          # Full build with tests
 make build-fast     # Build without tests
+make format         # Apply Spotless formatting
+make check-format   # Verify Spotless formatting
 make test           # Run default test suite
 make run            # Build and start server
 make docker-build   # Build Docker image

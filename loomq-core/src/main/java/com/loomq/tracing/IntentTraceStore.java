@@ -2,9 +2,6 @@ package com.loomq.tracing;
 
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-
-import java.time.Instant;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**

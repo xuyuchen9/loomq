@@ -1,7 +1,6 @@
 package com.loomq.http.netty;
 
 import io.netty.handler.codec.http.HttpMethod;
-
 import java.util.HashMap;
 import java.util.Map;
 

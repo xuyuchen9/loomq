@@ -1,17 +1,16 @@
 package com.loomq.http.netty;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.loomq.api.ErrorResponse;
 import com.loomq.api.IntentActionResponse;
 import com.loomq.common.MetricsCollector;
 import com.loomq.metrics.LoomQMetrics;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 
 class HttpDirectResponseTest {
 

@@ -12,13 +12,12 @@ import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
 import com.loomq.metrics.LoomQMetrics;
 import io.netty.handler.codec.http.HttpMethod;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Standalone Netty service bootstrap.

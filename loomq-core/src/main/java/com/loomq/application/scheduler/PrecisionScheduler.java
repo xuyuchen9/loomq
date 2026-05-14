@@ -12,9 +12,6 @@ import com.loomq.spi.IntentObserver;
 import com.loomq.spi.RedeliveryDecider;
 import com.loomq.store.IntentStore;
 import com.loomq.tracing.IntentTraceStore;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.time.Duration;
 import java.time.Instant;
 import java.util.EnumMap;
@@ -35,6 +32,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 精度调度器。

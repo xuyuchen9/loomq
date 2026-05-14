@@ -1,14 +1,11 @@
 package com.loomq.infrastructure.wal;
 
 import com.loomq.config.WalConfig;
+import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.infrastructure.wal.IntentBinaryCodec;
-import com.loomq.infrastructure.wal.SimpleWalWriter;
-import com.loomq.domain.intent.AckMode;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;

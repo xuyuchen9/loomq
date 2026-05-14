@@ -15,7 +15,7 @@ This guide matches the current standalone server, scheduler, persistence, and Ra
 ### Build
 
 ```bash
-git clone https://github.com/loomq/loomq.git
+git clone https://github.com/xuyuchen9/loomq.git
 cd loomq
 mvn clean package -DskipTests
 ```
@@ -265,7 +265,8 @@ Point Prometheus at the server and scrape the metrics endpoint. Useful signals i
 
 Before publishing a GitHub release:
 
-1. Run the full Maven test suite.
-2. Verify the packaged jar name matches `loomq-server-0.9.0.jar`.
-3. Confirm the README, changelog, deployment guide, and scripts all point at the same version.
-4. Validate at least one single-node and one Raft-style startup path.
+1. Run the formatting gate (`make check-format` or `mvn -B -ntp com.diffplug.spotless:spotless-maven-plugin:3.0.0:check`).
+2. Run the full Maven test suite.
+3. Verify the packaged jar name matches `loomq-server-0.9.0.jar`.
+4. Confirm the README, changelog, deployment guide, and scripts all point at the same version.
+5. Validate at least one single-node and one Raft-style startup path.

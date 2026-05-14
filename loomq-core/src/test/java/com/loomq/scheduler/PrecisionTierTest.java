@@ -1,12 +1,12 @@
 package com.loomq.scheduler;
 
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.PrecisionTier;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * PrecisionTier 精度档位测试

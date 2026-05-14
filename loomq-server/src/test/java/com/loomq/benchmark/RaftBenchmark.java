@@ -9,9 +9,6 @@ import com.loomq.raft.RaftConfig;
 import com.loomq.raft.RaftNode;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -24,6 +21,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 /**
  * Raft 共识性能基准测试。

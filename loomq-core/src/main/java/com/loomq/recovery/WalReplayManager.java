@@ -4,9 +4,6 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.spi.WalAccessor;
 import com.loomq.spi.WalAccessor.WalSegment;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -18,6 +15,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * WAL 回放器。

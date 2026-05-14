@@ -1,7 +1,6 @@
 package com.loomq.benchmark;
 
 import com.loomq.domain.intent.PrecisionTier;
-
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;

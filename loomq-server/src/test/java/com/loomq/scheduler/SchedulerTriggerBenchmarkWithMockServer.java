@@ -1,5 +1,7 @@
 package com.loomq.scheduler;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.loomq.application.scheduler.PrecisionScheduler;
 import com.loomq.common.MetricsCollector;
 import com.loomq.domain.intent.Callback;
@@ -11,16 +13,8 @@ import com.loomq.spi.DeliveryHandler;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
 import com.sun.management.OperatingSystemMXBean;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -29,12 +23,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 调度器端到端性能基准测试（带 Mock Webhook Server）

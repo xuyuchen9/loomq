@@ -1,14 +1,13 @@
 package com.loomq.api;
 
+import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.WalMode;
 import com.loomq.http.netty.DirectSerializedResponse;
 import com.loomq.http.netty.IntentResponseSerializer;
-import com.loomq.domain.intent.AckMode;
 import io.netty.buffer.ByteBuf;
-
 import java.time.Instant;
 
 /**

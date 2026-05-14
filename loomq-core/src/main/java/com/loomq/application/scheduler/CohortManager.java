@@ -1,13 +1,8 @@
 package com.loomq.application.scheduler;
 
 import com.loomq.domain.intent.Intent;
-import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTierCatalog;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
@@ -15,6 +10,8 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Intent cohort consolidator — CSA-inspired batched wakeup.
