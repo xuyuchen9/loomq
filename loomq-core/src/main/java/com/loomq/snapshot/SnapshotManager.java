@@ -8,7 +8,6 @@ import org.slf4j.LoggerFactory;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
-import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -22,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
@@ -64,14 +64,15 @@ public class SnapshotManager {
         logger.info("Creating snapshot: {}", filename);
 
         try {
-            SnapshotData data = captureSnapshotData(store, walOffset);
-            writeSnapshotData(snapshotPath, data);
+            Instant createdAt = Instant.now();
+            Map<String, Intent> intents = store.getAllIntents();
+            writeSnapshotData(snapshotPath, intents, walOffset, createdAt);
 
             long size = Files.size(snapshotPath);
-            SnapshotInfo info = new SnapshotInfo(filename, data.walOffset, size, timestamp);
+            SnapshotInfo info = new SnapshotInfo(filename, walOffset, size, timestamp);
 
             logger.info("Snapshot created: {}, size={}, intents={}, offset={}",
-                filename, size, data.intentCount, data.walOffset);
+                filename, size, intents.size(), walOffset);
 
             cleanupOldSnapshots();
             return info;
@@ -158,27 +159,19 @@ public class SnapshotManager {
         return findLatestSnapshot().map(this::readSnapshotInfo);
     }
 
-    private SnapshotData captureSnapshotData(IntentStore store, long walOffset) {
-        List<byte[]> encodedIntents = new ArrayList<>();
-        for (Intent intent : store.getAllIntents().values()) {
-            encodedIntents.add(IntentBinaryCodec.encode(intent));
-        }
-
-        return new SnapshotData(encodedIntents, encodedIntents.size(), walOffset, Instant.now());
-    }
-
-    private void writeSnapshotData(Path snapshotPath, SnapshotData data) throws IOException {
+    private void writeSnapshotData(Path snapshotPath, Map<String, Intent> intents, long walOffset, Instant createdAt) throws IOException {
         try (OutputStream fos = Files.newOutputStream(snapshotPath);
              GZIPOutputStream gzos = new GZIPOutputStream(fos);
              DataOutputStream dos = new DataOutputStream(gzos)) {
 
             dos.writeInt(SNAPSHOT_MAGIC);
             dos.writeInt(SNAPSHOT_VERSION);
-            dos.writeLong(data.createdAt.toEpochMilli());
-            dos.writeLong(data.walOffset);
-            dos.writeInt(data.intentCount);
+            dos.writeLong(createdAt.toEpochMilli());
+            dos.writeLong(walOffset);
+            dos.writeInt(intents.size());
 
-            for (byte[] encodedIntent : data.encodedIntents) {
+            for (Intent intent : intents.values()) {
+                byte[] encodedIntent = IntentBinaryCodec.encode(intent);
                 dos.writeInt(encodedIntent.length);
                 dos.write(encodedIntent);
             }

@@ -1,0 +1,430 @@
+package com.loomq.raft;
+
+import com.loomq.spi.WalAccessor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.zip.CRC32;
+
+/**
+ * Raft 日志封装。
+ * 复用 SimpleWalWriter 作为持久化存储，Raft index 使用逻辑序号（1,2,3...），
+ * WAL 负责保存对应的物理偏移。
+ *
+ * 每条 Raft log entry 的 WAL 格式：
+ * [term (8B，大端) | payload (N)]，整体作为 WAL payload 写入。
+ * WAL 帧头 + CRC 由 SimpleWalWriter 自动封装。
+ */
+public class RaftLog {
+    private static final Logger log = LoggerFactory.getLogger(RaftLog.class);
+    private static final int TERM_PREFIX_SIZE = 8;
+
+    private final WalAccessor wal;
+    private final Map<Long, Long> startPositions = new HashMap<>();
+    private final Map<Long, Integer> recordLengths = new HashMap<>();
+    private final Map<Long, Long> entryTerms = new HashMap<>();
+    private volatile long lastLogIndex;
+    private volatile long lastLogTerm;
+
+    public RaftLog(WalAccessor wal) {
+        this.wal = wal;
+        long snapshotIndex = wal != null ? wal.getSnapshotIndex() : 0;
+        this.lastLogIndex = snapshotIndex;
+        this.lastLogTerm = wal != null ? wal.getSnapshotTerm() : 0;
+        recoverFromWal();
+    }
+
+    public long lastIndex() { return lastLogIndex; }
+    public long firstIndex() {
+        return wal != null ? wal.getFirstLogIndex() : (lastLogIndex > 0 ? 1 : 0);
+    }
+    public long lastTerm() { return lastLogTerm; }
+    public long commitIndex() { return lastLogIndex; }
+
+    public boolean isUpToDate(long candidateLastIndex, long candidateLastTerm) {
+        long myLastTerm = lastTerm();
+        return candidateLastTerm > myLastTerm
+            || (candidateLastTerm == myLastTerm && candidateLastIndex >= lastIndex());
+    }
+
+    /**
+     * 追加一条 Raft log entry。
+     *
+     * @param term 当前 term
+     * @param data 业务 payload
+     * @return Raft 逻辑 index（从 1 开始，包含快照后的后续条目）
+     */
+    public synchronized long appendEntry(long term, byte[] data) {
+        byte[] framed = new byte[TERM_PREFIX_SIZE + data.length];
+        ByteBuffer.wrap(framed).putLong(term).put(data);
+        long walEnd = wal.writeEntry(framed);
+        long index = ++lastLogIndex;
+        // Compute start position for future readRecord() calls
+        // RECORD_FIXED_OVERHEAD is 8 (4B length + 4B CRC); this is the WAL contract, not a leak
+        int recordLen = wal.getRecordOverhead() + framed.length;
+        long startPos = walEnd - recordLen;
+        startPositions.put(index, startPos);
+        recordLengths.put(index, recordLen);
+        entryTerms.put(index, term);
+        lastLogTerm = term;
+        log.debug("Appended Raft entry at index={}, term={}, size={}", index, term, data.length);
+        return index;
+    }
+
+    private void recoverFromWal() {
+        if (wal == null) {
+            return;
+        }
+
+        long snapshotIndex = wal.getSnapshotIndex();
+        long snapshotTerm = wal.getSnapshotTerm();
+        long snapshotOffset = wal.getSnapshotOffset();
+        List<WalAccessor.WalSegment> segments = wal.listSegments();
+        if (segments == null || segments.isEmpty()) {
+            lastLogIndex = snapshotIndex;
+            lastLogTerm = snapshotTerm;
+            return;
+        }
+
+        long recoveredLastTerm = snapshotTerm;
+        long recoveredLastIndex = snapshotIndex;
+        long physicalCount = 0;
+        boolean useSnapshotOffset = snapshotOffset > 0;
+        for (WalAccessor.WalSegment seg : segments) {
+            long localPos = 0;
+            try (FileChannel channel = FileChannel.open(seg.path(), StandardOpenOption.READ)) {
+                while (localPos + wal.getRecordOverhead() <= seg.size()) {
+                    ByteBuffer headerBuf = ByteBuffer.allocate(Integer.BYTES)
+                        .order(ByteOrder.nativeOrder());
+                    int headerBytes = readFully(channel, localPos, headerBuf);
+                    if (headerBytes != Integer.BYTES) {
+                        break;
+                    }
+                    headerBuf.flip();
+                    int payloadLen = headerBuf.getInt();
+                    if (payloadLen <= 0) {
+                        break;
+                    }
+
+                    long recordLen = wal.getRecordOverhead() + payloadLen;
+                    if (localPos + recordLen > seg.size()) {
+                        break;
+                    }
+
+                    ByteBuffer payloadBuf = ByteBuffer.allocate(payloadLen);
+                    int payloadBytes = readFully(channel, localPos + Integer.BYTES, payloadBuf);
+                    if (payloadBytes != payloadLen) {
+                        break;
+                    }
+                    payloadBuf.flip();
+                    byte[] payload = new byte[payloadLen];
+                    payloadBuf.get(payload);
+
+                    ByteBuffer crcBuf = ByteBuffer.allocate(Integer.BYTES)
+                        .order(ByteOrder.nativeOrder());
+                    int crcBytes = readFully(channel, localPos + Integer.BYTES + payloadLen, crcBuf);
+                    if (crcBytes != Integer.BYTES) {
+                        break;
+                    }
+                    crcBuf.flip();
+                    int storedCrc = crcBuf.getInt();
+                    int computedCrc = calculateCrc(payload);
+                    if (storedCrc != computedCrc) {
+                        break;
+                    }
+
+                    long recordStart = seg.startOffset() + localPos;
+                    long recordEnd = recordStart + recordLen;
+                    if (useSnapshotOffset) {
+                        if (recordEnd <= snapshotOffset) {
+                            localPos += recordLen;
+                            continue;
+                        }
+                        if (recordStart < snapshotOffset) {
+                            log.warn("Skipping WAL record that straddles snapshot boundary: boundary={}, start={}, end={}",
+                                snapshotOffset, recordStart, recordEnd);
+                            localPos += recordLen;
+                            continue;
+                        }
+                    } else if (snapshotIndex > 0) {
+                        physicalCount++;
+                        if (physicalCount <= snapshotIndex) {
+                            localPos += recordLen;
+                            continue;
+                        }
+                    }
+
+                    recoveredLastIndex++;
+                    startPositions.put(recoveredLastIndex, recordStart);
+                    recordLengths.put(recoveredLastIndex, (int) recordLen);
+                    if (payload.length >= TERM_PREFIX_SIZE) {
+                        recoveredLastTerm = ByteBuffer.wrap(payload, 0, TERM_PREFIX_SIZE).getLong();
+                        entryTerms.put(recoveredLastIndex, recoveredLastTerm);
+                    } else {
+                        entryTerms.put(recoveredLastIndex, 0L);
+                    }
+                    localPos += recordLen;
+                }
+            } catch (IOException e) {
+                log.warn("Failed to recover Raft log segment {}", seg.path(), e);
+                break;
+            }
+        }
+
+        lastLogIndex = recoveredLastIndex;
+        lastLogTerm = recoveredLastTerm;
+    }
+
+    private long resolveSnapshotOffset(long snapshotIndex) {
+        Long direct = startPositions.get(snapshotIndex + 1);
+        if (direct != null) {
+            return direct;
+        }
+
+        long nextIndex = Long.MAX_VALUE;
+        long nextStart = -1;
+        for (Map.Entry<Long, Long> entry : startPositions.entrySet()) {
+            long idx = entry.getKey();
+            if (idx > snapshotIndex && idx < nextIndex) {
+                nextIndex = idx;
+                nextStart = entry.getValue();
+            }
+        }
+        if (nextStart >= 0) {
+            return nextStart;
+        }
+
+        return wal.getWritePosition();
+    }
+
+    /**
+     * 读取指定 index 处 entry 的 term。
+     *
+     * @param index log index
+     * @return term，读取失败返回 -1
+     */
+    public synchronized long readEntryTerm(long index) {
+        Long cachedTerm = entryTerms.get(index);
+        if (cachedTerm != null) {
+            return cachedTerm;
+        }
+        Long startPos = startPositions.get(index);
+        Integer recordLen = recordLengths.get(index);
+        if (startPos == null || recordLen == null) {
+            if (wal != null && index == wal.getSnapshotIndex()) {
+                return wal.getSnapshotTerm();
+            }
+            return -1;
+        }
+        try {
+            byte[] framed = wal.readRecord(startPos, recordLen);
+            return ByteBuffer.wrap(framed).getLong();
+        } catch (IOException e) {
+            log.error("Failed to read entry term at index={}", index, e);
+            return -1;
+        }
+    }
+
+    /**
+     * 读取指定 index 处 entry 的完整 framed 数据（含 8 字节 term 前缀）。
+     *
+     * 用于 leader 复制日志条目到 follower 时保留原始 term 信息。
+     *
+     * @param index log index
+     * @return 完整 framed 数据（term prefix + payload），读取失败返回 null
+     */
+    public synchronized byte[] readEntryRaw(long index) {
+        Long startPos = startPositions.get(index);
+        Integer recordLen = recordLengths.get(index);
+        if (startPos == null || recordLen == null) return null;
+        try {
+            return wal.readRecord(startPos, recordLen);
+        } catch (IOException e) {
+            log.error("Failed to read raw Raft entry at index={}", index, e);
+            return null;
+        }
+    }
+
+    /**
+     * 读取指定 index 处 entry 的 payload（不含 term 前缀）。
+     *
+     * @param index log index
+     * @return 业务 payload，读取失败返回 null
+     */
+    public synchronized byte[] readEntry(long index) {
+        Long startPos = startPositions.get(index);
+        Integer recordLen = recordLengths.get(index);
+        if (startPos == null || recordLen == null) return null;
+        try {
+            byte[] framed = wal.readRecord(startPos, recordLen);
+            if (framed.length <= TERM_PREFIX_SIZE) return new byte[0];
+            byte[] payload = new byte[framed.length - TERM_PREFIX_SIZE];
+            System.arraycopy(framed, TERM_PREFIX_SIZE, payload, 0, payload.length);
+            return payload;
+        } catch (IOException e) {
+            log.error("Failed to read Raft entry at index={}", index, e);
+            return null;
+        }
+    }
+
+    /** @deprecated Use {@link #readEntry(long)} or {@link #readEntryRaw(long)} instead. */
+    @Deprecated
+    public synchronized byte[] getEntry(long index, int length) {
+        Long startPos = startPositions.get(index);
+        Integer recordLen = recordLengths.get(index);
+        if (startPos == null || recordLen == null) return null;
+        try { return wal.readRecord(startPos, recordLen); }
+        catch (Exception e) { log.error("Failed to read Raft entry at {}", index, e); return null; }
+    }
+
+    /**
+     * Truncate all log entries after {@code index} (§5.3 conflict resolution).
+     *
+     * Removes map entries for all indices &gt; {@code index} and rewinds the WAL
+     * write position to discard orphaned data. After truncation, the next
+     * {@link #appendEntry} will produce contiguous indices starting from
+     * the truncation point.
+     *
+     * Idempotent: if {@code index >= lastIndex()}, this is a no-op.
+     *
+     * @param index the last log index to preserve (WAL end position)
+     */
+    public synchronized void truncateAfter(long index) {
+        if (index >= lastIndex()) {
+            return; // nothing to truncate
+        }
+
+        long lastValidTerm = 0;
+        long snapshotIndex = wal != null ? wal.getSnapshotIndex() : 0;
+        if (index < snapshotIndex) {
+            log.warn("Ignoring truncateAfter({}) before snapshot index {}", index, snapshotIndex);
+            return;
+        }
+
+        Long startPos = startPositions.get(index);
+        Integer recLen = recordLengths.get(index);
+        long resetPos = 0;
+        if (startPos != null && recLen != null) {
+            // Read the term of the entry being kept as the anchor
+            try {
+                byte[] framed = wal.readRecord(startPos, recLen);
+                lastValidTerm = java.nio.ByteBuffer.wrap(framed).getLong();
+                resetPos = startPos + recLen;
+            } catch (IOException e) {
+                log.warn("Could not read term at index {} during truncation", index, e);
+            }
+        } else if (index == snapshotIndex) {
+            lastValidTerm = wal.getSnapshotTerm();
+            Long nextStart = startPositions.get(index + 1);
+            if (nextStart != null) {
+                resetPos = nextStart;
+            } else {
+                resetPos = wal.getWritePosition();
+            }
+        } else {
+            Long nextStart = startPositions.get(index + 1);
+            if (nextStart != null) {
+                resetPos = nextStart;
+            } else {
+                log.warn("Could not resolve reset position for truncateAfter({})", index);
+                return;
+            }
+        }
+
+        // Remove all map entries with key > index
+        startPositions.keySet().removeIf(k -> k > index);
+        recordLengths.keySet().removeIf(k -> k > index);
+        entryTerms.keySet().removeIf(k -> k > index);
+
+        // Rewind WAL to discard orphaned data past this index
+        // (resetPos is the end position of the last valid record = start of next write)
+        wal.resetTo(resetPos);
+
+        lastLogIndex = index;
+        lastLogTerm = lastValidTerm;
+        log.debug("Truncated log after index={}, new lastTerm={}", index, lastValidTerm);
+    }
+
+    /**
+     * Compact the log through {@code snapshotIndex}.
+     *
+     * The logical snapshot metadata is persisted together with the physical WAL
+     * boundary so recovery can skip the compacted prefix without re-scanning the
+     * deleted records.
+     *
+     * @param snapshotIndex last included index in the snapshot
+     * @return physical snapshot boundary offset
+     */
+    public synchronized long compactThrough(long snapshotIndex) {
+        long snapshotTerm = snapshotIndex > 0 ? readEntryTerm(snapshotIndex) : 0;
+        return compactThrough(snapshotIndex, snapshotTerm);
+    }
+
+    /**
+     * Compact the log through {@code snapshotIndex} using an explicit term.
+     *
+     * @param snapshotIndex last included index in the snapshot
+     * @param snapshotTerm  term of the last included entry
+     * @return physical snapshot boundary offset
+     */
+    public synchronized long compactThrough(long snapshotIndex, long snapshotTerm) {
+        if (wal == null) {
+            return 0;
+        }
+        if (snapshotIndex <= 0) {
+            return wal.getSnapshotOffset();
+        }
+        if (snapshotIndex < wal.getSnapshotIndex()) {
+            log.debug("Ignoring compaction behind current snapshot boundary: requested={}, current={}",
+                snapshotIndex, wal.getSnapshotIndex());
+            return wal.getSnapshotOffset();
+        }
+        if (snapshotTerm < 0) {
+            throw new IllegalStateException("Cannot compact snapshot index " + snapshotIndex + " without a valid term");
+        }
+
+        long snapshotOffset = resolveSnapshotOffset(snapshotIndex);
+
+        startPositions.keySet().removeIf(k -> k <= snapshotIndex);
+        recordLengths.keySet().removeIf(k -> k <= snapshotIndex);
+        entryTerms.keySet().removeIf(k -> k <= snapshotIndex);
+
+        wal.setSnapshotMetadata(snapshotIndex, snapshotTerm, snapshotOffset);
+        wal.truncateBefore(snapshotOffset);
+
+        if (snapshotIndex >= lastLogIndex) {
+            lastLogIndex = snapshotIndex;
+            lastLogTerm = snapshotTerm;
+        }
+
+        log.info("Compacted Raft log through index={} (term={}, offset={})",
+            snapshotIndex, snapshotTerm, snapshotOffset);
+        return snapshotOffset;
+    }
+
+    private int readFully(FileChannel channel, long position, ByteBuffer buffer) throws IOException {
+        int total = 0;
+        while (buffer.hasRemaining()) {
+            int read = channel.read(buffer, position + total);
+            if (read < 0) {
+                return total;
+            }
+            total += read;
+        }
+        return total;
+    }
+
+    private int calculateCrc(byte[] data) {
+        CRC32 crc = new CRC32();
+        crc.update(data, 0, data.length);
+        return (int) crc.getValue();
+    }
+}

@@ -19,9 +19,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Instant;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 基于 RocksDB 的 Intent 持久化存储。
@@ -51,8 +53,27 @@ public class RocksDBIntentStore implements IntentStore {
     private final RocksDB db;
     private final WriteOptions writeOptions;
     private final Path dbPath;
+    private final Map<IntentStatus, AtomicLong> statusCounts = new EnumMap<>(IntentStatus.class);
+    private final AtomicLong pendingCount = new AtomicLong();
 
+    /**
+     * 创建 RocksDBIntentStore，默认不启用 RocksDB WAL sync。
+     *
+     * loomq 使用 SimpleWalWriter 提供持久化保证，RocksDB 作为
+     * 可恢复的缓存层。syncWrites=false 避免双重 fsync 开销。
+     */
     public RocksDBIntentStore(Path dbPath) throws IOException {
+        this(dbPath, false);
+    }
+
+    /**
+     * 创建 RocksDBIntentStore。
+     *
+     * @param dbPath     RocksDB 数据目录
+     * @param syncWrites 是否每次写入同步刷盘。WAL 模式应设为 false；
+     *                   仅在没有外部 WAL 的 standalone 场景设为 true
+     */
+    public RocksDBIntentStore(Path dbPath, boolean syncWrites) throws IOException {
         this.dbPath = dbPath;
         RocksDB.loadLibrary();
 
@@ -63,21 +84,37 @@ public class RocksDBIntentStore implements IntentStore {
                 .setCreateMissingColumnFamilies(false);
 
             this.db = RocksDB.open(options, dbPath.toString());
-            this.writeOptions = new WriteOptions().setSync(true);
+            this.writeOptions = new WriteOptions().setSync(syncWrites);
+            initializeCounters();
 
-            logger.info("RocksDBIntentStore opened: path={}", dbPath);
+            logger.info("RocksDBIntentStore opened: path={}, syncWrites={}", dbPath, syncWrites);
         } catch (RocksDBException e) {
             throw new IOException("Failed to open RocksDB at " + dbPath, e);
         }
     }
 
+    /**
+     * 创建启用同步写入的 RocksDBIntentStore（standalone 模式）。
+     * 仅在没有外部 WAL 兜底时使用此工厂方法。
+     */
+    public static RocksDBIntentStore withDurableWrites(Path dbPath) throws IOException {
+        return new RocksDBIntentStore(dbPath, true);
+    }
+
     // ========== IntentStore 实现 ==========
+
+    private static byte[] prefixUpperBound(byte[] prefix) {
+        byte[] upper = prefix.clone();
+        upper[upper.length - 1]++;
+        return upper;
+    }
 
     @Override
     public void save(Intent intent) {
         try (WriteBatch batch = new WriteBatch()) {
             upsertToBatch(batch, intent);
             db.write(writeOptions, batch);
+            incrementCounts(intent.getStatus());
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to save intent: " + intent.getIntentId(), e);
         }
@@ -85,14 +122,21 @@ public class RocksDBIntentStore implements IntentStore {
 
     @Override
     public void update(Intent intent) {
-        // 读取旧状态以正确维护索引
+        // 读取旧状态以正确维护索引。
+        // 注意：findById 和 upsertToBatch 之间没有快照隔离。
+        // 但在单 writer-per-intent 场景（调度器保证）下，
+        // WriteBatch 提供的原子写入足以保证正确性。
         Intent old = findById(intent.getIntentId());
         try (WriteBatch batch = new WriteBatch()) {
             if (old != null) {
-                removeIndexEntries(batch, old, intent.getIntentId());
+                removeIndexEntries(batch, old, intent);
             }
             upsertToBatch(batch, intent);
             db.write(writeOptions, batch);
+            if (old != null) {
+                decrementCounts(old.getStatus());
+            }
+            incrementCounts(intent.getStatus());
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to update intent: " + intent.getIntentId(), e);
         }
@@ -111,16 +155,35 @@ public class RocksDBIntentStore implements IntentStore {
     }
 
     @Override
+    public void upsert(Intent intent) {
+        Intent old = findById(intent.getIntentId());
+        try (WriteBatch batch = new WriteBatch()) {
+            if (old != null) {
+                removeIndexEntries(batch, old, intent);
+            }
+            upsertToBatch(batch, intent);
+            db.write(writeOptions, batch);
+            if (old != null) {
+                decrementCounts(old.getStatus());
+            }
+            incrementCounts(intent.getStatus());
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to upsert intent: " + intent.getIntentId(), e);
+        }
+    }
+
+    @Override
     public void delete(String intentId) {
         Intent existing = findById(intentId);
         if (existing == null) return;
 
         try (WriteBatch batch = new WriteBatch()) {
             batch.delete(intentKey(intentId));
-            removeIndexEntries(batch, existing, intentId);
+            removeIndexEntries(batch, existing, existing);
             removeIdempotency(batch, existing);
 
             db.write(writeOptions, batch);
+            decrementCounts(existing.getStatus());
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to delete intent: " + intentId, e);
         }
@@ -144,18 +207,16 @@ public class RocksDBIntentStore implements IntentStore {
     }
 
     @Override
-    public long countByStatus(IntentStatus status) {
-        long count = 0;
-        byte[] prefix = statusPrefix(status);
-        try (RocksIterator it = db.newIterator()) {
-            it.seek(prefix);
-            while (it.isValid()) {
-                if (!startsWith(it.key(), prefix)) break;
-                count++;
-                it.next();
-            }
+    public void clear() {
+        try {
+            db.deleteRange(writeOptions, INTENT_PREFIX, prefixUpperBound(INTENT_PREFIX));
+            db.deleteRange(writeOptions, IDEMPOTENCY_PREFIX, prefixUpperBound(IDEMPOTENCY_PREFIX));
+            db.deleteRange(writeOptions, STATUS_PREFIX, prefixUpperBound(STATUS_PREFIX));
+            db.deleteRange(writeOptions, EXECUTE_AT_PREFIX, prefixUpperBound(EXECUTE_AT_PREFIX));
+            resetCounters();
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to clear RocksDB intent store", e);
         }
-        return count;
     }
 
     @Override
@@ -191,14 +252,9 @@ public class RocksDBIntentStore implements IntentStore {
     }
 
     @Override
-    public long getPendingCount() {
-        long total = 0;
-        for (IntentStatus status : IntentStatus.values()) {
-            if (!status.isTerminal()) {
-                total += countByStatus(status);
-            }
-        }
-        return total;
+    public long countByStatus(IntentStatus status) {
+        AtomicLong counter = statusCounts.get(status);
+        return counter != null ? counter.get() : 0L;
     }
 
     @Override
@@ -227,15 +283,71 @@ public class RocksDBIntentStore implements IntentStore {
         }
     }
 
-    private void removeIndexEntries(WriteBatch batch, Intent old, String intentId) throws RocksDBException {
-        batch.delete(statusKey(old));
-        batch.delete(executeAtKey(old));
+    @Override
+    public long getPendingCount() {
+        return pendingCount.get();
     }
 
     private void removeIdempotency(WriteBatch batch, Intent intent) throws RocksDBException {
         String key = intent.getIdempotencyKey();
         if (key != null) {
             batch.delete(idempotencyKey(key));
+        }
+    }
+
+    private void removeIndexEntries(WriteBatch batch, Intent old, Intent intent) throws RocksDBException {
+        batch.delete(statusKey(old));
+        batch.delete(executeAtKey(old));
+        String oldKey = old.getIdempotencyKey();
+        String newKey = intent.getIdempotencyKey();
+        if (oldKey != null && !Objects.equals(oldKey, newKey)) {
+            batch.delete(idempotencyKey(oldKey));
+        }
+    }
+
+    private void incrementCounts(IntentStatus status) {
+        if (status == null) {
+            return;
+        }
+        AtomicLong counter = statusCounts.get(status);
+        if (counter != null) {
+            counter.incrementAndGet();
+        }
+        if (!status.isTerminal()) {
+            pendingCount.incrementAndGet();
+        }
+    }
+
+    private void decrementCounts(IntentStatus status) {
+        if (status == null) {
+            return;
+        }
+        AtomicLong counter = statusCounts.get(status);
+        if (counter != null) {
+            counter.decrementAndGet();
+        }
+        if (!status.isTerminal()) {
+            pendingCount.decrementAndGet();
+        }
+    }
+
+    private void initializeCounters() throws RocksDBException {
+        for (IntentStatus status : IntentStatus.values()) {
+            statusCounts.put(status, new AtomicLong(0));
+        }
+        pendingCount.set(0);
+        try (RocksIterator it = db.newIterator()) {
+            it.seek(INTENT_PREFIX);
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (!startsWith(key, INTENT_PREFIX)) {
+                    break;
+                }
+
+                Intent intent = IntentBinaryCodec.decode(it.value());
+                incrementCounts(intent.getStatus());
+                it.next();
+            }
         }
     }
 
@@ -274,6 +386,13 @@ public class RocksDBIntentStore implements IntentStore {
 
     private static byte[] statusPrefix(IntentStatus status) {
         return (STATUS_PREFIX_STR + status.name()).getBytes(StandardCharsets.UTF_8);
+    }
+
+    private void resetCounters() {
+        for (AtomicLong counter : statusCounts.values()) {
+            counter.set(0);
+        }
+        pendingCount.set(0);
     }
 
     private static boolean startsWith(byte[] data, byte[] prefix) {

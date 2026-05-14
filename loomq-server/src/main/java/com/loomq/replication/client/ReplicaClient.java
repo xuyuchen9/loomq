@@ -9,6 +9,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -106,45 +107,47 @@ public class ReplicaClient {
                 new IllegalStateException("Client is shutdown"));
         }
 
-        return CompletableFuture.runAsync(() -> {
-            eventLoopGroup = new NioEventLoopGroup();
+        eventLoopGroup = new NioEventLoopGroup();
 
-            try {
-                Bootstrap bootstrap = new Bootstrap();
-                bootstrap.group(eventLoopGroup)
-                    .channel(NioSocketChannel.class)
-                    .handler(new ChannelInitializer<SocketChannel>() {
-                        @Override
-                        protected void initChannel(SocketChannel ch) throws Exception {
-                            ChannelPipeline pipeline = ch.pipeline();
+        try {
+            Bootstrap bootstrap = new Bootstrap();
+            bootstrap.group(eventLoopGroup)
+                .channel(NioSocketChannel.class)
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000)
+                .handler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) throws Exception {
+                        ChannelPipeline pipeline = ch.pipeline();
 
-                            // 心跳：写超时（定期发送心跳）
-                            pipeline.addLast(new IdleStateHandler(
-                                0, 2, 0));  // 每 2 秒发送一次心跳
+                        // 心跳：写超时（定期发送心跳）
+                        pipeline.addLast(new IdleStateHandler(
+                            0, 2, 0));  // 每 2 秒发送一次心跳
 
-                            // 协议编解码
-                            pipeline.addLast(new ReplicationProtocol());
+                        // 协议编解码
+                        pipeline.addLast(new ReplicationProtocol());
 
-                            // 业务处理器
-                            pipeline.addLast(new ClientHandler());
-                        }
-                    });
+                        // 业务处理器
+                        pipeline.addLast(new ClientHandler());
+                    }
+                });
 
-                // 连接
-                ChannelFuture future = bootstrap.connect(replicaHost, replicaPort).sync();
-                channel = future.channel();
-                connected.set(true);
+            // 连接
+            ChannelFuture future = bootstrap.connect(replicaHost, replicaPort).sync();
+            channel = future.channel();
+            connected.set(true);
 
-                logger.info("Connected to replica at {}:{}", replicaHost, replicaPort);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException("Connection interrupted", e);
-            } catch (Exception e) {
-                // Netty Bootstrap.connect() 可抛多种 checked exception (ConnectException, UnknownHostException 等)
-                // 统一 wrap 为 RuntimeException 以适配 CompletableFuture.runAsync 的签名
-                throw new RuntimeException("Failed to connect to replica", e);
-            }
-        });
+            logger.info("Connected to replica at {}:{}", replicaHost, replicaPort);
+            return CompletableFuture.completedFuture(null);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            cleanupAfterFailedConnect();
+            return CompletableFuture.failedFuture(new RuntimeException("Connection interrupted", e));
+        } catch (Exception e) {
+            // Netty Bootstrap.connect() 可抛多种 checked exception (ConnectException, UnknownHostException 等)
+            // 统一 wrap 为 RuntimeException 以适配 CompletableFuture 的返回签名
+            cleanupAfterFailedConnect();
+            return CompletableFuture.failedFuture(new RuntimeException("Failed to connect to replica", e));
+        }
     }
 
     /**
@@ -217,6 +220,18 @@ public class ReplicaClient {
             pendingAcks.clear();
 
             logger.info("Disconnected from replica");
+        }
+    }
+
+    private void cleanupAfterFailedConnect() {
+        connected.set(false);
+        if (channel != null) {
+            channel.close();
+            channel = null;
+        }
+        if (eventLoopGroup != null) {
+            eventLoopGroup.shutdownGracefully();
+            eventLoopGroup = null;
         }
     }
 

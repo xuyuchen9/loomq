@@ -61,6 +61,7 @@ public class ReplicaServer {
 
     // 处理器
     private Consumer<ReplicationRecord> recordHandler;
+    private java.util.function.Function<ReplicationRecord, Ack> ackHandler;
     private Consumer<HeartbeatMessage> heartbeatHandler;
 
     public ReplicaServer(String nodeId, String bindHost, int bindPort) {
@@ -75,10 +76,19 @@ public class ReplicaServer {
     }
 
     /**
-     * 设置记录处理器
+     * 设置记录处理器（普通模式：自动发送 Ack.success）
      */
     public void setRecordHandler(Consumer<ReplicationRecord> handler) {
         this.recordHandler = handler;
+    }
+
+    /**
+     * 设置 Ack 感知的记录处理器（Raft 模式：处理器返回自定义 Ack）
+     * 设置后，handleReplicationRecord 将使用此处理器的返回值作为 Ack，
+     * 而非自动生成 Ack.success。
+     */
+    public void setAckHandler(java.util.function.Function<ReplicationRecord, Ack> handler) {
+        this.ackHandler = handler;
     }
 
     /**
@@ -90,15 +100,23 @@ public class ReplicaServer {
 
     /**
      * 启动服务器
+     *
+     * 返回的 future 会在服务端完成 bind、开始接受连接后完成，
+     * 服务则会继续运行直到调用 shutdown()。
      */
     public CompletableFuture<Void> start() {
         if (started.compareAndSet(false, true)) {
-            return CompletableFuture.runAsync(this::doStart);
+            CompletableFuture<Void> startedFuture = new CompletableFuture<>();
+            Thread startupThread = new Thread(() -> doStart(startedFuture),
+                "replica-server-" + nodeId + "-" + bindPort);
+            startupThread.setDaemon(true);
+            startupThread.start();
+            return startedFuture;
         }
         return CompletableFuture.completedFuture(null);
     }
 
-    private void doStart() {
+    private void doStart(CompletableFuture<Void> startedFuture) {
         bossGroup = new NioEventLoopGroup(1);
         workerGroup = new NioEventLoopGroup();
 
@@ -130,12 +148,22 @@ public class ReplicaServer {
             serverChannel = future.channel();
 
             logger.info("ReplicaServer started on {}:{}", bindHost, bindPort);
+            startedFuture.complete(null);
 
             // 等待关闭
             serverChannel.closeFuture().sync();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             logger.warn("ReplicaServer interrupted");
+            if (!startedFuture.isDone()) {
+                startedFuture.completeExceptionally(e);
+            }
+        } catch (RuntimeException | Error e) {
+            logger.error("ReplicaServer failed to start", e);
+            if (!startedFuture.isDone()) {
+                startedFuture.completeExceptionally(e);
+            }
+            throw e;
         } finally {
             shutdown();
         }
@@ -165,6 +193,16 @@ public class ReplicaServer {
             }
 
             logger.info("ReplicaServer shutdown complete");
+        }
+    }
+
+    /**
+     * 主动发送一个 Ack 到 Primary（供 RaftTransport 等自定义响应使用）。
+     */
+    public void sendAck(Ack ack) {
+        Channel ch = primaryChannel.get();
+        if (ch != null && ch.isActive()) {
+            ch.writeAndFlush(ack);
         }
     }
 
@@ -226,21 +264,21 @@ public class ReplicaServer {
                 record.getOffset(), record.getType());
 
             try {
-                // 调用业务处理器
-                if (recordHandler != null) {
-                    recordHandler.accept(record);
+                Ack ack = null;
+                if (ackHandler != null) {
+                    ack = ackHandler.apply(record);
                 }
-
-                // 发送 ACK
-                Ack ack = Ack.success(record.getOffset());
+                if (ack == null) {
+                    if (recordHandler != null) {
+                        recordHandler.accept(record);
+                    }
+                    ack = Ack.success(record.getOffset());
+                }
                 ctx.writeAndFlush(ack);
-
                 logger.debug("Sent ACK for offset={}", record.getOffset());
             } catch (RuntimeException e) {
                 logger.error("Failed to process replication record: offset={}",
                     record.getOffset(), e);
-
-                // 发送失败 ACK
                 Ack ack = Ack.failed(record.getOffset(), e.getMessage());
                 ctx.writeAndFlush(ack);
             }

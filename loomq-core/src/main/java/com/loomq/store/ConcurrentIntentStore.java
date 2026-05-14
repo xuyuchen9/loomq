@@ -50,14 +50,20 @@ public class ConcurrentIntentStore implements IntentStore {
 
     @Override
     public void save(Intent intent) {
-        upsert(intent);
+        upsertInternal(intent);
         logger.debug("Intent saved: id={}, status={}", intent.getIntentId(), intent.getStatus());
     }
 
     @Override
     public void update(Intent intent) {
-        upsert(intent);
+        upsertInternal(intent);
         logger.debug("Intent updated: id={}, status={}", intent.getIntentId(), intent.getStatus());
+    }
+
+    @Override
+    public void upsert(Intent intent) {
+        upsertInternal(intent);
+        logger.debug("Intent upserted: id={}, status={}", intent.getIntentId(), intent.getStatus());
     }
 
     @Override
@@ -106,6 +112,14 @@ public class ConcurrentIntentStore implements IntentStore {
     }
 
     @Override
+    public void clear() {
+        intents.clear();
+        idempotencyRecords.clear();
+        statusCounts.values().forEach(counter -> counter.set(0));
+        pendingCount.set(0);
+    }
+
+    @Override
     public Map<String, Intent> getAllIntents() {
         Map<String, Intent> snapshot = new HashMap<>(intents.size());
         intents.forEach((id, stored) -> snapshot.put(id, stored.intent()));
@@ -151,7 +165,16 @@ public class ConcurrentIntentStore implements IntentStore {
         }
     }
 
-    private void upsert(Intent intent) {
+    /**
+     * 原子性 upsert（单 key 级别）。
+     *
+     * 注意：statusCounts 和 idempotencyRecords 的更新与 intents 主 map 的更新
+     * 不是跨 map 原子操作。在单 writer-per-intent 场景（当前调度器保证）下，
+     * 这种最终一致性是可接受的。
+     *
+     * 若未来引入并发写入同一 intent 的场景，需引入锁或事务包装。
+     */
+    private void upsertInternal(Intent intent) {
         intents.compute(intent.getIntentId(), (id, existing) -> {
             IntentStatus previousStatus = existing != null ? existing.status() : null;
             String previousIdempotencyKey = existing != null ? existing.intent().getIdempotencyKey() : null;

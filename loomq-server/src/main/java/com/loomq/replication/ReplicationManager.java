@@ -115,12 +115,11 @@ public class ReplicationManager implements AutoCloseable {
         replicaServer.setRecordHandler(this::onReplicationRecord);
         replicaServer.setHeartbeatHandler(this::onHeartbeat);
 
-        CompletableFuture<Void> future = replicaServer.start();
-        role.set(ReplicaRole.FOLLOWER);
-        running.set(true);
-
-        logger.info("{} successfully demoted to REPLICA", nodeId);
-        return future;
+        return replicaServer.start().thenRun(() -> {
+            role.set(ReplicaRole.FOLLOWER);
+            running.set(true);
+            logger.info("{} successfully demoted to REPLICA", nodeId);
+        });
     }
 
     /**

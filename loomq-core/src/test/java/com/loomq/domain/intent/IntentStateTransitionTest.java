@@ -1,6 +1,5 @@
 package com.loomq.domain.intent;
 
-import com.loomq.domain.intent.AckMode;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -192,11 +191,13 @@ class IntentStateTransitionTest {
     }
 
     @Test
-    void shouldRejectDueToDeadLettered() {
+    void shouldAllowDueToDeadLetteredOnExpiry() {
         Intent intent = new Intent("intent-j6");
         intent.transitionTo(IntentStatus.SCHEDULED);
         intent.transitionTo(IntentStatus.DUE);
-        assertThrows(IllegalStateException.class, () -> intent.transitionTo(IntentStatus.DEAD_LETTERED));
+        // DUE -> DEAD_LETTERED is now valid: when an intent's deadline
+        // passes while in DUE state, handleExpired() transitions directly.
+        assertDoesNotThrow(() -> intent.transitionTo(IntentStatus.DEAD_LETTERED));
     }
 
     @Test
@@ -233,6 +234,7 @@ class IntentStateTransitionTest {
         Instant deadline = Instant.parse("2026-01-01T00:20:00Z");
 
         Intent restored = Intent.restore(
+            null,
             "intent-restore",
             IntentStatus.DELIVERED,
             createdAt,
@@ -273,6 +275,7 @@ class IntentStateTransitionTest {
     @Test
     void shouldRestoreAckedIntentAsTerminal() {
         Intent restored = Intent.restore(
+            null,
             "intent-acked", IntentStatus.ACKED,
             Instant.now(), Instant.now(), Instant.now(), null,
             ExpiredAction.DISCARD, PrecisionTier.HIGH, null,

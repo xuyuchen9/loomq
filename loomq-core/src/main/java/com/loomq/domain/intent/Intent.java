@@ -1,7 +1,5 @@
 package com.loomq.domain.intent;
 
-import com.loomq.domain.intent.AckMode;
-
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
@@ -154,7 +152,8 @@ public class Intent {
         this.attempts = 0;
     }
 
-    private Intent(String intentId,
+    private Intent(String traceId,
+                   String intentId,
                    IntentStatus status,
                    Instant createdAt,
                    Instant updatedAt,
@@ -172,6 +171,7 @@ public class Intent {
                    Map<String, String> tags,
                    int attempts,
                    String lastDeliveryId) {
+        this.traceId = traceId != null ? traceId : generateTraceId();
         this.intentId = Objects.requireNonNullElse(intentId, generateIntentId());
         this.status = status != null ? status : IntentStatus.CREATED;
         this.createdAt = createdAt != null ? createdAt : Instant.now();
@@ -190,13 +190,13 @@ public class Intent {
         this.tags = tags != null && !tags.isEmpty() ? Map.copyOf(tags) : null;
         this.attempts = attempts;
         this.lastDeliveryId = lastDeliveryId;
-        this.traceId = generateTraceId();
     }
 
     /**
      * 从持久化状态恢复 Intent。
      */
-    public static Intent restore(String intentId,
+    public static Intent restore(String traceId,
+                                 String intentId,
                                  IntentStatus status,
                                  Instant createdAt,
                                  Instant updatedAt,
@@ -215,6 +215,7 @@ public class Intent {
                                  int attempts,
                                  String lastDeliveryId) {
         return new Intent(
+            traceId,
             intentId,
             status,
             createdAt,
@@ -271,8 +272,10 @@ public class Intent {
         // 特定转换规则
         boolean valid = switch (from) {
             case CREATED -> to == IntentStatus.SCHEDULED;
-            case SCHEDULED -> to == IntentStatus.DUE || to == IntentStatus.CANCELED;
-            case DUE -> to == IntentStatus.DISPATCHING || to == IntentStatus.CANCELED;
+            case SCHEDULED -> to == IntentStatus.DUE || to == IntentStatus.CANCELED
+                || to == IntentStatus.EXPIRED || to == IntentStatus.DEAD_LETTERED;
+            case DUE -> to == IntentStatus.DISPATCHING || to == IntentStatus.CANCELED
+                || to == IntentStatus.EXPIRED || to == IntentStatus.DEAD_LETTERED;
             case DISPATCHING -> to == IntentStatus.DELIVERED || to == IntentStatus.DEAD_LETTERED || to == IntentStatus.SCHEDULED || to == IntentStatus.EXPIRED;
             case DELIVERED -> to == IntentStatus.ACKED || to == IntentStatus.EXPIRED;
             default -> false;
