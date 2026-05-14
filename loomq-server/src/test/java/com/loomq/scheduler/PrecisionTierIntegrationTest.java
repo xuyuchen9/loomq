@@ -4,7 +4,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.loomq.LoomqEngine;
+import com.loomq.config.ServerConfig;
 import com.loomq.domain.intent.PrecisionTier;
+import com.loomq.http.netty.IntentHandler;
+import com.loomq.http.netty.NettyHttpServer;
+import com.loomq.http.netty.RadixRouter;
+import com.loomq.metrics.LoomQMetrics;
+import com.loomq.spi.DeliveryHandler;
+import com.loomq.spi.DeliveryHandler.DeliveryResult;
+import io.netty.handler.codec.http.HttpMethod;
 import java.io.File;
 import java.net.ServerSocket;
 import java.nio.file.Files;
@@ -15,7 +23,9 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -50,6 +60,7 @@ public class PrecisionTierIntegrationTest {
     private static int port;
     private static String baseUrl;
     private static LoomqEngine engine;
+    private static NettyHttpServer server;
     private static Path tempDir;
 
     // SLO 边界 (p99)
@@ -72,8 +83,18 @@ public class PrecisionTierIntegrationTest {
         engine = LoomqEngine.builder()
             .nodeId("precision-test-node")
             .walDir(tempDir)
+            .deliveryHandler(NOOP_DELIVERY_HANDLER)
             .build();
         engine.start();
+
+        RadixRouter router = new RadixRouter();
+        new IntentHandler(engine).register(router);
+        router.add(HttpMethod.GET, "/health", (method, uri, body, headers, pathParams) -> Map.of("status", "UP"));
+        router.add(HttpMethod.GET, "/metrics", (method, uri, body, headers, pathParams) ->
+            LoomQMetrics.getInstance().snapshot());
+
+        server = new NettyHttpServer(testConfig(), router);
+        server.start();
 
         Thread.sleep(1500);
 
@@ -92,9 +113,42 @@ public class PrecisionTierIntegrationTest {
         }
     }
 
+    private static final DeliveryHandler NOOP_DELIVERY_HANDLER =
+        intent -> CompletableFuture.completedFuture(DeliveryResult.SUCCESS);
+
+    private static ServerConfig testConfig() {
+        Properties props = new Properties();
+        props.setProperty("host", "127.0.0.1");
+        props.setProperty("port", String.valueOf(port));
+        props.setProperty("bossThreads", "1");
+        props.setProperty("workerThreads", "0");
+        props.setProperty("maxContentLength", String.valueOf(10 * 1024 * 1024));
+        props.setProperty("useEpoll", "false");
+        props.setProperty("pooledAllocator", "true");
+        props.setProperty("soBacklog", "1024");
+        props.setProperty("tcpNoDelay", "true");
+        props.setProperty("connectionTimeoutMs", "30000");
+        props.setProperty("idleTimeoutSeconds", "60");
+        props.setProperty("maxConnections", "1000");
+        props.setProperty("writeBufferHighWaterMark", String.valueOf(1024 * 1024));
+        props.setProperty("writeBufferLowWaterMark", String.valueOf(512 * 1024));
+        props.setProperty("maxConcurrentBusinessRequests", "100");
+        props.setProperty("gracefulShutdownTimeoutMs", "5000");
+        props.setProperty("server.host", "127.0.0.1");
+        props.setProperty("server.port", String.valueOf(port));
+        props.setProperty("server.backlog", "1024");
+        props.setProperty("server.virtual_threads", "true");
+        props.setProperty("server.max_request_size", String.valueOf(10 * 1024 * 1024));
+        props.setProperty("server.thread_pool_size", "200");
+        return ServerConfig.fromProperties(props);
+    }
+
     @AfterAll
     static void tearDown() throws Exception {
         logger.info("Stopping engine...");
+        if (server != null) {
+            server.stop();
+        }
         if (engine != null) {
             engine.close();
         }
@@ -282,8 +336,8 @@ public class PrecisionTierIntegrationTest {
         assertEquals(200, response.getStatus());
         String metrics = response.getBody();
 
-        // 验证基本指标存在
-        assertTrue(metrics.contains("loomq_intents") || metrics.contains("loomq_intents"),
+        // 验证当前 JSON metrics 形状存在
+        assertTrue(metrics.contains("\"intentsCreated\"") || metrics.contains("\"walHealthy\""),
             "Should have loomq metrics. Got: " + metrics.substring(0, Math.min(500, metrics.length())));
 
         logger.info("✅ PT-05 PASSED: Metrics endpoint works");
@@ -422,11 +476,11 @@ public class PrecisionTierIntegrationTest {
 
         assertEquals(200, response.getStatus());
 
-        // Prometheus 格式指标应该正常返回
-        assertTrue(response.getBody().contains("loomq_intents_created_total") ||
-                   response.getBody().contains("loomq_wal"));
+        // 当前 metrics 端点返回 JSON snapshot
+        assertTrue(response.getBody().contains("\"intentsCreated\"") ||
+                   response.getBody().contains("\"walHealthy\""));
 
-        logger.info("✅ PT-09 PASSED: Prometheus metrics endpoint works");
+        logger.info("✅ PT-09 PASSED: Metrics endpoint works");
     }
 
     @Test

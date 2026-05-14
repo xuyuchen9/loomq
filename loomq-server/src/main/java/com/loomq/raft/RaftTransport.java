@@ -212,6 +212,23 @@ public class RaftTransport implements AutoCloseable {
         });
     }
 
+    /** Whether the outbound connection to a peer is currently active. */
+    public boolean isPeerConnected(String peerId) {
+        ReplicaClient client = clients.get(peerId);
+        return client != null && client.isConnected();
+    }
+
+    /** Number of currently connected peers. */
+    public int connectedPeerCount() {
+        int connected = 0;
+        for (ReplicaClient client : clients.values()) {
+            if (client != null && client.isConnected()) {
+                connected++;
+            }
+        }
+        return connected;
+    }
+
     // ========== Server-side handlers (called from Ack handler) ==========
 
     /** Send RequestVote to a peer */

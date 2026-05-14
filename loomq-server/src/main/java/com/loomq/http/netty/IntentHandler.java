@@ -15,10 +15,15 @@ import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.http.json.JsonCodec;
+import com.loomq.raft.RaftStatusProvider;
+import com.loomq.raft.RaftWriteCoordinator;
+import com.loomq.raft.RaftWriteUnavailableException;
 import com.loomq.store.IdempotencyResult;
 import com.loomq.tracing.IntentTrace;
 import com.loomq.tracing.IntentTraceStore;
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -39,10 +44,23 @@ public class IntentHandler {
     private static final PrecisionTier DEFAULT_PRECISION_TIER = PrecisionTierCatalog.defaultCatalog().defaultTier();
 
     private final LoomqEngine engine;
+    private final RaftStatusProvider raftStatus;
+    private final RaftWriteCoordinator raftWriteCoordinator;
     private final JsonCodec jsonCodec;
 
     public IntentHandler(LoomqEngine engine) {
+        this(engine, null, null);
+    }
+
+    public IntentHandler(LoomqEngine engine, RaftStatusProvider raftStatus) {
+        this(engine, raftStatus, null);
+    }
+
+    public IntentHandler(LoomqEngine engine, RaftStatusProvider raftStatus,
+                         RaftWriteCoordinator raftWriteCoordinator) {
         this.engine = engine;
+        this.raftStatus = raftStatus;
+        this.raftWriteCoordinator = raftWriteCoordinator;
         this.jsonCodec = JsonCodec.instance();
     }
 
@@ -64,6 +82,10 @@ public class IntentHandler {
     public Object createIntent(HttpMethod method, String uri, byte[] body,
                                Map<String, String> headers,
                                Map<String, String> pathParams) throws Exception {
+        if (isRaftWriteBlocked()) {
+            return leaderHintWriteResponse("create", null);
+        }
+
         CreateIntentRequest request = jsonCodec.read(body, CreateIntentRequest.class);
 
         ValidationResult validation = IntentValidator.validateCreate(
@@ -103,21 +125,25 @@ public class IntentHandler {
             }
         }
 
-        Intent intent = new Intent(intentId);
-        intent.setExecuteAt(request.executeAt());
-        intent.setDeadline(request.deadline());
-        intent.setExpiredAction(request.expiredAction());
-        intent.setPrecisionTier(request.precisionTier() != null ? request.precisionTier() : DEFAULT_PRECISION_TIER);
-        intent.setWalMode(request.walMode());
-        intent.setShardKey(request.shardKey());
-        intent.setAckMode(request.ackLevel() != null ? request.ackLevel() : AckMode.DURABLE);
-        intent.setCallback(request.callback());
-        intent.setRedelivery(request.redelivery());
-        intent.setIdempotencyKey(request.idempotencyKey());
-        intent.setTags(request.tags());
-
         try {
+            Intent intent = buildCreateIntentDraft(request, intentId);
+
+            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+                Intent raftSnapshot = intent.copy();
+                raftSnapshot.transitionTo(IntentStatus.SCHEDULED);
+                Intent committed = raftWriteCoordinator.commitSnapshot(raftSnapshot, "create");
+                logger.info("Intent created via Raft: id={}, executeAt={}, ackLevel={}",
+                    committed.getIntentId(), committed.getExecuteAt(), committed.getAckMode());
+                return new IntentHandler.CreatedResponse(201, IntentResponse.from(committed));
+            }
+
             engine.createIntent(intent, intent.getAckMode()).join();
+            logger.info("Intent created: id={}, executeAt={}, ackLevel={}",
+                intent.getIntentId(), intent.getExecuteAt(), intent.getAckMode());
+            return new IntentHandler.CreatedResponse(201, IntentResponse.from(intent));
+        } catch (RaftWriteUnavailableException e) {
+            logger.warn("Raft write unavailable for create: {}", e.getMessage());
+            return raftWriteUnavailableResponse("create", null, e.reason());
         } catch (CompletionException e) {
             if (e.getCause() instanceof BackPressureException bpe) {
                 return new HttpErrorResponse(429, ErrorResponse.of(
@@ -128,11 +154,6 @@ public class IntentHandler {
             }
             throw e;
         }
-
-        logger.info("Intent created: id={}, executeAt={}, ackLevel={}",
-            intent.getIntentId(), intent.getExecuteAt(), intent.getAckMode());
-
-        return new IntentHandler.CreatedResponse(201, IntentResponse.from(intent));
     }
 
     /**
@@ -142,6 +163,10 @@ public class IntentHandler {
                             Map<String, String> headers,
                             Map<String, String> pathParams) {
         String intentId = pathParams.get("intentId");
+
+        if (isRaftFollowerReadBlocked()) {
+            return leaderHintResponse(intentId);
+        }
 
         Optional<Intent> intent = engine.getIntent(intentId);
         if (intent.isEmpty()) {
@@ -158,6 +183,9 @@ public class IntentHandler {
                              Map<String, String> headers,
                              Map<String, String> pathParams) throws Exception {
         String intentId = pathParams.get("intentId");
+        if (isRaftWriteBlocked()) {
+            return leaderHintWriteResponse("patch", intentId);
+        }
         PatchIntentRequest request = jsonCodec.read(body, PatchIntentRequest.class);
 
         Optional<Intent> current = engine.getIntent(intentId);
@@ -176,26 +204,53 @@ public class IntentHandler {
             }
         }
 
-        Optional<Intent> updated = engine.updateIntent(intentId, intent -> {
-            if (request.deadline() != null) {
-                intent.setDeadline(request.deadline());
-            }
-            if (request.expiredAction() != null) {
-                intent.setExpiredAction(request.expiredAction());
-            }
-            if (request.redelivery() != null) {
-                intent.setRedelivery(request.redelivery());
-            }
-            if (request.tags() != null) {
-                intent.setTags(request.tags());
-            }
-        }, request.executeAt());
-
-        if (updated.isEmpty()) {
-            return errorResponse(404, "40401", "Intent not found: " + intentId);
+        Intent updatedSnapshot = current.get().copy();
+        if (request.deadline() != null) {
+            updatedSnapshot.setDeadline(request.deadline());
+        }
+        if (request.expiredAction() != null) {
+            updatedSnapshot.setExpiredAction(request.expiredAction());
+        }
+        if (request.redelivery() != null) {
+            updatedSnapshot.setRedelivery(request.redelivery());
+        }
+        if (request.tags() != null) {
+            updatedSnapshot.setTags(request.tags());
+        }
+        if (request.executeAt() != null) {
+            updatedSnapshot.setExecuteAt(request.executeAt());
         }
 
-        return IntentResponse.from(updated.get());
+        try {
+            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+                Intent committed = raftWriteCoordinator.commitSnapshot(updatedSnapshot, "patch");
+                return IntentResponse.from(committed);
+            }
+
+            Optional<Intent> updated = engine.updateIntent(intentId, intent -> {
+                if (request.deadline() != null) {
+                    intent.setDeadline(request.deadline());
+                }
+                if (request.expiredAction() != null) {
+                    intent.setExpiredAction(request.expiredAction());
+                }
+                if (request.redelivery() != null) {
+                    intent.setRedelivery(request.redelivery());
+                }
+                if (request.tags() != null) {
+                    intent.setTags(request.tags());
+                }
+            }, request.executeAt());
+
+            if (updated.isEmpty()) {
+                return errorResponse(404, "40401", "Intent not found: " + intentId);
+            }
+
+            return IntentResponse.from(updated.get());
+        } catch (RaftWriteUnavailableException e) {
+            logger.warn("Raft write unavailable for patch {}: {}", intentId, e.getMessage());
+            return raftWriteUnavailableResponse("patch", intentId, e.reason());
+        }
     }
 
     /**
@@ -205,6 +260,9 @@ public class IntentHandler {
                                Map<String, String> headers,
                                Map<String, String> pathParams) {
         String intentId = pathParams.get("intentId");
+        if (isRaftWriteBlocked()) {
+            return leaderHintWriteResponse("cancel", intentId);
+        }
 
         Optional<Intent> current = engine.getIntent(intentId);
         if (current.isEmpty()) {
@@ -216,11 +274,24 @@ public class IntentHandler {
             return errorResponse(422, "42204", "Intent cannot be cancelled in state: " + intent.getStatus());
         }
 
-        if (!engine.cancelIntent(intentId)) {
-            return errorResponse(500, "50002", "Failed to cancel intent");
-        }
+        try {
+            Intent cancelledSnapshot = intent.copy();
+            cancelledSnapshot.transitionTo(IntentStatus.CANCELED);
 
-        return IntentResponse.from(intent);
+            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+                Intent committed = raftWriteCoordinator.commitSnapshot(cancelledSnapshot, "cancel");
+                return IntentResponse.from(committed);
+            }
+
+            if (!engine.cancelIntent(intentId)) {
+                return errorResponse(500, "50002", "Failed to cancel intent");
+            }
+
+            return IntentResponse.from(intent);
+        } catch (RaftWriteUnavailableException e) {
+            logger.warn("Raft write unavailable for cancel {}: {}", intentId, e.getMessage());
+            return raftWriteUnavailableResponse("cancel", intentId, e.reason());
+        }
     }
 
     /**
@@ -230,17 +301,33 @@ public class IntentHandler {
                           Map<String, String> headers,
                           Map<String, String> pathParams) {
         String intentId = pathParams.get("intentId");
+        if (isRaftWriteBlocked()) {
+            return leaderHintWriteResponse("fire-now", intentId);
+        }
 
         Optional<Intent> current = engine.getIntent(intentId);
         if (current.isEmpty()) {
             return errorResponse(404, "40401", "Intent not found: " + intentId);
         }
 
-        if (!engine.fireNow(intentId)) {
-            return errorResponse(500, "50003", "Failed to trigger intent immediately");
-        }
+        try {
+            Intent fireNowSnapshot = current.get().copy();
+            fireNowSnapshot.setExecuteAt(java.time.Instant.now());
 
-        return new IntentActionResponse(intentId, IntentStatus.DISPATCHING.name());
+            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+                raftWriteCoordinator.commitSnapshot(fireNowSnapshot, "fire-now");
+                return new IntentActionResponse(intentId, IntentStatus.DISPATCHING.name());
+            }
+
+            if (!engine.fireNow(intentId)) {
+                return errorResponse(500, "50003", "Failed to trigger intent immediately");
+            }
+
+            return new IntentActionResponse(intentId, IntentStatus.DISPATCHING.name());
+        } catch (RaftWriteUnavailableException e) {
+            logger.warn("Raft write unavailable for fire-now {}: {}", intentId, e.getMessage());
+            return raftWriteUnavailableResponse("fire-now", intentId, e.reason());
+        }
     }
 
     /**
@@ -268,6 +355,81 @@ public class IntentHandler {
 
     private Object errorResponse(int status, String code, String message) {
         return new HttpErrorResponse(status, ErrorResponse.of(code, message));
+    }
+
+    private Intent buildCreateIntentDraft(CreateIntentRequest request, String intentId) {
+        Intent intent = new Intent(intentId);
+        intent.setExecuteAt(request.executeAt());
+        intent.setDeadline(request.deadline());
+        intent.setExpiredAction(request.expiredAction());
+        intent.setPrecisionTier(request.precisionTier() != null ? request.precisionTier() : DEFAULT_PRECISION_TIER);
+        intent.setWalMode(request.walMode());
+        intent.setShardKey(request.shardKey());
+        intent.setAckMode(request.ackLevel() != null ? request.ackLevel() : AckMode.DURABLE);
+        intent.setCallback(request.callback());
+        intent.setRedelivery(request.redelivery());
+        intent.setIdempotencyKey(request.idempotencyKey());
+        intent.setTags(request.tags());
+        return intent;
+    }
+
+    private boolean isRaftFollowerReadBlocked() {
+        return raftStatus != null
+            && raftStatus.isRaftEnabled()
+            && !raftStatus.isLeader();
+    }
+
+    private boolean isRaftWriteBlocked() {
+        return raftStatus != null
+            && raftStatus.isRaftEnabled()
+            && !raftStatus.isLeader();
+    }
+
+    private Object leaderHintResponse(String intentId) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("retryable", true);
+        details.put("nodeRole", raftStatus.role().name());
+        details.put("intentId", intentId);
+        String leaderId = raftStatus.currentLeaderId();
+        if (leaderId != null && !leaderId.isBlank()) {
+            details.put("leaderId", leaderId);
+        }
+
+        return new HttpErrorResponse(
+            HttpResponseStatus.SERVICE_UNAVAILABLE.code(),
+            ErrorResponse.of(
+                "50301",
+                "Read must be served by the Raft leader",
+                details
+            )
+        );
+    }
+
+    private Object leaderHintWriteResponse(String operation, String intentId) {
+        return raftWriteUnavailableResponse(operation, intentId, "Write must be served by the Raft leader");
+    }
+
+    private Object raftWriteUnavailableResponse(String operation, String intentId, String reason) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("retryable", true);
+        details.put("nodeRole", raftStatus != null ? raftStatus.role().name() : "UNKNOWN");
+        details.put("operation", operation);
+        if (intentId != null && !intentId.isBlank()) {
+            details.put("intentId", intentId);
+        }
+        String leaderId = raftStatus != null ? raftStatus.currentLeaderId() : null;
+        if (leaderId != null && !leaderId.isBlank()) {
+            details.put("leaderId", leaderId);
+        }
+
+        return new HttpErrorResponse(
+            HttpResponseStatus.SERVICE_UNAVAILABLE.code(),
+            ErrorResponse.of(
+                "50302",
+                reason,
+                details
+            )
+        );
     }
 
     private Object conflictResponse(String intentId) {

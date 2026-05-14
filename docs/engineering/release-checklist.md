@@ -23,6 +23,7 @@ Use this before tagging or publishing a LoomQ release.
 - Confirm `/health` returns healthy.
 - Confirm `/metrics` returns a response and the key counters move as expected.
 - Confirm a basic `POST /v1/intents` create flow still works.
+- If the release touches Raft, confirm follower reads return a retryable `503` and `/health` / `/metrics` expose Raft role, leader id, term, commit index, and peer reachability.
 
 ## Release Notes
 

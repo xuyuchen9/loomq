@@ -7,6 +7,8 @@ LoomQ 当前使用两层配置来源：
 
 同时，少量环境变量或启动参数也会覆盖配置，例如 `LOOMQ_NODE_ID`、`LOOMQ_DATA_DIR`、`LOOMQ_RAFT_ENABLED`、`LOOMQ_RAFT_NODE_ID`、`LOOMQ_RAFT_PEERS`、`LOOMQ_RAFT_PORT`、`loomq.node.id`、`loomq.data.dir` 和 `loomq.raft.*`。
 
+`LOOMQ_CLUSTER_ENABLED` 已退役；如果显式设置为 `true`，启动会直接失败。
+
 ## 配置优先级
 
 从高到低：
@@ -36,8 +38,19 @@ LoomQ 当前使用两层配置来源：
 | `nodeId` / `loomq.node.id` | `node-1` | 本地节点标识 | 与部署环境中的实例名保持稳定映射 |
 | `raft.enabled` / `loomq.raft.enabled` | `false` | 是否启用 Raft 模式 | Raft 部署应显式开启 |
 | `raft.nodeId` / `loomq.raft.nodeId` | `node-1` | Raft 本地节点 ID | 与 `nodeId` 保持一致更简单 |
-| `raft.peers` / `loomq.raft.peers` | 本机节点 ID | Raft peer 列表，支持 `peerId@host:port` | 多节点部署必须配置完整 peer 列表 |
+| `raft.peers` / `loomq.raft.peers` | 本机节点 ID | Raft peer 列表，单节点可只写本机节点 ID；多节点支持 `peerId@host:port` 或 `peerId=host:port` | 多节点部署必须为每个远端 peer 配置可连接端点 |
 | `raft.port` / `loomq.raft.port` | `7930` | Raft RPC 监听端口 | 与防火墙和 peer 连接规划一致 |
+
+#### Raft 启动校验
+
+Raft 启动时会直接 fail fast，常见约束包括：
+
+- `raft.nodeId` 不能为空
+- `raft.peers` 不能为空，且必须包含本地 node id
+- 重复的 peer id 会被拒绝
+- 远端 peer 必须显式给出可连接端点
+- `raft.port` 必须在 `[1, 65535]`
+- `raft.port` 不能与 HTTP `server.port` 或 `netty.port` 相同
 
 ### Netty
 
@@ -130,8 +143,8 @@ AdapTBF 跨层借用约束（当前硬编码）：
 这些项当前都在配置文件里支持：
 
 - `security.*`
-- `metrics.*`
-- `health.*`
+- `metrics.*`（包含 Raft 的 role、leader、term、commit lag、peer reachability 等运行态字段）
+- `health.*`（`/health` 和 `/health/deep` 会包含 WAL 与 Raft 安全信号）
 - `logging.*`
 
 ## 启动摘要

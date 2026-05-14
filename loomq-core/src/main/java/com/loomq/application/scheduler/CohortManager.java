@@ -67,6 +67,15 @@ public final class CohortManager {
     }
 
     /**
+     * 清空所有未 flush 的 cohort。
+     *
+     * 用于 leader 角色切换或快照后重建调度状态。
+     */
+    void clear() {
+        cohorts.clear();
+    }
+
+    /**
      * Register an intent into its cohort. If it creates a new earliest cohort,
      * unpark the wake thread so it re-evaluates its sleep target.
      */

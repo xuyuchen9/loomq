@@ -17,6 +17,7 @@ The current standalone API is intent-based.
 | GET | `/health` | Health check |
 | GET | `/health/live` | Liveness probe |
 | GET | `/health/ready` | Readiness probe (includes WAL health) |
+| GET | `/health/deep` | Deep health probe (includes Raft and tier backpressure) |
 | GET | `/metrics` | JSON metrics snapshot |
 | GET | `/api/v1/metrics` | Same as `/metrics` |
 
@@ -104,11 +105,19 @@ The current standalone API is intent-based.
 
 Returns the current intent snapshot.
 
+When Raft is enabled, this endpoint is leader-authoritative:
+
+- the leader serves the read normally
+- followers return `503 Service Unavailable`
+- the error payload uses code `50301`
+- the `details` map includes `retryable=true`, the node role, and the current leader id when known
+
 ### Error Responses
 
 | Code | Condition |
 |------|-----------|
 | **404** | Intent not found |
+| **503** | Raft follower rejected the read; retry on the leader |
 
 ---
 
@@ -195,8 +204,43 @@ Immediately triggers an intent regardless of its scheduled `executeAt`.
 `GET /health`
 
 ```json
-{"status": "UP"}
+{
+  "status": "OK",
+  "timestamp": "2026-05-14T00:00:00Z",
+  "wal": {
+    "status": "HEALTHY",
+    "unflushedBytes": 0,
+    "lastFsyncMsAgo": 12,
+    "writePosition": 1024,
+    "flushedPosition": 1024
+  },
+  "raft": {
+    "enabled": true,
+    "nodeId": "node-1",
+    "role": "LEADER",
+    "leaderId": "node-1",
+    "term": 3,
+    "commitIndex": 42,
+    "lastApplied": 42,
+    "commitLag": 0,
+    "replicationLag": 0,
+    "connectedPeers": 2,
+    "totalPeers": 2,
+    "peerReachability": {
+      "node-2": true,
+      "node-3": true
+    }
+  }
+}
 ```
+
+The top-level `status` mirrors the WAL health state and is typically `OK`, `WARNING`, or `CRITICAL`.
+
+## Deep Health Probe
+
+`GET /health/deep`
+
+Returns the base health payload plus tier-level backpressure details under `tiers`.
 
 ## Liveness Probe
 
@@ -215,9 +259,22 @@ Immediately triggers an intent regardless of its scheduled `executeAt`.
 ```
 
 Returns `{"status": "DOWN"}` if WAL is unhealthy.
+This probe only reflects WAL readiness; Raft role and peer reachability are exposed on `GET /health` and `GET /health/deep`.
 
 ## Metrics
 
 `GET /metrics`
 
 Returns a JSON snapshot of all kernel and server metrics. See [metrics.md](../operations/metrics.md) for field descriptions.
+
+The Raft section includes:
+
+- `raftRole`
+- `raftLeaderId`
+- `raftTerm`
+- `raftCommitIndex`
+- `raftLastApplied`
+- `raftCommitLag`
+- `raftReplicationLag`
+- `raftConnectedPeers`
+- `raftTotalPeers`
