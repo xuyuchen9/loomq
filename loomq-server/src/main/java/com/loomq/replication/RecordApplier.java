@@ -61,7 +61,7 @@ public final class RecordApplier implements Function<ReplicationRecord, Boolean>
                 return true; // Already processed, consider it success
             }
 
-            intentStore.save(intent);
+            intentStore.upsert(intent);
             logger.debug("Replica applied intent: id={}, status={}", intent.getIntentId(), intent.getStatus());
 
             // Schedule if scheduler is wired

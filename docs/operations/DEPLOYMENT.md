@@ -1,8 +1,8 @@
 # LoomQ Deployment Guide
 
-Version: `0.8.0-SNAPSHOT`
+Version: `0.9.0`
 
-This guide matches the current `Intent`-based standalone server.
+This guide matches the current standalone server, scheduler, persistence, and Raft deployment layout.
 
 ## Quick Start
 
@@ -10,12 +10,12 @@ This guide matches the current `Intent`-based standalone server.
 
 - JDK 25+
 - Maven 3.9+
-- Optional: Docker 20.10+ for containerized deployment
+- Docker 24+ if you plan to use containers
 
 ### Build
 
 ```bash
-git clone https://github.com/yourusername/loomq.git
+git clone https://github.com/loomq/loomq.git
 cd loomq
 mvn clean package -DskipTests
 ```
@@ -23,7 +23,7 @@ mvn clean package -DskipTests
 ### Run
 
 ```bash
-java -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
+java -jar loomq-server/target/loomq-server-0.9.0.jar
 ```
 
 The server listens on `http://localhost:7928` by default.
@@ -42,10 +42,8 @@ Create an `Intent`:
 curl -X POST http://localhost:7928/v1/intents \
   -H "Content-Type: application/json" \
   -d '{
-    "executeAt": "2026-04-20T10:00:00Z",
-    "deadline": "2026-04-20T10:05:00Z",
+    "executeAt": "2026-05-13T12:00:00Z",
     "precisionTier": "STANDARD",
-    "shardKey": "order-123",
     "callback": {
       "url": "https://httpbin.org/post",
       "method": "POST"
@@ -84,9 +82,10 @@ Environment="LOOMQ_SERVER_HOST=0.0.0.0"
 Environment="LOOMQ_SERVER_PORT=7928"
 Environment="LOOMQ_DATA_DIR=/opt/loomq/data/wal"
 Environment="LOOMQ_NODE_ID=node-1"
-ExecStart=/opt/loomq/bin/loomq-server.jar
+Environment="LOOMQ_SCHEDULER_MAX_PENDING_INTENTS=1000000"
+ExecStart=/usr/bin/java -jar /opt/loomq/bin/loomq-server.jar
 Restart=on-failure
-RestartSec=10
+RestartSec=1
 StandardOutput=journal
 StandardError=journal
 
@@ -97,17 +96,47 @@ WantedBy=multi-user.target
 ### JVM Settings
 
 ```bash
-java -Xms2g -Xmx2g -XX:+UseZGC -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
+java -Xms2g -Xmx2g -XX:+UseZGC -jar loomq-server/target/loomq-server-0.9.0.jar
 ```
 
-For production, increase heap according to your pending-intent target and WAL retention.
+Tune heap size according to your pending-intent target and WAL retention window.
+
+## Raft / Cluster Deployment
+
+Raft is enabled through the server process and should be deployed with stable node identities.
+
+### Required Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `LOOMQ_RAFT_ENABLED` | Enable Raft mode |
+| `LOOMQ_RAFT_NODE_ID` | Local Raft node ID |
+| `LOOMQ_RAFT_PEERS` | Peer list, supports `peerId@host:port` |
+| `LOOMQ_RAFT_PORT` | Local Raft RPC bind port |
+| `LOOMQ_DATA_DIR` | WAL and snapshot location |
+
+### Example
+
+```bash
+export LOOMQ_RAFT_ENABLED=true
+export LOOMQ_RAFT_NODE_ID=node-1
+export LOOMQ_RAFT_PEERS="node-1@10.0.0.11:7930,node-2@10.0.0.12:7930,node-3@10.0.0.13:7930"
+export LOOMQ_RAFT_PORT=7930
+./scripts/start.sh
+```
+
+### Notes
+
+- Use a stable host name or IP for every node.
+- Open the Raft port between peers before starting the cluster.
+- Keep `LOOMQ_DATA_DIR` persistent so snapshots and WAL metadata survive restarts.
 
 ## Container Deployment
 
 ### Docker
 
 ```bash
-docker build -t loomq:0.8.0-SNAPSHOT .
+docker build -t loomq:0.9.0 .
 docker run -d \
   --name loomq \
   -p 7928:7928 \
@@ -115,16 +144,17 @@ docker run -d \
   -e LOOMQ_SERVER_PORT=7928 \
   -e LOOMQ_DATA_DIR=/data/wal \
   -e LOOMQ_NODE_ID=node-1 \
-  loomq:0.8.0-SNAPSHOT
+  -e LOOMQ_SCHEDULER_MAX_PENDING_INTENTS=1000000 \
+  loomq:0.9.0
 ```
 
 ### Docker Compose
 
-Use the repository `docker-compose.yml` if you want the bundled stack.
+Use the repository `docker-compose.yml` for the single-node or multi-node stack.
 
 ## Kubernetes Deployment
 
-The current server is still a single-node standalone runtime, so Kubernetes should be treated as a packaging and orchestration layer rather than a full cluster-consensus setup.
+Treat Kubernetes as the orchestration layer for a stable StatefulSet deployment.
 
 ### Example ConfigMap
 
@@ -140,20 +170,20 @@ data:
       port: 7928
     wal:
       data_dir: "/data/wal"
-      flush_strategy: "batch"
     scheduler:
       max_pending_intents: 1000000
 ```
 
-### Example Deployment
+### Example StatefulSet
 
 ```yaml
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: loomq
 spec:
-  replicas: 1
+  serviceName: loomq-headless
+  replicas: 3
   selector:
     matchLabels:
       app: loomq
@@ -164,27 +194,30 @@ spec:
     spec:
       containers:
         - name: loomq
-          image: loomq:0.8.0-SNAPSHOT
+          image: loomq:0.9.0
           ports:
             - containerPort: 7928
           env:
-            - name: LOOMQ_SERVER_HOST
-              value: "0.0.0.0"
-            - name: LOOMQ_SERVER_PORT
-              value: "7928"
-            - name: LOOMQ_DATA_DIR
-              value: "/data/wal"
             - name: LOOMQ_NODE_ID
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: LOOMQ_DATA_DIR
+              value: /data/wal
+            - name: LOOMQ_SCHEDULER_MAX_PENDING_INTENTS
+              value: "1000000"
           volumeMounts:
             - name: wal
               mountPath: /data/wal
-      volumes:
-        - name: wal
-          persistentVolumeClaim:
-            claimName: loomq-wal-pvc
+  volumeClaimTemplates:
+    - metadata:
+        name: wal
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
 ```
 
 ### Probe Paths
@@ -201,14 +234,12 @@ spec:
 
 ### Prometheus
 
-Point Prometheus at the standalone server and scrape the metrics endpoint. Useful signals include:
+Point Prometheus at the server and scrape the metrics endpoint. Useful signals include:
 
 - `loomq_http_requests_total`
 - `loomq_http_request_duration_seconds`
 - `loomq_http_active_requests`
 - `loomq_http_concurrency_limit_exceeded_total`
-- `loomq_netty_active_connections`
-- `loomq_netty_connection_errors_total`
 - `loomq_intents_created_total`
 - `loomq_intents_ack_success_total`
 - `loomq_intents_pending`
@@ -219,66 +250,11 @@ Point Prometheus at the standalone server and scrape the metrics endpoint. Usefu
 - `loomq_scheduler_wakeup_latency_ms_p99`
 - `loomq_scheduler_wakeup_latency_ms_p999`
 
-### Dashboard Ideas
+## Release Checklist
 
-- request rate
-- active requests
-- concurrency rejects
-- WAL health
-- intent creation rate
-- WAL record count
-- wakeup latency by precision tier
+Before publishing a GitHub release:
 
-## Configuration Reference
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LOOMQ_SERVER_HOST` | `0.0.0.0` | HTTP bind address |
-| `LOOMQ_SERVER_PORT` | `7928` | HTTP bind port |
-| `LOOMQ_SERVER_BACKLOG` | `1024` | Socket backlog |
-| `LOOMQ_VIRTUAL_THREADS` | `true` | Enable virtual threads |
-| `LOOMQ_MAX_REQUEST_SIZE` | `10485760` | Maximum request size in bytes |
-| `LOOMQ_THREAD_POOL_SIZE` | `200` | Fallback worker pool size |
-| `LOOMQ_NETTY_PORT` | `7928` | Netty bind port |
-| `LOOMQ_NETTY_HOST` | `0.0.0.0` | Netty bind address |
-| `LOOMQ_WAL_DATA_DIR` | `./data/wal` | WAL data directory |
-| `LOOMQ_WAL_FLUSH_STRATEGY` | `batch` | WAL flush strategy |
-| `LOOMQ_SCHEDULER_MAX_PENDING_INTENTS` | `1000000` | Maximum pending intents |
-| `LOOMQ_DISPATCHER_MAX_CONCURRENT` | `1000` | Concurrent dispatch limit |
-| `LOOMQ_SHARD_INDEX` | `0` | Cluster shard index placeholder |
-| `LOOMQ_TOTAL_SHARDS` | `1` | Total shards placeholder |
-| `LOOMQ_NODE_ID` | `node-1` | Node identifier |
-| `LOOMQ_DATA_DIR` | `./data/wal` | Overrides the WAL root directory used by the standalone server |
-
-## Troubleshooting
-
-### Server Won't Start
-
-- verify port `7928` is free
-- verify the WAL directory is writable
-- confirm the Java version is 25+
-- check the startup log for the runtime configuration summary
-
-### Health Check Fails
-
-- confirm `/health` and `/health/ready` return as expected
-- inspect WAL activity and disk permissions
-- check `walHealthy` in the metrics snapshot
-
-### Requests Are Rejected
-
-- inspect `loomq_http_concurrency_limit_exceeded_total`
-- lower load or increase `netty.maxConcurrentBusinessRequests`
-- check downstream callback latency
-
-### Recovery Feels Slow
-
-- reduce WAL retention if the data directory has grown too large
-- increase recovery batch size only after measuring
-- verify the snapshot directory under the WAL root
-
-## Support
-
-For issues and feature requests, use the repository issue tracker.
+1. Run the full Maven test suite.
+2. Verify the packaged jar name matches `loomq-server-0.9.0.jar`.
+3. Confirm the README, changelog, deployment guide, and scripts all point at the same version.
+4. Validate at least one single-node and one Raft-style startup path.

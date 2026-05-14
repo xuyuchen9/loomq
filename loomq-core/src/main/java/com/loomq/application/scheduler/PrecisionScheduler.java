@@ -5,9 +5,9 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
+import com.loomq.spi.DefaultRedeliveryDecider;
 import com.loomq.spi.DeliveryHandler;
 import com.loomq.spi.DeliveryHandler.DeliveryResult;
-import com.loomq.spi.DefaultRedeliveryDecider;
 import com.loomq.spi.IntentObserver;
 import com.loomq.spi.RedeliveryDecider;
 import com.loomq.store.IntentStore;
@@ -26,7 +26,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentSkipListMap;
-import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -81,7 +80,17 @@ public class PrecisionScheduler {
     // 过期检查分频计数器
     private final Map<PrecisionTier, AtomicLong> expiredCheckCounters;
 
-    // 按 executeAt 索引活跃 intent（替代全量扫描）
+    /**
+     * 按 executeAt 索引活跃 intent（替代全量扫描）。
+     *
+     * 数据结构：ConcurrentSkipListMap&lt;epochMs, Set&lt;intentId&gt;&gt;
+     * 每个唯一的毫秒时间戳创建一个 HashSet。在大多数生产场景下，
+     * intent 的 executeAt 会聚集在有限的时间桶中（秒级精度），
+     * 因此 HashSet 数量远小于 intent 总数。
+     *
+     * 极端情况（每个 intent 有唯一毫秒时间戳）：内存 ≈ intent数 × (16B set头 + 指针)。
+     * 对于百万级 intent，约 32MB 额外开销，可接受。
+     */
     private final ConcurrentSkipListMap<Long, Set<String>> intentExpiryIndex = new ConcurrentSkipListMap<>();
 
     // Cohort-based batched wakeup (CSA-inspired): replaces per-intent VT sleep
@@ -92,15 +101,22 @@ public class PrecisionScheduler {
 
     // Arrow-inspired cross-tier slot borrowing metrics
     private final BorrowStats borrowStats = new BorrowStats();
-    public static class BorrowStats {
-        public final AtomicLong ownAcquires = new AtomicLong(0);
-        public final AtomicLong ownBlockingAcquires = new AtomicLong(0);
-        public final AtomicLong borrowedAcquires = new AtomicLong(0);
-        public long totalBorrowed() { return borrowedAcquires.get(); }
-        public double borrowRate() {
-            long total = ownAcquires.get() + ownBlockingAcquires.get() + borrowedAcquires.get();
-            return total > 0 ? (double) borrowedAcquires.get() / total * 100.0 : 0;
+
+    /**
+     * 异步投递异常处理。
+     *
+     * 注意：onDeliveryFailed 通知在 retry/dead-letter 决策之前触发。
+     * 观察器接收到的是原始投递失败事件，此时 intent 状态尚未被修改。
+     * 观察器不应依赖 intent 状态来推断调度器的后续决策。
+     */
+    private void handleDeliveryException(Intent intent, PrecisionTier tier, Throwable ex) {
+        notifyObservers(o -> o.onDeliveryFailed(intent, ex));
+        if (ex instanceof java.util.concurrent.TimeoutException) {
+            logger.warn("Delivery timeout for intent {}", intent.getIntentId());
+        } else {
+            logger.error("Delivery exception for intent {}: {}", intent.getIntentId(), ex.getMessage(), ex);
         }
+        handleDeliveryFailure(intent);
     }
 
     // Permit timing diagnostics
@@ -741,16 +757,24 @@ public class PrecisionScheduler {
     }
 
     /**
-     * 异步投递异常处理。
+     * 处理过期任务
      */
-    private void handleDeliveryException(Intent intent, PrecisionTier tier, Throwable ex) {
-        notifyObservers(o -> o.onDeliveryFailed(intent, ex));
-        if (ex instanceof java.util.concurrent.TimeoutException) {
-            logger.warn("Delivery timeout for intent {}", intent.getIntentId());
-        } else {
-            logger.error("Delivery exception for intent {}: {}", intent.getIntentId(), ex.getMessage(), ex);
+    private void handleExpired(Intent intent) {
+        unindexIntent(intent.getIntentId(), executeAtMs(intent));
+        logger.info("Intent expired: id={}, deadline={}", intent.getIntentId(), intent.getDeadline());
+
+        switch (intent.getExpiredAction()) {
+            case DISCARD:
+                intent.transitionTo(IntentStatus.EXPIRED);
+                break;
+            case DEAD_LETTER:
+                intent.transitionTo(IntentStatus.DEAD_LETTERED);
+                break;
         }
-        handleDeliveryFailure(intent);
+        intentStore.update(intent);
+
+        // Notify AFTER transition so observers see the terminal state
+        notifyObservers(o -> o.onExpired(intent));
     }
 
     /**
@@ -851,23 +875,18 @@ public class PrecisionScheduler {
         }
     }
 
-    /**
-     * 处理过期任务
-     */
-    private void handleExpired(Intent intent) {
-        notifyObservers(o -> o.onExpired(intent));
-        unindexIntent(intent.getIntentId(), executeAtMs(intent));
-        logger.info("Intent expired: id={}, deadline={}", intent.getIntentId(), intent.getDeadline());
-
-        switch (intent.getExpiredAction()) {
-            case DISCARD:
-                intent.transitionTo(IntentStatus.EXPIRED);
-                break;
-            case DEAD_LETTER:
-                intent.transitionTo(IntentStatus.DEAD_LETTERED);
-                break;
+    public static class BorrowStats {
+        public final AtomicLong ownAcquires = new AtomicLong(0);
+        public final AtomicLong ownBlockingAcquires = new AtomicLong(0);
+        public final AtomicLong borrowedAcquires = new AtomicLong(0);
+        public long totalBorrowed() { return borrowedAcquires.get(); }
+        public double borrowRate() {
+            long own = ownAcquires.get();
+            long blocking = ownBlockingAcquires.get();
+            long borrowed = borrowedAcquires.get();
+            long total = own + blocking + borrowed;
+            return total > 0 ? (double) borrowed / total * 100.0 : 0.0;
         }
-        intentStore.update(intent);
     }
 
     /**

@@ -22,7 +22,7 @@ mvn test -Dtest=ClassName      # single test class
 mvn test -Dtest=ClassName#methodName  # single test method
 
 # Run
-java -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
+java -jar loomq-server/target/loomq-server-0.9.0.jar
 make run-jar                   # Makefile shortcut
 
 # Docker
@@ -33,7 +33,7 @@ make docker-compose-up                        # cluster + monitoring stack
 ## Architecture
 
 ```
-loomq-server (Netty HTTP + JSON + webhook delivery)
+loomq-server (Netty HTTP + Raft/cluster wiring + JSON + webhook delivery)
     │
     └── loomq-core (embeddable kernel, zero HTTP/JSON deps)
             │
@@ -42,7 +42,7 @@ loomq-server (Netty HTTP + JSON + webhook delivery)
             │   ├── CohortManager     — CSA-style batched wakeup (replaces per-intent VT sleep)
             │   ├── BucketGroupManager — per-tier time-bucket storage
             │   └── ResizableSemaphore — extends Semaphore, runtime-resizable permits
-            ├── IntentStore           — in-memory ConcurrentHashMap storage
+            ├── IntentStore           — pluggable storage (ConcurrentIntentStore / RocksDBIntentStore)
             ├── SimpleWalWriter       — memory-mapped WAL with FFM API (~100ns/record)
             ├── RecoveryPipeline      — snapshot + WAL replay on restart
             └── SPI interfaces        — DeliveryHandler, CallbackHandler, RedeliveryDecider
@@ -61,8 +61,8 @@ loomq-server (Netty HTTP + JSON + webhook delivery)
 - **Cohort-based wakeup (CSA-inspired)** — intents with delay > precision window are grouped by cohort key; one daemon thread wakes thousands, replacing per-intent VT sleep.
 - **Arrow cross-tier borrowing** — when a tier's semaphore is full, consumers borrow slots from lower-priority tiers via `tryAcquire(100ms)`. AdapTBF bounds lending to 50% of a tier's slots to prevent starvation.
 - **ResizableSemaphore extends Semaphore** — zero-overhead acquire/tryAcquire (inherited); only release() is overridden for gradual shrink via permit discarding. Tracks `borrowedCount` per tier.
-- **IntentStore is in-memory only** — ~10M intents ≈ ~8GB heap. Pluggable storage planned for v0.9.0.
-- **Cluster/replication is Beta** — `ClusterManager`, `ShardRouter`, `FailoverController` exist but are experimental; Raft consensus is on the v0.9.0 roadmap.
+- **IntentStore is pluggable** — `ConcurrentIntentStore` handles in-memory mode, `RocksDBIntentStore` handles durable local storage; use `upsert()` for current-state writes.
+- **Cluster/replication is Beta** — `ClusterManager`, `ShardRouter`, `FailoverController`, and Raft consensus are implemented, but we should still treat the path as beta-hardening and protect the snapshot/failover regressions.
 
 ## REST API
 

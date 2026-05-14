@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 极限性能测试 (v0.7.0)
+ * 极限性能测试 (v0.9.0)
  *
  * 测试场景：
  * 1. 各精度档位的峰值创建吞吐量
@@ -58,7 +58,7 @@ public class ExtremeBenchmark {
 
         // 健康检查
         if (!healthCheck()) {
-            System.err.println("❌ 服务不可用，请先启动 LoomQ: java -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar");
+            System.err.println("❌ 服务不可用，请先启动 LoomQ: java -jar loomq-server/target/loomq-server-0.9.0.jar");
             return;
         }
         System.out.println("✅ 服务健康检查通过");

@@ -13,7 +13,10 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RocksDBIntentStoreTest {
 
@@ -60,6 +63,31 @@ class RocksDBIntentStoreTest {
     }
 
     @Test
+    void shouldUpsertWithoutDoubleCounting() {
+        Intent intent = new Intent("test-upsert");
+        intent.transitionTo(IntentStatus.SCHEDULED);
+        store.upsert(intent);
+
+        assertEquals(1, store.countByStatus(IntentStatus.SCHEDULED));
+        assertEquals(1, store.getPendingCount());
+
+        intent.transitionTo(IntentStatus.DUE);
+        store.upsert(intent);
+
+        assertEquals(0, store.countByStatus(IntentStatus.SCHEDULED));
+        assertEquals(1, store.countByStatus(IntentStatus.DUE));
+        assertEquals(1, store.getPendingCount());
+
+        intent.transitionTo(IntentStatus.DISPATCHING);
+        intent.transitionTo(IntentStatus.DELIVERED);
+        intent.transitionTo(IntentStatus.ACKED);
+        store.upsert(intent);
+
+        assertEquals(1, store.countByStatus(IntentStatus.ACKED));
+        assertEquals(0, store.getPendingCount());
+    }
+
+    @Test
     void shouldDeleteIntent() {
         Intent intent = new Intent("test-3");
         store.save(intent);
@@ -93,5 +121,55 @@ class RocksDBIntentStoreTest {
         assertEquals(2, store.countByStatus(IntentStatus.SCHEDULED));
         assertEquals(1, store.countByStatus(IntentStatus.DUE));
         assertEquals(0, store.countByStatus(IntentStatus.ACKED));
+    }
+
+    @Test
+    void shouldTrackPendingCount() {
+        Intent a = new Intent("pending-a");
+        Intent b = new Intent("pending-b");
+        store.save(a);
+        store.save(b);
+
+        assertEquals(2, store.getPendingCount());
+
+        store.delete("pending-a");
+        assertEquals(1, store.getPendingCount());
+    }
+
+    @Test
+    void shouldRestoreCountersAfterReopen() throws Exception {
+        Intent a = new Intent("reopen-a");
+        Intent b = new Intent("reopen-b");
+        store.save(a);
+        store.save(b);
+
+        assertEquals(2, store.countByStatus(IntentStatus.CREATED));
+        assertEquals(2, store.getPendingCount());
+
+        store.shutdown();
+        store = new RocksDBIntentStore(dbPath);
+
+        assertEquals(2, store.countByStatus(IntentStatus.CREATED));
+        assertEquals(2, store.getPendingCount());
+    }
+
+    @Test
+    void shouldRemoveOldIdempotencyKeyOnUpdate() {
+        Intent intent = new Intent("idem-update");
+        intent.setIdempotencyKey("idem-old");
+        store.save(intent);
+
+        IdempotencyResult oldResult = store.checkIdempotency("idem-old");
+        assertTrue(oldResult.isActive(), "old idempotency key should resolve before update");
+
+        intent.setIdempotencyKey("idem-new");
+        intent.transitionTo(IntentStatus.SCHEDULED);
+        store.update(intent);
+
+        IdempotencyResult staleResult = store.checkIdempotency("idem-old");
+        assertTrue(staleResult.isNotFound(), "old idempotency key should be removed after update");
+
+        IdempotencyResult newResult = store.checkIdempotency("idem-new");
+        assertTrue(newResult.isActive(), "new idempotency key should be registered after update");
     }
 }

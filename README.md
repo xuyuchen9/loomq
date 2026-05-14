@@ -3,7 +3,7 @@
 [![JDK](https://img.shields.io/badge/JDK-25%2B-green.svg)](https://openjdk.org/)
 [![Maven Central](https://img.shields.io/badge/Maven%20Central-0.9.x-blue.svg)](https://central.sonatype.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/Tests-481%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-622%20tests-brightgreen.svg)]()
 
 **Making future events happen reliably, powered by Java 25 Virtual Threads.**
 
@@ -27,9 +27,9 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 
 | Category | Examples |
 |----------|----------|
-| **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics, pluggable storage (in-memory + RocksDB), WAL segment rotation with auto-truncation, IntentObserver lifecycle hooks |
-| **Beta** | replication, shard routing, failover, primary-backup cluster mode |
-| **Not yet committed** | Raft consensus, distributed coordination primitives, lock/lease semantics |
+| **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics, pluggable storage (in-memory + RocksDB), WAL segment rotation with snapshot compaction, IntentObserver lifecycle hooks |
+| **Beta** | Raft consensus, replication, shard routing, failover, primary-backup cluster mode |
+| **Not yet committed** | distributed coordination primitives, lock/lease semantics |
 
 ---
 
@@ -46,7 +46,7 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 <dependency>
     <groupId>com.loomq</groupId>
     <artifactId>loomq-core</artifactId>
-    <version>0.9.0-SNAPSHOT</version>
+    <version>0.9.0</version>
 </dependency>
 ```
 
@@ -61,7 +61,7 @@ mvn clean package -DskipTests
 ### Start Server
 
 ```bash
-java -jar loomq-server/target/loomq-server-0.8.0-SNAPSHOT.jar
+java -jar loomq-server/target/loomq-server-0.9.0.jar
 ```
 
 Server listens on `http://localhost:7928` by default.

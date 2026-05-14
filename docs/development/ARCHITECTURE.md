@@ -1,20 +1,22 @@
 # LoomQ Architecture
 
-This document describes the current codebase structure as of v0.8.0.
+This document describes the current codebase structure as of v0.9.0.
 
 ## High-Level Layers
 
 ```mermaid
 flowchart TB
-    Server["loomq-server"] --> Api["IntentHandler / Netty HTTP"]
-    Server --> Metrics["LoomQMetrics / HttpMetrics"]
-    Server --> Engine["LoomqEngine"]
+    Server["loomq-server"] --> Http["Netty HTTP / REST / webhook delivery"]
+    Server --> Raft["RaftNode / LeaderElection / LogReplication / RaftTransport"]
+    Server --> Cluster["ClusterManager / ReplicationManager / FailoverController"]
+    Server --> Engine["LoomqEngine bootstrap"]
 
     Engine --> Scheduler["PrecisionScheduler"]
     Engine --> Wal["SimpleWalWriter"]
     Engine --> Recovery["RecoveryPipeline"]
     Engine --> Store["IntentStore"]
-    Engine --> SPI["CallbackHandler / DeliveryHandler / RedeliveryDecider"]
+    Engine --> Snapshot["SnapshotManager"]
+    Engine --> SPI["DeliveryHandler / CallbackHandler / RedeliveryDecider"]
 
     Scheduler --> Cohort["CohortManager"]
     Scheduler --> Buckets["BucketGroupManager"]
@@ -25,110 +27,63 @@ flowchart TB
 
 ### `loomq-core`
 
-- durable intent lifecycle (Intent, IntentStatus, IntentStore)
-- scheduling and rescheduling (PrecisionScheduler)
-- WAL persistence (SimpleWalWriter, FFM API, CRC32)
-- recovery after restart (RecoveryPipeline, SnapshotManager)
-- delivery and retry hooks (DeliveryHandler, RedeliveryDecider)
-- precision-tier metrics (MetricsCollector, per-tier histograms)
-- cross-tier concurrency (ResizableSemaphore, Arrow borrowing, AdapTBF)
+- durable intent lifecycle: `Intent`, `IntentStatus`, `IntentStore`
+- scheduling and rescheduling: `PrecisionScheduler`
+- cohort wakeup and batching: `CohortManager`, `BucketGroupManager`
+- durable storage: `SimpleWalWriter`, `SnapshotManager`
+- restart recovery: `RecoveryPipeline`, `WalReplayManager`
+- pluggable state storage: `ConcurrentIntentStore`, `RocksDBIntentStore`
+- delivery and retry hooks: `DeliveryHandler`, `RedeliveryDecider`, `CallbackHandler`
+- precision-tier metrics: `MetricsCollector`, per-tier histograms
+- cross-tier concurrency: `ResizableSemaphore`, Arrow borrowing, AdapTBF
 
 ### `loomq-server`
 
-- HTTP transport (NettyHttpServer, epoll, pooled allocator)
-- request routing (RadixTree)
-- JSON serialization (hand-written zero-copy)
-- request validation and backpressure (semaphore-based)
-- webhook delivery (HttpDeliveryHandler via Reactor Netty)
-- standalone bootstrap (LoomqServerApplication)
+- HTTP transport and routing: Netty server, REST handlers, JSON serialization
+- webhook delivery: `NettyHttpDeliveryHandler`, `HttpCallbackHandler`
+- Raft consensus wiring: leader election, log replication, snapshot install
+- optional cluster / failover orchestration
+- standalone bootstrap: `LoomqServerApplication`
 
-## Scheduler Internals
+## Runtime Flows
 
-### Scan-Dispatch Pipeline
+### Intent Creation and Scheduling
 
-1. **Scan**: Per-tier `ScheduledExecutorService` fires at tier's precision window interval
-2. **BucketGroup.scanDue()**: Returns all intents whose executeAt has passed
-3. **Enqueue**: Due intents are pushed to the tier's `ConcurrentLinkedDeque`
-4. **Consume**: N virtual-thread batch consumers per tier poll the queue
-5. **Acquire**: Consumer calls `acquireWithBorrow()` — own tier first, then borrow from lower tiers
-6. **Deliver**: `deliveryHandler.deliverAsync(intent)` — fire-and-forget
-7. **Release**: Permit released in async callback; borrowed permits decrement lender's `borrowedCount`
+1. API layer validates the request and builds an `Intent`
+2. `LoomqEngine` persists the intent through the WAL and current `IntentStore`
+3. `PrecisionScheduler` places the intent into the correct tier bucket or cohort
+4. When the execution time arrives, the scheduler moves the intent to the delivery queue
+5. Delivery happens through the configured `DeliveryHandler`
 
-### Cohort Wakeup (CSA-Inspired)
+### Raft Replication Path
 
-For intents with `delayMs > precisionWindowMs`, per-intent virtual-thread sleep is replaced by cohort batching:
+1. A leader is elected through `LeaderElection`
+2. Log entries are appended in `RaftLog` and written through the WAL layer
+3. `LogReplication` drives `AppendEntries` to peers and tracks progress
+4. Followers apply committed entries to the current store state
+5. If a follower is too far behind, the leader sends `InstallSnapshot`
+6. Stale responses are ignored via generation checks during step-down and leadership change
 
-- Intents are grouped by `cohortKey = floor(executeAt / precisionWindowMs)`
-- `CohortManager` maintains a `ConcurrentSkipListMap<cohortKey, List<Intent>>`
-- A single daemon thread (`cohort-waker`) sleeps until the next cohort's due time
-- On wake, all intents in that cohort are flushed to `BucketGroupManager`
-- **One thread handles thousands of intents** — eliminates per-intent VT overhead
+### Recovery and Snapshot Path
 
-### Arrow Cross-Tier Borrowing
-
-When a tier's own `ResizableSemaphore` is full:
-
-1. Try `own.tryAcquire()` — fast path, no overhead
-2. Iterate lower-priority tiers: `other.tryAcquire(100ms)`
-3. On success: `other.incrementBorrowed()`, return borrowed semaphore
-4. On exhaustion: `own.acquire()` (blocking fallback)
-5. On release: if `acquired != ownTier`, call `acquired.decrementBorrowed()`
-
-### AdapTBF Lending Constraints
-
-To prevent high-priority tiers from starving low-priority tiers:
-
-- `MAX_LEND_RATIO = 0.5`: each tier lends at most 50% of its slots
-- `ResizableSemaphore.borrowedCount` tracks active lends
-- Check before lending: `borrowedCount < maxSlots * 0.5`
-- Implicit min-reserve: at least 50% of slots always available for the owning tier
-
-## ResizableSemaphore
-
-Extends `java.util.concurrent.Semaphore` for zero-overhead hot path:
-
-- `acquire()`, `tryAcquire()`, `availablePermits()` — **inherited directly** (no delegation)
-- `release()` — overridden with shrink check:
-  - Fast path: `currentMax <= targetMax` → `super.release()`
-  - Slow path (shrinking): CAS-decrement `currentMax`, discard excess permit
-- `resize(newMax)` — `synchronized`: increase via `super.release(delta)`, decrease via target
-- `resizeImmediate(newMax)` — `synchronized`: blocks until all excess permits drained
-- AdapTBF: `getBorrowedCount()`, `incrementBorrowed()`, `decrementBorrowed()`
-
-## Intent Lifecycle
-
-The code uses the `Intent` model and `IntentStatus` state machine.
-
-```mermaid
-stateDiagram-v2
-    [*] --> CREATED
-    CREATED --> SCHEDULED
-    SCHEDULED --> DUE
-    SCHEDULED --> CANCELED
-    DUE --> DISPATCHING
-    DUE --> CANCELED
-    DISPATCHING --> DELIVERED
-    DISPATCHING --> DEAD_LETTERED
-    DELIVERED --> ACKED
-    DELIVERED --> EXPIRED
-    CANCELED --> [*]
-    ACKED --> [*]
-    EXPIRED --> [*]
-    DEAD_LETTERED --> [*]
-```
+1. On startup, `RecoveryPipeline` clears transient state and rebuilds the store
+2. `SnapshotManager` restores the latest snapshot first
+3. WAL replay rehydrates the remaining entries
+4. `RaftLog` and WAL metadata are restored together so the snapshot boundary stays consistent
+5. Late-joining followers can catch up from the snapshot boundary instead of scanning the full log
 
 ## Extension Points
 
-The kernel is shell-friendly:
+The kernel is designed to stay shell-friendly:
 
-- `CallbackHandler` — reports lifecycle events back to the host
-- `DeliveryHandler` — owns the actual delivery mechanism (HTTP, MQ, local)
-- `RedeliveryDecider` — decides whether to retry after failure
+- `DeliveryHandler` - owns the actual delivery mechanism
+- `CallbackHandler` - reports lifecycle events back to the host
+- `RedeliveryDecider` - decides whether to retry after failure
+- `IntentStore` - chooses between in-memory and durable local storage
+- Raft / cluster wiring stays in `loomq-server` so the embedded kernel remains reusable
 
-This boundary keeps LoomQ focused on time semantics. Higher-level lock/lease behavior belongs outside the core.
+## Configuration Path
 
-## Config Path
-
-The standalone server loads config, prints a runtime summary, and passes effective config into `LoomqEngine`.
+The standalone server loads configuration, prints a runtime summary, and passes the effective settings into `LoomqEngine`, Raft, and the cluster components.
 
 For the canonical key list, see [Configuration Reference](../operations/CONFIGURATION.md).

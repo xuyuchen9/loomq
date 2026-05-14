@@ -67,6 +67,30 @@ class IntentStoreTest {
     }
 
     @Test
+    void testUpsert() {
+        Intent intent = createTestIntent("test-upsert");
+        store.upsert(intent);
+
+        assertEquals(1, store.countByStatus(IntentStatus.SCHEDULED));
+        assertEquals(1, store.getPendingCount());
+
+        intent.transitionTo(IntentStatus.DUE);
+        store.upsert(intent);
+
+        assertEquals(0, store.countByStatus(IntentStatus.SCHEDULED));
+        assertEquals(1, store.countByStatus(IntentStatus.DUE));
+        assertEquals(1, store.getPendingCount());
+
+        intent.transitionTo(IntentStatus.DISPATCHING);
+        intent.transitionTo(IntentStatus.DELIVERED);
+        intent.transitionTo(IntentStatus.ACKED);
+        store.upsert(intent);
+
+        assertEquals(1, store.countByStatus(IntentStatus.ACKED));
+        assertEquals(0, store.getPendingCount());
+    }
+
+    @Test
     void testDelete() {
         Intent intent = createTestIntent("test-3");
         store.save(intent);

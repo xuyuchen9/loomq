@@ -4,6 +4,37 @@ All notable changes to LoomQ are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.0] - 2026-05-13
+
+### Added
+
+- **Raft consensus for cluster mode**
+  - Leader election, AppendEntries replication, InstallSnapshot catch-up
+  - Peer connection bootstrap and generation-safe response handling
+  - Snapshot boundary recovery and follower failover regressions
+
+- **Pluggable IntentStore**
+  - `ConcurrentIntentStore` for in-memory mode
+  - `RocksDBIntentStore` for durable local storage
+  - `upsert()`-based current-state writes for recovery, replication, and snapshot apply
+
+- **Snapshot and recovery hardening**
+  - WAL snapshot metadata persisted across restart
+  - Segment compaction/truncation aligned with Raft log recovery
+  - Late-joining followers can catch up through snapshot installation
+
+### Changed
+
+- **Release-facing assets synchronized for GitHub release**
+  - Versioned build metadata updated to `0.9.0`
+  - Docker, scripts, README, and deployment docs aligned with the current runtime layout
+  - Scheduler pending-intent environment variable standardized to `LOOMQ_SCHEDULER_MAX_PENDING_INTENTS`
+
+### Fixed
+
+- Stale leader responses no longer overwrite newer replication progress
+- Recovery paths now clear and rebuild store state deterministically
+
 ## [0.8.0] - 2026-04-29
 
 ### Added

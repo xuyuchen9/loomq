@@ -94,7 +94,19 @@ public enum ReplicationRecordType {
     /**
      * 租约续约
      */
-    LEASE_RENEWAL((byte) 0x52);
+    LEASE_RENEWAL((byte) 0x52),
+
+    // ========== Raft 共识 RPC ==========
+    /** Raft RequestVote RPC */
+    RAFT_REQUEST_VOTE((byte) 0x60),
+    /** Raft RequestVote 响应 */
+    RAFT_REQUEST_VOTE_RESP((byte) 0x61),
+    /** Raft AppendEntries RPC */
+    RAFT_APPEND_ENTRIES((byte) 0x62),
+    /** Raft AppendEntries 响应 */
+    RAFT_APPEND_ENTRIES_RESP((byte) 0x63),
+    /** Raft InstallSnapshot RPC */
+    RAFT_INSTALL_SNAPSHOT((byte) 0x64);
 
     private final byte code;
 
