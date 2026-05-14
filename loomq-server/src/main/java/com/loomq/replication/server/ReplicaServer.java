@@ -107,7 +107,10 @@ public class ReplicaServer {
     public CompletableFuture<Void> start() {
         if (started.compareAndSet(false, true)) {
             CompletableFuture<Void> startedFuture = new CompletableFuture<>();
-            CompletableFuture.runAsync(() -> doStart(startedFuture));
+            Thread startupThread = new Thread(() -> doStart(startedFuture),
+                "replica-server-" + nodeId + "-" + bindPort);
+            startupThread.setDaemon(true);
+            startupThread.start();
             return startedFuture;
         }
         return CompletableFuture.completedFuture(null);
