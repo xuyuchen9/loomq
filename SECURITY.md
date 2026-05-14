@@ -51,5 +51,5 @@ To report a security vulnerability, please use one of these channels:
 - Enable token authentication: set `security.enabled=true` and configure tokens
 - Place LoomQ behind a reverse proxy (nginx/Caddy) for TLS termination
 - Restrict WAL data directory to the LoomQ process user only
-- Use network policies to restrict access to the replication port (default 9090)
+- Use network policies to restrict access to the Raft RPC port (default 7930)
 - Set appropriate JVM security manager or use container security contexts

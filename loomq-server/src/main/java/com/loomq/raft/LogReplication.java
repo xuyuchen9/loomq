@@ -2,6 +2,7 @@ package com.loomq.raft;
 
 import com.loomq.domain.intent.Intent;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
+import com.loomq.metrics.LoomQMetrics;
 import com.loomq.spi.WalAccessor;
 import com.loomq.store.IntentStore;
 import org.slf4j.Logger;
@@ -11,6 +12,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Raft Log Replication (§5.3). Leader 复制 entries 到 followers，多数确认后 commit。 */
 public class LogReplication {
     private static final Logger log = LoggerFactory.getLogger(LogReplication.class);
+    private static final LoomQMetrics metrics = LoomQMetrics.getInstance();
     private final String nodeId;
     private final WalAccessor wal;
     private final RaftLog raftLog;
@@ -34,6 +36,8 @@ public class LogReplication {
     public void resetToSnapshot(long index) {
         commitIndex.set(index);
         lastApplied.set(index);
+        metrics.updateRaftCommitIndex(index);
+        metrics.updateRaftLastApplied(index);
     }
 
     /**
@@ -49,6 +53,8 @@ public class LogReplication {
         if (candidate > commitIndex.get()
             && raftLog.readEntryTerm(candidate) == currentTerm) {
             commitIndex.set(candidate);
+            metrics.updateRaftTerm(currentTerm);
+            metrics.updateRaftCommitIndex(candidate);
             log.debug("commitIndex -> {}", candidate);
         }
     }
@@ -58,6 +64,7 @@ public class LogReplication {
             long prevLogIndex, long prevLogTerm, byte[][] entries, long leaderCommit) {
         if (term < election.currentTerm()) return AppendEntriesResult.fail(election.currentTerm());
         election.onAppendEntries(term, leaderId);
+        metrics.updateRaftTerm(term);
 
         // §5.3: 验证 prevLogIndex 处的 entry term 与 prevLogTerm 一致
         if (prevLogIndex > 0) {
@@ -105,6 +112,8 @@ public class LogReplication {
         if (commitAdvanced) {
             applyCommitted();
         }
+        metrics.updateRaftCommitIndex(commitIndex.get());
+        metrics.updateRaftLastApplied(lastApplied.get());
         return AppendEntriesResult.success(term, lastIdx);
     }
 
@@ -125,5 +134,7 @@ public class LogReplication {
                 log.error("Failed to apply committed entry at index {}", applied, e);
             }
         }
+        metrics.updateRaftCommitIndex(commitIndex.get());
+        metrics.updateRaftLastApplied(lastApplied.get());
     }
 }

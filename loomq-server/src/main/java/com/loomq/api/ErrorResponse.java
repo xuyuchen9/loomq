@@ -22,20 +22,4 @@ public record ErrorResponse(
         return new ErrorResponse(code, message, details);
     }
 
-    /**
-     * Lease 过期，返回 Fencing 错误
-     */
-    public static ErrorResponse fencingExpired(String intentId, String newPrimary) {
-        String redirectUrl = String.format("http://%s/v1/intents/%s/fire-now", newPrimary, intentId);
-
-        return new ErrorResponse(
-            "50304",
-            "Lease expired, current primary is " + newPrimary,
-            Map.of(
-                "intentId", intentId,
-                "redirectTo", redirectUrl,
-                "newPrimary", newPrimary
-            )
-        );
-    }
 }
