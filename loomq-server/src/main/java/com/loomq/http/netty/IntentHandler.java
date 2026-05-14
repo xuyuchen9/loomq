@@ -15,10 +15,13 @@ import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.http.json.JsonCodec;
+import com.loomq.raft.RaftStatusProvider;
 import com.loomq.store.IdempotencyResult;
 import com.loomq.tracing.IntentTrace;
 import com.loomq.tracing.IntentTraceStore;
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -39,10 +42,16 @@ public class IntentHandler {
     private static final PrecisionTier DEFAULT_PRECISION_TIER = PrecisionTierCatalog.defaultCatalog().defaultTier();
 
     private final LoomqEngine engine;
+    private final RaftStatusProvider raftStatus;
     private final JsonCodec jsonCodec;
 
     public IntentHandler(LoomqEngine engine) {
+        this(engine, null);
+    }
+
+    public IntentHandler(LoomqEngine engine, RaftStatusProvider raftStatus) {
         this.engine = engine;
+        this.raftStatus = raftStatus;
         this.jsonCodec = JsonCodec.instance();
     }
 
@@ -142,6 +151,10 @@ public class IntentHandler {
                             Map<String, String> headers,
                             Map<String, String> pathParams) {
         String intentId = pathParams.get("intentId");
+
+        if (isRaftFollowerReadBlocked()) {
+            return leaderHintResponse(intentId);
+        }
 
         Optional<Intent> intent = engine.getIntent(intentId);
         if (intent.isEmpty()) {
@@ -268,6 +281,32 @@ public class IntentHandler {
 
     private Object errorResponse(int status, String code, String message) {
         return new HttpErrorResponse(status, ErrorResponse.of(code, message));
+    }
+
+    private boolean isRaftFollowerReadBlocked() {
+        return raftStatus != null
+            && raftStatus.isRaftEnabled()
+            && !raftStatus.isLeader();
+    }
+
+    private Object leaderHintResponse(String intentId) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("retryable", true);
+        details.put("nodeRole", raftStatus.role().name());
+        details.put("intentId", intentId);
+        String leaderId = raftStatus.currentLeaderId();
+        if (leaderId != null && !leaderId.isBlank()) {
+            details.put("leaderId", leaderId);
+        }
+
+        return new HttpErrorResponse(
+            HttpResponseStatus.SERVICE_UNAVAILABLE.code(),
+            ErrorResponse.of(
+                "50301",
+                "Read must be served by the Raft leader",
+                details
+            )
+        );
     }
 
     private Object conflictResponse(String intentId) {

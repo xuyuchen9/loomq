@@ -3,7 +3,9 @@ package com.loomq.raft;
 import com.loomq.metrics.LoomQMetrics;
 import com.loomq.spi.WalAccessor;
 import com.loomq.store.IntentStore;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
@@ -19,7 +21,7 @@ import org.slf4j.LoggerFactory;
  *
  * 通过内核 SPI（WalAccessor + IntentStore）与 LoomqEngine 交互。
  */
-public class RaftNode implements AutoCloseable {
+public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private static final Logger log = LoggerFactory.getLogger(RaftNode.class);
     private static final LoomQMetrics metrics = LoomQMetrics.getInstance();
     private static final int MAX_ENTRIES_PER_APPEND = 1000;
@@ -67,15 +69,25 @@ public class RaftNode implements AutoCloseable {
 
         // Server-side RPC handlers (transport may be null for single-node/no-network tests)
         if (transport != null) {
-            transport.setOnRequestVote(msg ->
-                election.handleRequestVote(msg.term(), msg.candidateId(),
-                    msg.lastLogIndex(), msg.lastLogTerm()));
+            transport.setOnRequestVote(msg -> {
+                boolean granted = election.handleRequestVote(msg.term(), msg.candidateId(),
+                    msg.lastLogIndex(), msg.lastLogTerm());
+                syncRaftMetrics();
+                return granted;
+            });
 
-            transport.setOnAppendEntries(msg ->
-                replication.handleAppendEntries(msg.term(), msg.leaderId(),
-                    msg.prevLogIndex(), msg.prevLogTerm(), msg.entries(), msg.leaderCommit()));
+            transport.setOnAppendEntries(msg -> {
+                AppendEntriesResult result = replication.handleAppendEntries(msg.term(), msg.leaderId(),
+                    msg.prevLogIndex(), msg.prevLogTerm(), msg.entries(), msg.leaderCommit());
+                syncRaftMetrics();
+                return result;
+            });
 
-            transport.setOnInstallSnapshot(this::handleInstallSnapshot);
+            transport.setOnInstallSnapshot(msg -> {
+                Long appliedIndex = handleInstallSnapshot(msg);
+                syncRaftMetrics();
+                return appliedIndex;
+            });
         }
 
         // Election lifecycle callbacks
@@ -97,6 +109,10 @@ public class RaftNode implements AutoCloseable {
         heartbeatTimer.shutdown();
         election.stop();
         metrics.updateRaftRole("OFFLINE");
+        metrics.updateRaftLeaderId(null);
+        metrics.updateRaftReplicationLag(0);
+        metrics.updateRaftConnectedPeers(0);
+        metrics.updateRaftTotalPeers(0);
         if (transport != null) {
             transport.close();
         }
@@ -109,6 +125,16 @@ public class RaftNode implements AutoCloseable {
     public LogReplication getReplication() { return replication; }
     public WalAccessor getWal() { return wal; }
     public RaftLog getRaftLog() { return raftLog; }
+
+    @Override
+    public boolean isRaftEnabled() {
+        return true;
+    }
+
+    @Override
+    public String currentLeaderId() {
+        return election.currentLeader();
+    }
 
     /** Leader 提交一条 entry 到本地 WAL 并返回 index */
     public long propose(byte[] entry) {
@@ -282,6 +308,7 @@ public class RaftNode implements AutoCloseable {
                     stopHeartbeat();
                     return;
                 }
+                syncRaftMetrics();
                 final long myGeneration = leaderGeneration;
                 long currentTerm = election.currentTerm();
                 long commitIdx = replication.commitIndex();
@@ -347,6 +374,7 @@ public class RaftNode implements AutoCloseable {
                         // Continue to next peer — don't let one peer failure stop others
                     }
                 }
+                syncRaftMetrics();
             } catch (Throwable t) {
                 log.error("Heartbeat task terminated unexpectedly — this is a bug", t);
                 // Do NOT rethrow — ScheduledExecutorService would silently cancel the task
@@ -377,10 +405,61 @@ public class RaftNode implements AutoCloseable {
     }
 
     private void syncRaftMetrics() {
-        metrics.updateRaftRole(election.role().name());
-        metrics.updateRaftTerm(election.currentTerm());
-        metrics.updateRaftCommitIndex(replication.commitIndex());
-        metrics.updateRaftLastApplied(replication.lastApplied());
+        RaftStatusSnapshot status = snapshotStatus();
+        metrics.updateRaftRole(status.role().name());
+        metrics.updateRaftLeaderId(status.leaderId());
+        metrics.updateRaftTerm(status.term());
+        metrics.updateRaftCommitIndex(status.commitIndex());
+        metrics.updateRaftLastApplied(status.lastApplied());
+        metrics.updateRaftReplicationLag(status.replicationLag());
+        metrics.updateRaftConnectedPeers(status.connectedPeers());
+        metrics.updateRaftTotalPeers(status.totalPeers());
+    }
+
+    @Override
+    public RaftStatusSnapshot snapshotStatus() {
+        long term = election.currentTerm();
+        long commitIndex = replication.commitIndex();
+        long lastApplied = replication.lastApplied();
+        long commitLag = Math.max(0, commitIndex - lastApplied);
+        long replicationLag = 0;
+        Map<String, Boolean> reachability = new LinkedHashMap<>();
+        int connectedPeers = 0;
+        int totalPeers = 0;
+
+        for (String peerId : peers) {
+            if (peerId.equals(nodeId)) {
+                continue;
+            }
+
+            totalPeers++;
+            boolean connected = transport != null && transport.isPeerConnected(peerId);
+            reachability.put(peerId, connected);
+            if (connected) {
+                connectedPeers++;
+            }
+
+            if (isLeader()) {
+                PeerReplicationState ps = peerStates.get(peerId);
+                if (ps != null) {
+                    replicationLag = Math.max(replicationLag, Math.max(0, raftLog.lastIndex() - ps.matchIndex));
+                }
+            }
+        }
+
+        return new RaftStatusSnapshot(
+            nodeId,
+            election.role(),
+            election.currentLeader(),
+            term,
+            commitIndex,
+            lastApplied,
+            commitLag,
+            isLeader() ? replicationLag : 0,
+            connectedPeers,
+            totalPeers,
+            reachability
+        );
     }
 
     // ========== Peer replication state ==========

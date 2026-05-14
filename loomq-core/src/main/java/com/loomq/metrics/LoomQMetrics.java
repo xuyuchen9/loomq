@@ -81,6 +81,22 @@ public class LoomQMetrics {
         raftMetrics.updateRaftLastApplied(lastApplied);
     }
 
+    public void updateRaftLeaderId(String leaderId) {
+        raftMetrics.updateRaftLeaderId(leaderId);
+    }
+
+    public void updateRaftReplicationLag(long replicationLag) {
+        raftMetrics.updateRaftReplicationLag(replicationLag);
+    }
+
+    public void updateRaftConnectedPeers(int connectedPeers) {
+        raftMetrics.updateRaftConnectedPeers(connectedPeers);
+    }
+
+    public void updateRaftTotalPeers(int totalPeers) {
+        raftMetrics.updateRaftTotalPeers(totalPeers);
+    }
+
     // ==================== 单例模式 ====================
     private static final LoomQMetrics INSTANCE = new LoomQMetrics();
 
@@ -200,10 +216,14 @@ public class LoomQMetrics {
             walHealthMetrics.getWalPendingWrites(),
             walHealthMetrics.getWalRingBufferSize(),
             raftMetrics.getRaftRole(),
+            raftMetrics.getRaftLeaderId(),
             raftMetrics.getRaftTerm(),
             raftMetrics.getRaftCommitIndex(),
             raftMetrics.getRaftLastApplied(),
-            raftMetrics.getRaftCommitLag()
+            raftMetrics.getRaftCommitLag(),
+            raftMetrics.getRaftReplicationLag(),
+            raftMetrics.getRaftConnectedPeers(),
+            raftMetrics.getRaftTotalPeers()
         );
     }
 
@@ -239,10 +259,14 @@ public class LoomQMetrics {
         long walPendingWrites,
         long walRingBufferSize,
         String raftRole,
+        String raftLeaderId,
         long raftTerm,
         long raftCommitIndex,
         long raftLastApplied,
-        long raftCommitLag
+        long raftCommitLag,
+        long raftReplicationLag,
+        int raftConnectedPeers,
+        int raftTotalPeers
     ) {}
 
     // ==================== 重置 ====================

@@ -2,24 +2,31 @@ package com.loomq.raft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import com.loomq.LoomqEngine;
+import com.loomq.api.IntentResponse;
 import com.loomq.config.WalConfig;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
+import com.loomq.http.netty.HttpErrorResponse;
+import com.loomq.http.netty.IntentHandler;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.infrastructure.wal.SimpleWalWriter;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IntentStore;
+import io.netty.handler.codec.http.HttpMethod;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
@@ -331,6 +338,160 @@ class RaftIntegrationTest {
             if (n.isLeader()) leaderCount++;
         }
         assertEquals(1, leaderCount, "exactly one leader after failover");
+    }
+
+    @Test
+    void followerReadShouldReturnLeaderHintInRaftCluster() throws Exception {
+        List<String> peers = List.of("node-1", "node-2", "node-3");
+        int p1 = allocatePort(), p2 = allocatePort(), p3 = allocatePort();
+
+        RaftNode n1 = createNode("node-1", peers, p1);
+        RaftNode n2 = createNode("node-2", peers, p2);
+        RaftNode n3 = createNode("node-3", peers, p3);
+        nodes.addAll(List.of(n1, n2, n3));
+
+        RaftTransport t1 = (RaftTransport) reflectField(n1);
+        RaftTransport t2 = (RaftTransport) reflectField(n2);
+        RaftTransport t3 = (RaftTransport) reflectField(n3);
+
+        t1.connect("node-2", "127.0.0.1", p2).join();
+        t1.connect("node-3", "127.0.0.1", p3).join();
+        t2.connect("node-1", "127.0.0.1", p1).join();
+        t2.connect("node-3", "127.0.0.1", p3).join();
+        t3.connect("node-1", "127.0.0.1", p1).join();
+        t3.connect("node-2", "127.0.0.1", p2).join();
+
+        n1.start();
+        n2.start();
+        n3.start();
+
+        RaftNode leader = waitForAnyLeader(List.of(n1, n2, n3), 10_000);
+        assertNotNull(leader, "should have a leader");
+
+        RaftNode follower = List.of(n1, n2, n3).stream()
+            .filter(node -> node != leader)
+            .findFirst()
+            .orElseThrow();
+
+        Path engineDir = Files.createTempDirectory("raft-read-engine-");
+        LoomqEngine engine = LoomqEngine.builder().nodeId("raft-read-engine").walDir(engineDir).build();
+        try {
+            Intent intent = new Intent("raft-read-1");
+            intent.setPrecisionTier(com.loomq.domain.intent.PrecisionTier.STANDARD);
+            intent.transitionTo(IntentStatus.SCHEDULED);
+            engine.getIntentStore().save(intent);
+
+            IntentHandler leaderHandler = new IntentHandler(engine, leader);
+            Object leaderResult = leaderHandler.getIntent(HttpMethod.GET, "/v1/intents/raft-read-1",
+                new byte[0], Map.of(), Map.of("intentId", "raft-read-1"));
+            assertInstanceOf(IntentResponse.class, leaderResult, "leader should serve reads");
+
+            IntentHandler followerHandler = new IntentHandler(engine, follower);
+            Object followerResult = followerHandler.getIntent(HttpMethod.GET, "/v1/intents/raft-read-1",
+                new byte[0], Map.of(), Map.of("intentId", "raft-read-1"));
+            assertInstanceOf(HttpErrorResponse.class, followerResult, "follower should reject reads");
+
+            HttpErrorResponse error = (HttpErrorResponse) followerResult;
+            assertEquals(503, error.status());
+            assertEquals("50301", error.error().code());
+            assertEquals("Read must be served by the Raft leader", error.error().message());
+            assertEquals(Boolean.TRUE, error.error().details().get("retryable"));
+            assertEquals("FOLLOWER", error.error().details().get("nodeRole"));
+            assertEquals(leader.snapshotStatus().nodeId(), error.error().details().get("leaderId"));
+        } finally {
+            try {
+                engine.close();
+            } catch (Exception ignored) {
+            }
+            try {
+                Files.walk(engineDir)
+                    .sorted((a, b) -> b.getNameCount() - a.getNameCount())
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (Exception ignored) {
+                        }
+                    });
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    @Test
+    void newLeaderShouldServeReadsAfterFailover() throws Exception {
+        List<String> peers = List.of("node-1", "node-2", "node-3");
+        int p1 = allocatePort(), p2 = allocatePort(), p3 = allocatePort();
+
+        RaftNode n1 = createNode("node-1", peers, p1);
+        RaftNode n2 = createNode("node-2", peers, p2);
+        RaftNode n3 = createNode("node-3", peers, p3);
+        nodes.addAll(List.of(n1, n2, n3));
+
+        RaftTransport t1 = (RaftTransport) reflectField(n1);
+        RaftTransport t2 = (RaftTransport) reflectField(n2);
+        RaftTransport t3 = (RaftTransport) reflectField(n3);
+
+        t1.connect("node-2", "127.0.0.1", p2).join();
+        t1.connect("node-3", "127.0.0.1", p3).join();
+        t2.connect("node-1", "127.0.0.1", p1).join();
+        t2.connect("node-3", "127.0.0.1", p3).join();
+        t3.connect("node-1", "127.0.0.1", p1).join();
+        t3.connect("node-2", "127.0.0.1", p2).join();
+
+        n1.start();
+        n2.start();
+        n3.start();
+
+        RaftNode leader = waitForAnyLeader(List.of(n1, n2, n3), 10_000);
+        assertNotNull(leader, "should have a leader");
+
+        RaftNode follower = List.of(n1, n2, n3).stream()
+            .filter(node -> node != leader)
+            .findFirst()
+            .orElseThrow();
+
+        Path engineDir = Files.createTempDirectory("raft-failover-read-engine-");
+        LoomqEngine engine = LoomqEngine.builder().nodeId("raft-failover-read-engine").walDir(engineDir).build();
+        try {
+            Intent intent = new Intent("raft-read-2");
+            intent.setPrecisionTier(com.loomq.domain.intent.PrecisionTier.STANDARD);
+            intent.transitionTo(IntentStatus.SCHEDULED);
+            engine.getIntentStore().save(intent);
+
+            IntentHandler followerHandler = new IntentHandler(engine, follower);
+            Object followerResult = followerHandler.getIntent(HttpMethod.GET, "/v1/intents/raft-read-2",
+                new byte[0], Map.of(), Map.of("intentId", "raft-read-2"));
+            assertInstanceOf(HttpErrorResponse.class, followerResult, "follower should reject reads before failover");
+
+            leader.close();
+            nodes.remove(leader);
+
+            List<RaftNode> survivors = new ArrayList<>(nodes);
+            RaftNode newLeader = waitForAnyLeader(survivors, 15_000);
+            assertNotNull(newLeader, "remaining nodes should elect a new leader");
+
+            IntentHandler newLeaderHandler = new IntentHandler(engine, newLeader);
+            Object result = newLeaderHandler.getIntent(HttpMethod.GET, "/v1/intents/raft-read-2",
+                new byte[0], Map.of(), Map.of("intentId", "raft-read-2"));
+            assertInstanceOf(IntentResponse.class, result, "new leader should serve reads after failover");
+            assertEquals("raft-read-2", ((IntentResponse) result).intentId());
+        } finally {
+            try {
+                engine.close();
+            } catch (Exception ignored) {
+            }
+            try {
+                Files.walk(engineDir)
+                    .sorted((a, b) -> b.getNameCount() - a.getNameCount())
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (Exception ignored) {
+                        }
+                    });
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     @Test
