@@ -100,15 +100,20 @@ public class ReplicaServer {
 
     /**
      * 启动服务器
+     *
+     * 返回的 future 会在服务端完成 bind、开始接受连接后完成，
+     * 服务则会继续运行直到调用 shutdown()。
      */
     public CompletableFuture<Void> start() {
         if (started.compareAndSet(false, true)) {
-            return CompletableFuture.runAsync(this::doStart);
+            CompletableFuture<Void> startedFuture = new CompletableFuture<>();
+            CompletableFuture.runAsync(() -> doStart(startedFuture));
+            return startedFuture;
         }
         return CompletableFuture.completedFuture(null);
     }
 
-    private void doStart() {
+    private void doStart(CompletableFuture<Void> startedFuture) {
         bossGroup = new NioEventLoopGroup(1);
         workerGroup = new NioEventLoopGroup();
 
@@ -140,12 +145,22 @@ public class ReplicaServer {
             serverChannel = future.channel();
 
             logger.info("ReplicaServer started on {}:{}", bindHost, bindPort);
+            startedFuture.complete(null);
 
             // 等待关闭
             serverChannel.closeFuture().sync();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             logger.warn("ReplicaServer interrupted");
+            if (!startedFuture.isDone()) {
+                startedFuture.completeExceptionally(e);
+            }
+        } catch (RuntimeException | Error e) {
+            logger.error("ReplicaServer failed to start", e);
+            if (!startedFuture.isDone()) {
+                startedFuture.completeExceptionally(e);
+            }
+            throw e;
         } finally {
             shutdown();
         }

@@ -193,7 +193,7 @@ public class RaftTransport implements AutoCloseable {
             else if (type == ReplicationRecordType.RAFT_INSTALL_SNAPSHOT) return handleInstallSnapshot(record);
             return null;
         });
-        server.start();
+        server.start().join();
         log.info("RaftTransport listening on {}:{}", host, port);
     }
 
