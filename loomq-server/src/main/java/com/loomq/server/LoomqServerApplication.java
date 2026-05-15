@@ -7,15 +7,24 @@ import com.loomq.common.MetricsCollector;
 import com.loomq.config.LoomqConfig;
 import com.loomq.config.ServerConfig;
 import com.loomq.config.WalConfig;
+import com.loomq.domain.intent.Intent;
+import com.loomq.domain.intent.IntentStatus;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
 import com.loomq.metrics.LoomQMetrics;
+import com.loomq.raft.RaftRuntimeListener;
+import com.loomq.raft.RaftStatusProvider;
+import com.loomq.raft.RaftStatusSnapshot;
+import com.loomq.raft.RaftWriteCoordinator;
 import io.netty.handler.codec.http.HttpMethod;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,38 +67,47 @@ public class LoomqServerApplication {
 
         // ---- Raft 共识模式（v0.9.0）----
         final com.loomq.raft.RaftNode raftNode;
+        final RaftRuntimeListener raftRuntimeListener;
+        final RaftWriteCoordinator raftWriteCoordinator;
         boolean raftEnabled = Boolean.parseBoolean(
             resolveSetting("LOOMQ_RAFT_ENABLED", "loomq.raft.enabled", "false"));
         if (raftEnabled) {
+            engine.getScheduler().pause();
             String raftNodeId = resolveSetting("LOOMQ_RAFT_NODE_ID", "loomq.raft.nodeId", nodeId);
             String peersStr = resolveSetting("LOOMQ_RAFT_PEERS", "loomq.raft.peers", raftNodeId);
             List<String> peers = parseRaftPeerIds(peersStr, raftNodeId);
             List<RaftPeerTarget> peerTargets = parseRaftPeerTargets(peersStr, raftNodeId);
+            int raftPort = Integer.parseInt(
+                resolveSetting("LOOMQ_RAFT_PORT", "loomq.raft.port", "7930"));
 
+            validateRaftStartupConfig(raftNodeId, peers, peerTargets, raftPort, serverConfig);
+
+            raftRuntimeListener = new RaftRuntimeBridge(engine);
             com.loomq.raft.RaftConfig raftConfig = new com.loomq.raft.RaftConfig(
                 raftNodeId, peers, dataDir, 150, 300, 50);
 
             com.loomq.raft.RaftTransport raftTransport = new com.loomq.raft.RaftTransport(raftNodeId);
-            int raftPort = Integer.parseInt(
-                resolveSetting("LOOMQ_RAFT_PORT", "loomq.raft.port", "7930"));
             raftTransport.listen("0.0.0.0", raftPort);
 
             raftNode = new com.loomq.raft.RaftNode(raftConfig,
-                engine.getWalAccessor(), engine.getIntentStore(), raftTransport);
+                engine.getWalAccessor(), engine.getIntentStore(), raftTransport, raftRuntimeListener);
             if (peerTargets.isEmpty() && peers.size() > 1) {
                 logger.warn("Raft peers were configured without connectable endpoints; use peerId@host:port to enable peer connections");
             }
             connectRaftPeers(raftTransport, peerTargets, raftNodeId);
-            raftNode.start();
+            raftWriteCoordinator = new RaftWriteCoordinator(raftNode, engine.getIntentStore());
             logger.info("Raft mode enabled: node={}, peers={}, connectablePeers={}",
                 raftNodeId, peers, peerTargets.size());
         } else {
             raftNode = null;
+            raftRuntimeListener = null;
+            raftWriteCoordinator = null;
         }
 
         RadixRouter router = new RadixRouter();
-        new IntentHandler(engine).register(router);
-        registerSystemRoutes(router, engine);
+        RaftStatusProvider raftStatus = raftNode;
+        new IntentHandler(engine, raftStatus, raftWriteCoordinator).register(router);
+        registerSystemRoutes(router, engine, raftStatus);
 
         NettyHttpServer server = new NettyHttpServer(serverConfig, router);
 
@@ -120,6 +138,9 @@ public class LoomqServerApplication {
 
         try {
             engine.start();
+            if (raftNode != null) {
+                raftNode.start();
+            }
             server.start();
 
             logger.info("LoomQ Netty server started on http://{}:{}", serverConfig.host(), server.getPort());
@@ -208,21 +229,26 @@ public class LoomqServerApplication {
         }
     }
 
-    private static List<String> parseRaftPeerIds(String peersSpec, String selfNodeId) {
+    static List<String> parseRaftPeerIds(String peersSpec, String selfNodeId) {
         if (peersSpec == null || peersSpec.isBlank()) {
             return List.of(selfNodeId);
         }
 
         List<String> peers = new ArrayList<>();
+        HashSet<String> seen = new HashSet<>();
         for (String raw : peersSpec.split(",")) {
             String token = raw.trim();
             if (token.isEmpty()) {
                 continue;
             }
             String nodeId = extractPeerNodeId(token);
-            if (!nodeId.isEmpty()) {
-                peers.add(nodeId);
+            if (nodeId.isEmpty()) {
+                throw new IllegalStateException("Raft peer entry is blank");
             }
+            if (!seen.add(nodeId)) {
+                throw new IllegalStateException("Duplicate Raft peer id: " + nodeId);
+            }
+            peers.add(nodeId);
         }
 
         if (peers.isEmpty()) {
@@ -231,12 +257,13 @@ public class LoomqServerApplication {
         return List.copyOf(peers);
     }
 
-    private static List<RaftPeerTarget> parseRaftPeerTargets(String peersSpec, String selfNodeId) {
+    static List<RaftPeerTarget> parseRaftPeerTargets(String peersSpec, String selfNodeId) {
         if (peersSpec == null || peersSpec.isBlank()) {
             return List.of();
         }
 
         List<RaftPeerTarget> targets = new ArrayList<>();
+        HashSet<String> seen = new HashSet<>();
         for (String raw : peersSpec.split(",")) {
             String token = raw.trim();
             if (token.isEmpty()) {
@@ -245,6 +272,9 @@ public class LoomqServerApplication {
 
             RaftPeerTarget target = parsePeerTarget(token, selfNodeId);
             if (target != null) {
+                if (!seen.add(target.nodeId())) {
+                    throw new IllegalStateException("Duplicate Raft peer endpoint: " + target.nodeId());
+                }
                 targets.add(target);
             }
         }
@@ -266,29 +296,76 @@ public class LoomqServerApplication {
         int eq = token.indexOf('=');
         int sep = at >= 0 ? at : eq;
         if (sep <= 0) {
-            return null;
+            String peerId = token.trim();
+            if (peerId.isEmpty()) {
+                throw new IllegalStateException("Raft peer entry is blank");
+            }
+            if (peerId.equals(selfNodeId)) {
+                return null;
+            }
+            throw new IllegalStateException(
+                "Raft peer '" + peerId + "' is missing host:port endpoint; use peerId@host:port or peerId=host:port");
         }
 
         String peerId = token.substring(0, sep).trim();
-        if (peerId.isEmpty() || peerId.equals(selfNodeId)) {
+        if (peerId.isEmpty()) {
+            throw new IllegalStateException("Raft peer id is blank in '" + token + "'");
+        }
+        if (peerId.equals(selfNodeId)) {
             return null;
         }
 
         String endpoint = token.substring(sep + 1).trim();
         int colon = endpoint.lastIndexOf(':');
         if (colon <= 0 || colon == endpoint.length() - 1) {
-            logger.warn("Invalid Raft peer endpoint '{}', expected peerId@host:port or peerId=host:port", token);
-            return null;
+            throw new IllegalStateException(
+                "Invalid Raft peer endpoint '" + token + "', expected peerId@host:port or peerId=host:port");
         }
 
         String host = endpoint.substring(0, colon).trim();
         String portStr = endpoint.substring(colon + 1).trim();
+        if (host.isEmpty()) {
+            throw new IllegalStateException("Raft peer host is blank in '" + token + "'");
+        }
         try {
             int port = Integer.parseInt(portStr);
+            if (port <= 0 || port > 65535) {
+                throw new IllegalStateException("Raft peer port must be in range [1, 65535]: " + token);
+            }
             return new RaftPeerTarget(peerId, host, port);
         } catch (NumberFormatException e) {
-            logger.warn("Invalid Raft peer port in '{}': {}", token, portStr);
-            return null;
+            throw new IllegalStateException("Invalid Raft peer port in '" + token + "': " + portStr, e);
+        }
+    }
+
+    static void validateRaftStartupConfig(String raftNodeId, List<String> peers,
+                                          List<RaftPeerTarget> peerTargets, int raftPort,
+                                          ServerConfig serverConfig) {
+        if (raftNodeId == null || raftNodeId.isBlank()) {
+            throw new IllegalStateException("Raft node id cannot be blank");
+        }
+        if (peers == null || peers.isEmpty()) {
+            throw new IllegalStateException("Raft peers cannot be empty");
+        }
+        if (!peers.contains(raftNodeId)) {
+            throw new IllegalStateException("Raft peer list must include the local node id: " + raftNodeId);
+        }
+        if (peers.size() > 1 && peerTargets.isEmpty()) {
+            throw new IllegalStateException(
+                "Raft cluster mode requires connectable peer endpoints; use peerId@host:port or peerId=host:port");
+        }
+        if (peerTargets.size() != Math.max(0, peers.size() - 1)) {
+            throw new IllegalStateException(
+                "Raft peer endpoints must cover every remote peer exactly once");
+        }
+        if (raftPort <= 0 || raftPort > 65535) {
+            throw new IllegalStateException("Raft port must be in range [1, 65535]");
+        }
+        if (serverConfig.port() > 0 && serverConfig.port() == raftPort) {
+            throw new IllegalStateException("Raft port must differ from HTTP server port");
+        }
+        if (serverConfig.nettyPort() > 0 && serverConfig.nettyPort() == raftPort) {
+            throw new IllegalStateException("Raft port must differ from Netty port");
         }
     }
 
@@ -325,58 +402,133 @@ public class LoomqServerApplication {
         logger.info("");
     }
 
-    private static void registerSystemRoutes(RadixRouter router, LoomqEngine engine) {
+    private static void registerSystemRoutes(RadixRouter router, LoomqEngine engine,
+                                             RaftStatusProvider raftStatus) {
         router.add(HttpMethod.GET, "/health", (method, uri, body, headers, pathParams) ->
-            HEALTH_UP_RESPONSE);
+            buildHealthResponse(engine, raftStatus));
         router.add(HttpMethod.GET, "/health/live", (method, uri, body, headers, pathParams) ->
             HEALTH_LIVE_RESPONSE);
         router.add(HttpMethod.GET, "/health/ready", (method, uri, body, headers, pathParams) ->
             LoomQMetrics.getInstance().isWalHealthy() ? HEALTH_UP_RESPONSE : HEALTH_DOWN_RESPONSE);
         router.add(HttpMethod.GET, "/health/deep", (method, uri, body, headers, pathParams) ->
-            buildDeepHealthResponse(engine));
+            buildDeepHealthResponse(engine, raftStatus));
         router.add(HttpMethod.GET, "/metrics", (method, uri, body, headers, pathParams) ->
             LoomQMetrics.getInstance().snapshot());
         router.add(HttpMethod.GET, "/api/v1/metrics", (method, uri, body, headers, pathParams) ->
             LoomQMetrics.getInstance().snapshot());
     }
 
-    private static String buildDeepHealthResponse(LoomqEngine engine) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{\"status\":\"").append(engine.getWalHealth().status()).append("\"");
-
-        // Tier status
-        sb.append(",\"tiers\":{");
-        var backpressure = engine.getScheduler().getBackpressureStatus();
-        boolean first = true;
-        for (var entry : backpressure.entrySet()) {
-            if (!first) sb.append(",");
-            first = false;
-            var info = entry.getValue();
-            sb.append("\"").append(entry.getKey().name()).append("\":{");
-            sb.append("\"maxConcurrency\":").append(info.maxConcurrency()).append(",");
-            sb.append("\"activeDispatches\":").append(info.activeDispatches()).append(",");
-            sb.append("\"availablePermits\":").append(info.availablePermits()).append(",");
-            sb.append("\"queueSize\":").append(info.queueSize()).append(",");
-            sb.append("\"utilizationPct\":").append(String.format("%.1f", info.utilizationPct())).append(",");
-            sb.append("\"underBackpressure\":").append(info.underBackpressure());
-            sb.append("}");
-        }
-        sb.append("}");
-
-        // WAL status
-        var wal = engine.getWalHealth();
-        sb.append(",\"wal\":{");
-        sb.append("\"status\":\"").append(wal.status()).append("\",");
-        sb.append("\"unflushedBytes\":").append(wal.unflushedBytes()).append(",");
-        sb.append("\"lastFsyncMsAgo\":").append(wal.lastFsyncMsAgo()).append(",");
-        sb.append("\"writePosition\":").append(wal.writePosition()).append(",");
-        sb.append("\"flushedPosition\":").append(wal.flushedPosition());
-        sb.append("}");
-
-        sb.append(",\"timestamp\":\"").append(java.time.Instant.now().toString()).append("\"");
-        sb.append("}");
-        return sb.toString();
+    private static Map<String, Object> buildHealthResponse(LoomqEngine engine, RaftStatusProvider raftStatus) {
+        Map<String, Object> root = new LinkedHashMap<>();
+        root.put("status", engine.getWalHealth().status());
+        root.put("timestamp", java.time.Instant.now().toString());
+        root.put("wal", buildWalHealthSection(engine));
+        root.put("raft", buildRaftHealthSection(raftStatus, LoomQMetrics.getInstance().snapshot()));
+        return root;
     }
 
-    private record RaftPeerTarget(String nodeId, String host, int port) {}
+    private static Map<String, Object> buildDeepHealthResponse(LoomqEngine engine, RaftStatusProvider raftStatus) {
+        Map<String, Object> root = buildHealthResponse(engine, raftStatus);
+        Map<String, Object> tiers = new LinkedHashMap<>();
+        var backpressure = engine.getScheduler().getBackpressureStatus();
+        for (var entry : backpressure.entrySet()) {
+            var info = entry.getValue();
+            Map<String, Object> infoMap = new LinkedHashMap<>();
+            infoMap.put("maxConcurrency", info.maxConcurrency());
+            infoMap.put("activeDispatches", info.activeDispatches());
+            infoMap.put("availablePermits", info.availablePermits());
+            infoMap.put("queueSize", info.queueSize());
+            infoMap.put("utilizationPct", String.format("%.1f", info.utilizationPct()));
+            infoMap.put("underBackpressure", info.underBackpressure());
+            tiers.put(entry.getKey().name(), infoMap);
+        }
+        root.put("tiers", tiers);
+        return root;
+    }
+
+    private static Map<String, Object> buildWalHealthSection(LoomqEngine engine) {
+        Map<String, Object> wal = new LinkedHashMap<>();
+        var status = engine.getWalHealth();
+        wal.put("status", status.status());
+        wal.put("unflushedBytes", status.unflushedBytes());
+        wal.put("lastFsyncMsAgo", status.lastFsyncMsAgo());
+        wal.put("writePosition", status.writePosition());
+        wal.put("flushedPosition", status.flushedPosition());
+        return wal;
+    }
+
+    private static Map<String, Object> buildRaftHealthSection(RaftStatusProvider raftStatus,
+                                                              LoomQMetrics.MetricsSnapshot metrics) {
+        Map<String, Object> raft = new LinkedHashMap<>();
+        if (raftStatus == null || !raftStatus.isRaftEnabled()) {
+            raft.put("enabled", false);
+            raft.put("acceptingWrites", false);
+            return raft;
+        }
+
+        RaftStatusSnapshot status = raftStatus.snapshotStatus();
+        raft.put("enabled", true);
+        raft.put("nodeId", status.nodeId());
+        raft.put("role", status.role().name());
+        raft.put("leaderId", status.leaderId());
+        raft.put("term", status.term());
+        raft.put("commitIndex", status.commitIndex());
+        raft.put("lastApplied", status.lastApplied());
+        raft.put("commitLag", status.commitLag());
+        raft.put("replicationLag", status.replicationLag());
+        raft.put("connectedPeers", status.connectedPeers());
+        raft.put("totalPeers", status.totalPeers());
+        raft.put("peerReachability", status.peerReachability());
+        raft.put("writePending", metrics.raftPendingWrites());
+        raft.put("writeProposalLatencyMs", metrics.raftWriteProposalLatencyMs());
+        raft.put("writeProposalLatencyMaxMs", metrics.raftWriteProposalLatencyMaxMs());
+        raft.put("writeTimeouts", metrics.raftWriteTimeouts());
+        raft.put("writeStepDownAborts", metrics.raftWriteStepDownAborts());
+        raft.put("acceptingWrites", status.isLeader() && status.commitLag() == 0 && metrics.raftPendingWrites() == 0);
+        return raft;
+    }
+
+    private static final class RaftRuntimeBridge implements RaftRuntimeListener {
+        private final LoomqEngine engine;
+
+        private RaftRuntimeBridge(LoomqEngine engine) {
+            this.engine = engine;
+        }
+
+        @Override
+        public void onRoleChanged(com.loomq.raft.RaftRole role, long term) {
+            if (role == com.loomq.raft.RaftRole.LEADER) {
+                engine.getScheduler().rebuildFromCommittedState(engine.getIntentStore().getAllIntents().values());
+                engine.getScheduler().resume();
+            } else {
+                engine.getScheduler().pause();
+            }
+        }
+
+        @Override
+        public void onCommittedIntent(Intent intent, boolean isNew, boolean leader) {
+            if (!leader || intent == null) {
+                return;
+            }
+
+            if (intent.getStatus().isTerminal()) {
+                engine.getScheduler().unschedule(intent);
+                if (intent.getStatus() == IntentStatus.CANCELED) {
+                    MetricsCollector.getInstance().incrementIntentsCancelled();
+                    LoomQMetrics.getInstance().incrementIntentsCancelled();
+                }
+                return;
+            }
+
+            if (isNew) {
+                engine.getScheduler().schedule(intent);
+                MetricsCollector.getInstance().incrementIntentsCreated();
+                LoomQMetrics.getInstance().incrementIntentsCreated();
+            } else {
+                engine.getScheduler().restore(intent);
+            }
+        }
+    }
+
+    record RaftPeerTarget(String nodeId, String host, int port) {}
 }

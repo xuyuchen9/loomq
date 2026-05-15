@@ -41,6 +41,7 @@ flowchart TB
 - HTTP transport and routing: Netty server, REST handlers, JSON serialization
 - webhook delivery: `NettyHttpDeliveryHandler`, `HttpCallbackHandler`
 - Raft consensus wiring: leader election, log replication, snapshot install
+- Raft observability and safety: leader-authoritative reads, health/metrics surfacing, startup guardrails
 - standalone bootstrap: `LoomqServerApplication`
 
 ## Runtime Flows
@@ -62,6 +63,12 @@ flowchart TB
 5. If a follower is too far behind, the leader sends `InstallSnapshot`
 6. Stale responses are ignored via generation checks during step-down and leadership change
 
+### Raft Read Path
+
+1. In Raft mode, `GET /v1/intents/{intentId}` is leader-authoritative
+2. Followers reject reads with a retryable 503 and leader hint when known
+3. `/health` and `/metrics` expose role, leader id, term, commit index, commit lag, replication lag, and peer reachability so operators can tell whether reads are safe
+
 ### Recovery and Snapshot Path
 
 1. On startup, `RecoveryPipeline` clears transient state and rebuilds the store
@@ -82,6 +89,6 @@ The kernel is designed to stay shell-friendly:
 
 ## Configuration Path
 
-The standalone server loads configuration, prints a runtime summary, and passes the effective settings into `LoomqEngine` and the Raft components.
+The standalone server loads configuration, prints a runtime summary, validates Raft topology and port constraints up front, and passes the effective settings into `LoomqEngine` and the Raft components.
 
 For the canonical key list, see [Configuration Reference](../operations/CONFIGURATION.md).

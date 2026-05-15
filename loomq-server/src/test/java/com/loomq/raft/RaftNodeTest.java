@@ -181,7 +181,10 @@ class RaftNodeTest {
 
             LoomQMetrics.MetricsSnapshot afterStart = metrics.snapshot();
             assertEquals("LEADER", afterStart.raftRole());
+            assertEquals("node-1", afterStart.raftLeaderId());
             assertTrue(afterStart.raftTerm() > 0);
+            assertEquals(0, afterStart.raftConnectedPeers());
+            assertEquals(0, afterStart.raftTotalPeers());
 
             byte[] encoded = IntentBinaryCodec.encode(makeIntent("metrics-intent"));
             long index = node.propose(encoded);
@@ -191,9 +194,11 @@ class RaftNodeTest {
 
             LoomQMetrics.MetricsSnapshot afterCommit = metrics.snapshot();
             assertEquals("LEADER", afterCommit.raftRole());
+            assertEquals("node-1", afterCommit.raftLeaderId());
             assertTrue(afterCommit.raftCommitIndex() >= index);
             assertTrue(afterCommit.raftLastApplied() >= index);
             assertEquals(0, afterCommit.raftCommitLag());
+            assertEquals(0, afterCommit.raftReplicationLag());
         } finally {
             if (node != null) {
                 node.close();

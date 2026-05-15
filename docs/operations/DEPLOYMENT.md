@@ -104,6 +104,7 @@ Tune heap size according to your pending-intent target and WAL retention window.
 ## Raft Deployment
 
 Raft is enabled through the server process and should be deployed with stable node identities.
+In Raft mode, `GET /v1/intents/{intentId}` is leader-authoritative; followers return a retryable 503 with a leader hint when known.
 
 ### Required Variables
 
@@ -111,7 +112,7 @@ Raft is enabled through the server process and should be deployed with stable no
 |----------|---------|
 | `LOOMQ_RAFT_ENABLED` | Enable Raft mode |
 | `LOOMQ_RAFT_NODE_ID` | Local Raft node ID |
-| `LOOMQ_RAFT_PEERS` | Peer list, supports `peerId@host:port` |
+| `LOOMQ_RAFT_PEERS` | Peer list, self-only lists can contain just the local node id; remote peers should use `peerId@host:port` or `peerId=host:port` |
 | `LOOMQ_RAFT_PORT` | Local Raft RPC bind port |
 | `LOOMQ_DATA_DIR` | WAL and snapshot location |
 
@@ -130,6 +131,7 @@ export LOOMQ_RAFT_PORT=7930
 - Use a stable host name or IP for every node.
 - Open the Raft port between peers before starting the Raft group.
 - Keep `LOOMQ_DATA_DIR` persistent so snapshots and WAL metadata survive restarts.
+- Verify `/health` and `/metrics` after startup; both endpoints expose Raft role, leader id, term, commit index, and peer reachability.
 
 ## Container Deployment
 
@@ -238,10 +240,12 @@ spec:
 
 ## Monitoring Setup
 
-### Metrics Endpoints
+### Health / Metrics Endpoints
 
 - `GET /metrics`
 - `GET /api/v1/metrics`
+- `GET /health`
+- `GET /health/deep`
 
 ### Prometheus
 
@@ -258,6 +262,15 @@ Point Prometheus at the server and scrape the metrics endpoint. Useful signals i
 - `loomq_wal_record_count`
 - `loomq_scheduler_bucket_size`
 - `loomq_scheduler_wakeup_latency_ms_p95`
+- `raftRole`
+- `raftLeaderId`
+- `raftTerm`
+- `raftCommitIndex`
+- `raftLastApplied`
+- `raftCommitLag`
+- `raftReplicationLag`
+- `raftConnectedPeers`
+- `raftTotalPeers`
 - `loomq_scheduler_wakeup_latency_ms_p99`
 - `loomq_scheduler_wakeup_latency_ms_p999`
 

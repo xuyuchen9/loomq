@@ -93,6 +93,11 @@ paths:
   /v1/intents/{intentId}:
     get:
       summary: 查询 Intent
+      description: |
+        查询当前 Intent 的快照。
+
+        在 Raft 模式下，这个接口是 leader-authoritative：
+        follower 会返回 503，并通过 `ErrorResponse.details` 携带可重试信息与 leader hint。
       operationId: getIntent
       parameters:
         - name: intentId
@@ -113,6 +118,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Raft follower rejected the read; retry on the leader
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: "50301"
+                message: "Read must be served by the Raft leader"
+                details:
+                  retryable: true
+                  nodeRole: "FOLLOWER"
+                  leaderId: "node-1"
 
     patch:
       summary: 修改 Intent
@@ -215,6 +233,10 @@ paths:
   /health:
     get:
       summary: 总体健康状态
+      description: |
+        返回 WAL 和 Raft 的当前健康状态。
+
+        `/health` 适合运维快速判断节点是否可读可写；Raft 安全信号集中在 `raft` 区块里。
       operationId: health
       responses:
         '200':
@@ -222,15 +244,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: "UP"
+                $ref: '#/components/schemas/HealthResponse'
 
   /health/live:
     get:
       summary: 存活探针（K8s liveness）
+      description: 仅反映进程是否存活。
       operationId: liveness
       responses:
         '200':
@@ -239,10 +258,53 @@ paths:
   /health/ready:
     get:
       summary: 就绪探针（K8s readiness）
+      description: 仅反映 WAL 就绪状态；Raft 安全信号在 `/health` 与 `/health/deep` 中展示。
       operationId: readiness
       responses:
         '200':
           description: 就绪
+
+  /health/deep:
+    get:
+      summary: 深度健康探针
+      description: |
+        在 `/health` 的基础上附加精度档位的 backpressure 详情。
+      operationId: deepHealth
+      responses:
+        '200':
+          description: 深度健康
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthDeepResponse'
+
+  /metrics:
+    get:
+      summary: JSON metrics snapshot
+      description: |
+        返回所有 kernel、WAL 和 Raft 指标的 JSON 快照。
+      operationId: metrics
+      responses:
+        '200':
+          description: 指标快照
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsSnapshot'
+
+  /api/v1/metrics:
+    get:
+      summary: JSON metrics snapshot alias
+      description: |
+        `/metrics` 的兼容别名。
+      operationId: metricsAlias
+      responses:
+        '200':
+          description: 指标快照
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsSnapshot'
 
 components:
   schemas:
@@ -408,6 +470,181 @@ components:
           type: string
         errorMessage:
           type: string
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+        - wal
+        - raft
+      properties:
+        status:
+          type: string
+          description: WAL health state, typically OK, WARNING, or CRITICAL
+          example: "OK"
+        timestamp:
+          type: string
+          format: date-time
+        wal:
+          $ref: '#/components/schemas/WalHealth'
+        raft:
+          $ref: '#/components/schemas/RaftHealth'
+
+    HealthDeepResponse:
+      allOf:
+        - $ref: '#/components/schemas/HealthResponse'
+        - type: object
+          properties:
+            tiers:
+              type: object
+              additionalProperties:
+                type: object
+                properties:
+                  maxConcurrency:
+                    type: integer
+                  activeDispatches:
+                    type: integer
+                  availablePermits:
+                    type: integer
+                  queueSize:
+                    type: integer
+                  utilizationPct:
+                    type: string
+                  underBackpressure:
+                    type: boolean
+
+    WalHealth:
+      type: object
+      required:
+        - status
+        - unflushedBytes
+        - lastFsyncMsAgo
+        - writePosition
+        - flushedPosition
+      properties:
+        status:
+          type: string
+          description: WAL health state emitted by the runtime
+        unflushedBytes:
+          type: integer
+        lastFsyncMsAgo:
+          type: integer
+        writePosition:
+          type: integer
+        flushedPosition:
+          type: integer
+
+    RaftHealth:
+      type: object
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+        nodeId:
+          type: string
+        role:
+          type: string
+        leaderId:
+          type: string
+        term:
+          type: integer
+        commitIndex:
+          type: integer
+        lastApplied:
+          type: integer
+        commitLag:
+          type: integer
+        replicationLag:
+          type: integer
+        connectedPeers:
+          type: integer
+        totalPeers:
+          type: integer
+        peerReachability:
+          type: object
+          additionalProperties:
+            type: boolean
+
+    MetricsSnapshot:
+      type: object
+      properties:
+        intentsCreated:
+          type: integer
+        intentsCompleted:
+          type: integer
+        intentsCancelled:
+          type: integer
+        intentsExpired:
+          type: integer
+        intentsDeadLettered:
+          type: integer
+        intentsByStatus:
+          type: object
+          additionalProperties:
+            type: integer
+        deliveriesTotal:
+          type: integer
+        deliveriesSuccess:
+          type: integer
+        deliveriesFailed:
+          type: integer
+        deliveriesRetried:
+          type: integer
+        avgDeliveryLatencyMs:
+          type: number
+        maxDeliveryLatencyMs:
+          type: integer
+        replicationRecordsSent:
+          type: integer
+        replicationRecordsAcked:
+          type: integer
+        replicationLagMs:
+          type: integer
+        walRecordsWritten:
+          type: integer
+        snapshotsCreated:
+          type: integer
+        pendingIntents:
+          type: integer
+        activeDispatches:
+          type: integer
+        walHealthy:
+          type: boolean
+        walLastFlushTime:
+          type: integer
+        walIdleTimeMs:
+          type: integer
+        walFlushErrorCount:
+          type: integer
+        avgWalFlushLatencyMs:
+          type: number
+        maxWalFlushLatencyMs:
+          type: integer
+        walPendingWrites:
+          type: integer
+        walRingBufferSize:
+          type: integer
+        raftRole:
+          type: string
+        raftLeaderId:
+          type: string
+        raftTerm:
+          type: integer
+        raftCommitIndex:
+          type: integer
+        raftLastApplied:
+          type: integer
+        raftCommitLag:
+          type: integer
+        raftReplicationLag:
+          type: integer
+        raftConnectedPeers:
+          type: integer
+        raftTotalPeers:
+          type: integer
+      additionalProperties: true
 
     ErrorResponse:
       type: object

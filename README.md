@@ -28,7 +28,7 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 | Category | Examples |
 |----------|----------|
 | **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics, pluggable storage (in-memory + RocksDB), WAL segment rotation with snapshot compaction, IntentObserver lifecycle hooks |
-| **Beta** | Raft leader election, log replication, snapshot catch-up |
+| **Beta** | Raft leader election, log replication, snapshot catch-up, leader-authoritative reads, Raft observability |
 | **Not yet committed** | distributed coordination primitives, lock/lease semantics |
 
 ---
@@ -86,6 +86,15 @@ curl -X POST http://localhost:7928/v1/intents \
 ```bash
 curl http://localhost:7928/v1/intents/{intentId}
 ```
+
+### Raft Mode Notes
+
+When `LOOMQ_RAFT_ENABLED=true`, the standalone server switches to Raft mode:
+
+- `GET /v1/intents/{intentId}` becomes leader-authoritative
+- followers return `503` with error code `50301`, `retryable=true`, and the leader id in `details` when known
+- `/health` and `/metrics` expose Raft signals such as role, leader id, term, commit index, commit lag, replication lag, and peer reachability
+- `/health/deep` adds tier backpressure data on top of the Raft view
 
 ---
 

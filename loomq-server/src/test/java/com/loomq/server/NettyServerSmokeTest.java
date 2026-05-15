@@ -9,6 +9,7 @@ import com.loomq.config.ServerConfig;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
+import com.loomq.metrics.LoomQMetrics;
 import io.netty.handler.codec.http.HttpMethod;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -45,6 +46,8 @@ class NettyServerSmokeTest {
             RadixRouter router = new RadixRouter();
             new IntentHandler(engine).register(router);
             router.add(HttpMethod.GET, "/health", (method, uri, body, headers, pathParams) -> java.util.Map.of("status", "UP"));
+            router.add(HttpMethod.GET, "/metrics", (method, uri, body, headers, pathParams) ->
+                LoomQMetrics.getInstance().snapshot());
 
             server = new NettyHttpServer(testConfig(), router);
             server.start();
@@ -60,6 +63,15 @@ class NettyServerSmokeTest {
 
             assertEquals(200, health.statusCode());
             assertTrue(health.body().contains("\"status\":\"UP\""));
+            HttpResponse<String> metrics = client.send(
+                HttpRequest.newBuilder()
+                    .uri(URI.create("http://127.0.0.1:" + server.getPort() + "/metrics"))
+                    .GET()
+                    .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(200, metrics.statusCode());
+            assertTrue(metrics.body().contains("\"intentsCreated\""));
 
             String intentId = "smoke-" + System.nanoTime();
             Instant executeAt = Instant.now().plusSeconds(5);

@@ -54,10 +54,19 @@ public final class MetricsResponseSerializer {
     private static final byte[] FIELD_WAL_PENDING_WRITES = "\"walPendingWrites\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_WAL_RING_BUFFER_SIZE = "\"walRingBufferSize\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_RAFT_ROLE = "\"raftRole\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_LEADER_ID = "\"raftLeaderId\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_RAFT_TERM = "\"raftTerm\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_RAFT_COMMIT_INDEX = "\"raftCommitIndex\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_RAFT_LAST_APPLIED = "\"raftLastApplied\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_RAFT_COMMIT_LAG = "\"raftCommitLag\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_REPLICATION_LAG = "\"raftReplicationLag\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_CONNECTED_PEERS = "\"raftConnectedPeers\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_TOTAL_PEERS = "\"raftTotalPeers\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_PENDING_WRITES = "\"raftPendingWrites\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_WRITE_PROPOSAL_LATENCY = "\"raftWriteProposalLatencyMs\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_WRITE_PROPOSAL_LATENCY_MAX = "\"raftWriteProposalLatencyMaxMs\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_WRITE_TIMEOUTS = "\"raftWriteTimeouts\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_WRITE_STEPDOWN_ABORTS = "\"raftWriteStepDownAborts\"".getBytes(StandardCharsets.UTF_8);
 
     private MetricsResponseSerializer() {}
 
@@ -93,10 +102,19 @@ public final class MetricsResponseSerializer {
         first = writeLongField(buf, first, FIELD_WAL_PENDING_WRITES, snapshot.walPendingWrites());
         first = writeLongField(buf, first, FIELD_WAL_RING_BUFFER_SIZE, snapshot.walRingBufferSize());
         first = writeStringField(buf, first, FIELD_RAFT_ROLE, snapshot.raftRole());
+        first = writeStringField(buf, first, FIELD_RAFT_LEADER_ID, snapshot.raftLeaderId());
         first = writeLongField(buf, first, FIELD_RAFT_TERM, snapshot.raftTerm());
         first = writeLongField(buf, first, FIELD_RAFT_COMMIT_INDEX, snapshot.raftCommitIndex());
         first = writeLongField(buf, first, FIELD_RAFT_LAST_APPLIED, snapshot.raftLastApplied());
-        writeLongField(buf, first, FIELD_RAFT_COMMIT_LAG, snapshot.raftCommitLag());
+        first = writeLongField(buf, first, FIELD_RAFT_COMMIT_LAG, snapshot.raftCommitLag());
+        first = writeLongField(buf, first, FIELD_RAFT_REPLICATION_LAG, snapshot.raftReplicationLag());
+        first = writeLongField(buf, first, FIELD_RAFT_CONNECTED_PEERS, snapshot.raftConnectedPeers());
+        first = writeLongField(buf, first, FIELD_RAFT_TOTAL_PEERS, snapshot.raftTotalPeers());
+        first = writeLongField(buf, first, FIELD_RAFT_PENDING_WRITES, snapshot.raftPendingWrites());
+        first = writeDoubleField(buf, first, FIELD_RAFT_WRITE_PROPOSAL_LATENCY, snapshot.raftWriteProposalLatencyMs());
+        first = writeLongField(buf, first, FIELD_RAFT_WRITE_PROPOSAL_LATENCY_MAX, snapshot.raftWriteProposalLatencyMaxMs());
+        first = writeLongField(buf, first, FIELD_RAFT_WRITE_TIMEOUTS, snapshot.raftWriteTimeouts());
+        writeLongField(buf, first, FIELD_RAFT_WRITE_STEPDOWN_ABORTS, snapshot.raftWriteStepDownAborts());
 
         buf.writeBytes(CLOSE_OBJECT);
     }
