@@ -1,6 +1,7 @@
 package com.loomq.server;
 
 import com.loomq.LoomqEngine;
+import com.loomq.api.ErrorResponse;
 import com.loomq.callback.HttpCallbackHandler;
 import com.loomq.callback.NettyHttpDeliveryHandler;
 import com.loomq.common.MetricsCollector;
@@ -9,6 +10,7 @@ import com.loomq.config.ServerConfig;
 import com.loomq.config.WalConfig;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
+import com.loomq.http.netty.HttpErrorResponse;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
@@ -37,9 +39,8 @@ import org.slf4j.LoggerFactory;
 public class LoomqServerApplication {
 
     private static final Logger logger = LoggerFactory.getLogger(LoomqServerApplication.class);
-    private static final byte[] HEALTH_UP_RESPONSE = "{\"status\":\"UP\"}".getBytes(StandardCharsets.UTF_8);
     private static final byte[] HEALTH_LIVE_RESPONSE = "{\"status\":\"ALIVE\"}".getBytes(StandardCharsets.UTF_8);
-    private static final byte[] HEALTH_DOWN_RESPONSE = "{\"status\":\"DOWN\"}".getBytes(StandardCharsets.UTF_8);
+    private static final String READINESS_ERROR_CODE = "50304";
 
     public static void main(String[] args) {
         printBanner();
@@ -65,7 +66,7 @@ public class LoomqServerApplication {
             .deliveryHandler(new NettyHttpDeliveryHandler())
             .build();
 
-        // ---- Raft 共识模式（v0.9.0）----
+        // ---- Raft 共识模式（v0.9.1）----
         final com.loomq.raft.RaftNode raftNode;
         final RaftRuntimeListener raftRuntimeListener;
         final RaftWriteCoordinator raftWriteCoordinator;
@@ -95,7 +96,13 @@ public class LoomqServerApplication {
                 logger.warn("Raft peers were configured without connectable endpoints; use peerId@host:port to enable peer connections");
             }
             connectRaftPeers(raftTransport, peerTargets, raftNodeId);
-            raftWriteCoordinator = new RaftWriteCoordinator(raftNode, engine.getIntentStore());
+            raftWriteCoordinator = new RaftWriteCoordinator(
+                raftNode,
+                engine.getIntentStore(),
+                serverConfig.maxConcurrentBusinessRequests(),
+                serverConfig.httpSemaphoreTimeoutMs(),
+                5_000L
+            );
             logger.info("Raft mode enabled: node={}, peers={}, connectablePeers={}",
                 raftNodeId, peers, peerTargets.size());
         } else {
@@ -109,7 +116,7 @@ public class LoomqServerApplication {
         new IntentHandler(engine, raftStatus, raftWriteCoordinator).register(router);
         registerSystemRoutes(router, engine, raftStatus);
 
-        NettyHttpServer server = new NettyHttpServer(serverConfig, router);
+        NettyHttpServer server = new NettyHttpServer(serverConfig, router, config.getSecurityConfig());
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             logger.info("Shutdown signal received, stopping Netty server and engine...");
@@ -397,7 +404,7 @@ public class LoomqServerApplication {
         logger.info("╚══════╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝ ╚══▀▀═╝ ");
         logger.info("");
         logger.info(" Event Infrastructure for Delayed Execution");
-        logger.info("              Version 0.9.0");
+        logger.info("              Version 0.9.1");
         logger.info("              Mode: Server (Netty)");
         logger.info("");
     }
@@ -409,7 +416,7 @@ public class LoomqServerApplication {
         router.add(HttpMethod.GET, "/health/live", (method, uri, body, headers, pathParams) ->
             HEALTH_LIVE_RESPONSE);
         router.add(HttpMethod.GET, "/health/ready", (method, uri, body, headers, pathParams) ->
-            LoomQMetrics.getInstance().isWalHealthy() ? HEALTH_UP_RESPONSE : HEALTH_DOWN_RESPONSE);
+            buildReadinessResponse(raftStatus, LoomQMetrics.getInstance().snapshot()));
         router.add(HttpMethod.GET, "/health/deep", (method, uri, body, headers, pathParams) ->
             buildDeepHealthResponse(engine, raftStatus));
         router.add(HttpMethod.GET, "/metrics", (method, uri, body, headers, pathParams) ->
@@ -446,6 +453,61 @@ public class LoomqServerApplication {
         return root;
     }
 
+    static Object buildReadinessResponse(RaftStatusProvider raftStatus, LoomQMetrics.MetricsSnapshot metrics) {
+        Map<String, Object> readiness = buildReadinessDetails(raftStatus, metrics);
+        if (Boolean.TRUE.equals(readiness.get("ready"))) {
+            return readiness;
+        }
+
+        return new HttpErrorResponse(
+            503,
+            ErrorResponse.of(READINESS_ERROR_CODE, "Node is not ready to serve client traffic", readiness)
+        );
+    }
+
+    static Map<String, Object> buildReadinessDetails(RaftStatusProvider raftStatus,
+                                                     LoomQMetrics.MetricsSnapshot metrics) {
+        Map<String, Object> ready = new LinkedHashMap<>();
+        boolean walHealthy = metrics.walHealthy();
+        ready.put("status", walHealthy ? "UP" : "DOWN");
+        ready.put("walHealthy", walHealthy);
+
+        if (raftStatus == null || !raftStatus.isRaftEnabled()) {
+            ready.put("ready", walHealthy);
+            ready.put("mode", "embedded");
+            ready.put("raftEnabled", false);
+            ready.put("acceptingReads", walHealthy);
+            ready.put("acceptingWrites", walHealthy);
+            ready.put("reason", walHealthy ? "READY" : "WAL_UNHEALTHY");
+            return ready;
+        }
+
+        RaftStatusSnapshot status = raftStatus.snapshotStatus();
+        boolean quorumReachable = hasRaftQuorum(status);
+        boolean acceptingReads = raftStatus.canServeLinearizableRead();
+        boolean acceptingWrites = isAcceptingRaftWrites(status, metrics, quorumReachable);
+        boolean raftReady = walHealthy && acceptingReads && acceptingWrites;
+
+        ready.put("ready", raftReady);
+        ready.put("mode", "raft");
+        ready.put("raftEnabled", true);
+        ready.put("nodeId", status.nodeId());
+        ready.put("role", status.role().name());
+        ready.put("leaderId", status.leaderId());
+        ready.put("term", status.term());
+        ready.put("commitIndex", status.commitIndex());
+        ready.put("lastApplied", status.lastApplied());
+        ready.put("commitLag", status.commitLag());
+        ready.put("connectedPeers", status.connectedPeers());
+        ready.put("totalPeers", status.totalPeers());
+        ready.put("quorumReachable", quorumReachable);
+        ready.put("acceptingReads", acceptingReads);
+        ready.put("acceptingWrites", acceptingWrites);
+        ready.put("writePending", metrics.raftPendingWrites());
+        ready.put("reason", readinessReason(walHealthy, status, acceptingReads, quorumReachable, metrics));
+        return ready;
+    }
+
     private static Map<String, Object> buildWalHealthSection(LoomqEngine engine) {
         Map<String, Object> wal = new LinkedHashMap<>();
         var status = engine.getWalHealth();
@@ -462,6 +524,7 @@ public class LoomqServerApplication {
         Map<String, Object> raft = new LinkedHashMap<>();
         if (raftStatus == null || !raftStatus.isRaftEnabled()) {
             raft.put("enabled", false);
+            raft.put("acceptingReads", false);
             raft.put("acceptingWrites", false);
             return raft;
         }
@@ -479,13 +542,56 @@ public class LoomqServerApplication {
         raft.put("connectedPeers", status.connectedPeers());
         raft.put("totalPeers", status.totalPeers());
         raft.put("peerReachability", status.peerReachability());
+        raft.put("quorumReachable", hasRaftQuorum(status));
         raft.put("writePending", metrics.raftPendingWrites());
         raft.put("writeProposalLatencyMs", metrics.raftWriteProposalLatencyMs());
         raft.put("writeProposalLatencyMaxMs", metrics.raftWriteProposalLatencyMaxMs());
         raft.put("writeTimeouts", metrics.raftWriteTimeouts());
         raft.put("writeStepDownAborts", metrics.raftWriteStepDownAborts());
-        raft.put("acceptingWrites", status.isLeader() && status.commitLag() == 0 && metrics.raftPendingWrites() == 0);
+        raft.put("acceptingReads", raftStatus.canServeLinearizableRead());
+        raft.put("acceptingWrites", isAcceptingRaftWrites(status, metrics, hasRaftQuorum(status)));
         return raft;
+    }
+
+    private static boolean isAcceptingRaftWrites(RaftStatusSnapshot status,
+                                                 LoomQMetrics.MetricsSnapshot metrics,
+                                                 boolean quorumReachable) {
+        return status.isLeader()
+            && quorumReachable
+            && status.commitLag() == 0
+            && metrics.raftPendingWrites() == 0;
+    }
+
+    private static boolean hasRaftQuorum(RaftStatusSnapshot status) {
+        int clusterSize = status.totalPeers() + 1;
+        int reachableNodes = status.connectedPeers() + 1;
+        return reachableNodes >= (clusterSize / 2) + 1;
+    }
+
+    private static String readinessReason(boolean walHealthy,
+                                          RaftStatusSnapshot status,
+                                          boolean acceptingReads,
+                                          boolean quorumReachable,
+                                          LoomQMetrics.MetricsSnapshot metrics) {
+        if (!walHealthy) {
+            return "WAL_UNHEALTHY";
+        }
+        if (!status.isLeader()) {
+            return "RAFT_NOT_LEADER";
+        }
+        if (!quorumReachable) {
+            return "RAFT_QUORUM_UNREACHABLE";
+        }
+        if (!acceptingReads) {
+            return "RAFT_READ_LEASE_UNAVAILABLE";
+        }
+        if (status.commitLag() > 0) {
+            return "RAFT_COMMIT_LAG";
+        }
+        if (metrics.raftPendingWrites() > 0) {
+            return "RAFT_PENDING_WRITES";
+        }
+        return "READY";
     }
 
     private static final class RaftRuntimeBridge implements RaftRuntimeListener {

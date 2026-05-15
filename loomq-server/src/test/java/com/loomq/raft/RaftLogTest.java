@@ -169,8 +169,8 @@ class RaftLogTest {
             assertEquals(7, wal2.getLastLogEntryTerm(),
                 "lastLogEntryTerm should survive close/reopen");
             RaftLog log2 = new RaftLog(wal2);
-            assertTrue(log2.isUpToDate(0, 7),
-                "node should be up-to-date because lastLogEntryTerm=7 >= candidate's");
+            assertTrue(log2.isUpToDate(1, 7),
+                "candidate with same last entry (term=7, index=1) should be up-to-date");
         } finally {
             wal2.close();
         }
@@ -183,7 +183,7 @@ class RaftLogTest {
         wal.persistRaftMeta();
 
         // Manually truncate the meta file to 2 lines to simulate pre-existing format
-        Path metaPath = dataDir.resolve("raft_meta");
+        Path metaPath = dataDir.resolve("raft-test").resolve("raft_meta");
         java.util.List<String> lines = java.nio.file.Files.readAllLines(metaPath);
         java.nio.file.Files.write(metaPath,
             java.util.List.of(lines.get(0), lines.get(1)));

@@ -102,6 +102,14 @@ class RaftWriteAuthorityIntegrationTest {
                 leaderHandler.createIntent(HttpMethod.POST, "/v1/intents", createBody.getBytes(), java.util.Map.of(), java.util.Map.of()));
             IntentResponse created = assertInstanceOf(IntentResponse.class, createdResponse.body());
             assertEquals(intentId, created.intentId());
+            assertEquals(1L, created.revision());
+
+            IntentHandler.CreatedResponse duplicateCreateResponse = assertInstanceOf(IntentHandler.CreatedResponse.class,
+                leaderHandler.createIntent(HttpMethod.POST, "/v1/intents", createBody.getBytes(), java.util.Map.of(), java.util.Map.of()));
+            IntentResponse duplicateCreated = assertInstanceOf(IntentResponse.class, duplicateCreateResponse.body());
+            assertEquals(created.intentId(), duplicateCreated.intentId());
+            assertEquals(created.revision(), duplicateCreated.revision());
+
             waitForIntentStatus(follower2.store(), intentId, IntentStatus.SCHEDULED, 10_000);
             waitForIntentStatus(follower3.store(), intentId, IntentStatus.SCHEDULED, 10_000);
 
@@ -111,26 +119,44 @@ class RaftWriteAuthorityIntegrationTest {
                   "tags":{"phase":"patched","owner":"raft"}
                 }
                 """.formatted(executeAt.plusSeconds(120));
+            java.util.Map<String, String> revision1Headers = java.util.Map.of("X-LoomQ-Expected-Revision", "1");
 
             HttpErrorResponse patchFollowerResult = assertInstanceOf(HttpErrorResponse.class,
                 followerHandler3.patchIntent(HttpMethod.PATCH, "/v1/intents/" + intentId, patchBody.getBytes(), java.util.Map.of(), java.util.Map.of("intentId", intentId)));
             assertWriteRejected(patchFollowerResult, "patch", intentId, leaderNode.snapshotStatus().nodeId());
 
             IntentResponse patched = assertInstanceOf(IntentResponse.class,
-                leaderHandler.patchIntent(HttpMethod.PATCH, "/v1/intents/" + intentId, patchBody.getBytes(), java.util.Map.of(), java.util.Map.of("intentId", intentId)));
+                leaderHandler.patchIntent(HttpMethod.PATCH, "/v1/intents/" + intentId, patchBody.getBytes(), revision1Headers, java.util.Map.of("intentId", intentId)));
             assertEquals(intentId, patched.intentId());
+            assertEquals(2L, patched.revision());
             waitForIntentStatus(follower2.store(), intentId, IntentStatus.SCHEDULED, 10_000);
             waitForIntentStatus(follower3.store(), intentId, IntentStatus.SCHEDULED, 10_000);
             waitForIntentTag(follower2.store(), intentId, "phase", "patched", 10_000);
             waitForIntentTag(follower3.store(), intentId, "phase", "patched", 10_000);
 
+            String stalePatchBody = """
+                {
+                  "deadline":"%s",
+                  "tags":{"phase":"stale","owner":"raft"}
+                }
+                """.formatted(executeAt.plusSeconds(180));
+            HttpErrorResponse stalePatchResult = assertInstanceOf(HttpErrorResponse.class,
+                leaderHandler.patchIntent(HttpMethod.PATCH, "/v1/intents/" + intentId, stalePatchBody.getBytes(), revision1Headers, java.util.Map.of("intentId", intentId)));
+            assertEquals(409, stalePatchResult.status());
+            assertEquals("40902", stalePatchResult.error().code());
+            assertEquals(Boolean.FALSE, stalePatchResult.error().details().get("retryable"));
+            assertEquals(1L, stalePatchResult.error().details().get("expectedRevision"));
+            assertEquals(2L, stalePatchResult.error().details().get("actualRevision"));
+
             HttpErrorResponse cancelFollowerResult = assertInstanceOf(HttpErrorResponse.class,
                 followerHandler2.cancelIntent(HttpMethod.POST, "/v1/intents/" + intentId + "/cancel", new byte[0], java.util.Map.of(), java.util.Map.of("intentId", intentId)));
             assertWriteRejected(cancelFollowerResult, "cancel", intentId, leaderNode.snapshotStatus().nodeId());
 
+            java.util.Map<String, String> revision2Headers = java.util.Map.of("X-LoomQ-Expected-Revision", "2");
             IntentResponse cancelled = assertInstanceOf(IntentResponse.class,
-                leaderHandler.cancelIntent(HttpMethod.POST, "/v1/intents/" + intentId + "/cancel", new byte[0], java.util.Map.of(), java.util.Map.of("intentId", intentId)));
+                leaderHandler.cancelIntent(HttpMethod.POST, "/v1/intents/" + intentId + "/cancel", new byte[0], revision2Headers, java.util.Map.of("intentId", intentId)));
             assertEquals(IntentStatus.CANCELED, cancelled.status());
+            assertEquals(3L, cancelled.revision());
             waitForIntentStatus(follower2.store(), intentId, IntentStatus.CANCELED, 10_000);
             waitForIntentStatus(follower3.store(), intentId, IntentStatus.CANCELED, 10_000);
 
@@ -148,14 +174,16 @@ class RaftWriteAuthorityIntegrationTest {
 
             IntentHandler.CreatedResponse fireCreatedResponse = assertInstanceOf(IntentHandler.CreatedResponse.class,
                 leaderHandler.createIntent(HttpMethod.POST, "/v1/intents", fireBody.getBytes(), java.util.Map.of(), java.util.Map.of()));
-            assertEquals(fireNowId, ((IntentResponse) fireCreatedResponse.body()).intentId());
+            IntentResponse fireCreated = (IntentResponse) fireCreatedResponse.body();
+            assertEquals(fireNowId, fireCreated.intentId());
+            assertEquals(1L, fireCreated.revision());
 
             HttpErrorResponse fireFollowerResult = assertInstanceOf(HttpErrorResponse.class,
                 followerHandler3.fireNow(HttpMethod.POST, "/v1/intents/" + fireNowId + "/fire-now", new byte[0], java.util.Map.of(), java.util.Map.of("intentId", fireNowId)));
             assertWriteRejected(fireFollowerResult, "fire-now", fireNowId, leaderNode.snapshotStatus().nodeId());
 
             IntentActionResponse fired = assertInstanceOf(IntentActionResponse.class,
-                leaderHandler.fireNow(HttpMethod.POST, "/v1/intents/" + fireNowId + "/fire-now", new byte[0], java.util.Map.of(), java.util.Map.of("intentId", fireNowId)));
+                leaderHandler.fireNow(HttpMethod.POST, "/v1/intents/" + fireNowId + "/fire-now", new byte[0], revision1Headers, java.util.Map.of("intentId", fireNowId)));
             assertEquals(fireNowId, fired.intentId());
             assertEquals(IntentStatus.DISPATCHING.name(), fired.status());
         } finally {

@@ -791,10 +791,10 @@ function Ensure-BenchmarkRepo {
 
     New-Item -ItemType Directory -Force -Path $RepoPath | Out-Null
 
-    $ParentPom = Join-Path $RepoPath "com\loomq\loomq-parent\0.9.0\loomq-parent-0.9.0.pom"
-    $BomPom = Join-Path $RepoPath "com\loomq\loomq-bom\0.9.0\loomq-bom-0.9.0.pom"
-    $CoreJar = Join-Path $RepoPath "com\loomq\loomq-core\0.9.0\loomq-core-0.9.0.jar"
-    $ServerJar = Join-Path $RepoPath "com\loomq\loomq-server\0.9.0\loomq-server-0.9.0.jar"
+    $ParentPom = Join-Path $RepoPath "com\loomq\loomq-parent\0.9.1\loomq-parent-0.9.1.pom"
+    $BomPom = Join-Path $RepoPath "com\loomq\loomq-bom\0.9.1\loomq-bom-0.9.1.pom"
+    $CoreJar = Join-Path $RepoPath "com\loomq\loomq-core\0.9.1\loomq-core-0.9.1.jar"
+    $ServerJar = Join-Path $RepoPath "com\loomq\loomq-server\0.9.1\loomq-server-0.9.1.jar"
 
     $RepoReady = (Test-Path $ParentPom) -and (Test-Path $BomPom) -and (Test-Path $CoreJar) -and (Test-Path $ServerJar)
     if (-not $ForceRefresh -and $RepoReady) {
@@ -1199,7 +1199,7 @@ $script:VerboseScenarioOutput = $VerboseOutput -or $script:PauseOnExit
 # 显示帮助
 if ($Help) {
     Write-Host @"
-LoomQ Performance Benchmark v0.9.0
+LoomQ Performance Benchmark v0.9.1
 
 Usage: .\benchmark.ps1 [Options]
 
@@ -1230,7 +1230,7 @@ Examples:
 # 横幅
 Write-Host ""
 Write-Host "+============================================================+" -ForegroundColor Magenta
-Write-Host "|          LoomQ Atomic Performance Benchmark v0.9.0         |" -ForegroundColor Magenta
+Write-Host "|          LoomQ Atomic Performance Benchmark v0.9.1         |" -ForegroundColor Magenta
 Write-Host "+============================================================+" -ForegroundColor Magenta
 Write-Host ""
 
@@ -1351,7 +1351,7 @@ try {
         throw "Internal benchmark failed with exit code $($InternalResult.ExitCode)"
     }
 
-    # ---- 新增组件基准测试 (v0.9.0) ----
+    # ---- 新增组件基准测试 (v0.9.1) ----
     $WalResult = Invoke-BenchmarkScenario `
         -Name "1b) WAL Write Throughput" `
         -ServerModuleDir $ServerModuleDir `

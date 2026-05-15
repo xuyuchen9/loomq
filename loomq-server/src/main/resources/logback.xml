@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  LoomQ Logback Configuration v0.4.5
+  LoomQ Logback Configuration v0.9.1
   High-Performance Delayed Intent Queue
 -->
 <configuration>
@@ -100,8 +100,10 @@
         <appender-ref ref="SCHEDULER_FILE"/>
     </logger>
 
-    <logger name="com.loomq.cluster" level="INFO"/>
+    <logger name="com.loomq.raft" level="INFO"/>
+    <logger name="com.loomq.http.netty" level="INFO"/>
     <logger name="com.loomq.dispatcher" level="INFO"/>
+    <logger name="com.loomq.replication" level="INFO"/>
     <logger name="com.loomq.recovery" level="INFO"/>
 
     <!-- Audit Logger -->
@@ -110,8 +112,7 @@
     </logger>
 
     <!-- Third-party Loggers -->
-    <logger name="io.javalin" level="WARN"/>
-    <logger name="org.eclipse.jetty" level="WARN"/>
+    <logger name="io.netty" level="WARN"/>
     <logger name="okhttp3" level="WARN"/>
 
     <!-- Shutdown hook -->

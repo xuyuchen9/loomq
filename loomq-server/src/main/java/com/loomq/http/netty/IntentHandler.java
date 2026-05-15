@@ -16,6 +16,8 @@ import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.http.json.JsonCodec;
 import com.loomq.raft.RaftStatusProvider;
+import com.loomq.raft.RaftWriteBackPressureException;
+import com.loomq.raft.RaftWriteConflictException;
 import com.loomq.raft.RaftWriteCoordinator;
 import com.loomq.raft.RaftWriteUnavailableException;
 import com.loomq.store.IdempotencyResult;
@@ -23,6 +25,9 @@ import com.loomq.tracing.IntentTrace;
 import com.loomq.tracing.IntentTraceStore;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -42,6 +47,8 @@ public class IntentHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(IntentHandler.class);
     private static final PrecisionTier DEFAULT_PRECISION_TIER = PrecisionTierCatalog.defaultCatalog().defaultTier();
+    private static final String REQUEST_ID_HEADER = "X-LoomQ-Request-Id";
+    private static final String EXPECTED_REVISION_HEADER = "X-LoomQ-Expected-Revision";
 
     private final LoomqEngine engine;
     private final RaftStatusProvider raftStatus;
@@ -107,9 +114,13 @@ public class IntentHandler {
             }
         }
 
-        String intentId = request.intentId();
+        String requestedIntentId = request.intentId();
+        String requestKeySeed = requestKey("create", requestedIntentId != null ? requestedIntentId : "",
+            body, headers, null, request.idempotencyKey());
+        boolean stableCreateIdentity = hasStableCreateIdentity(headers, request.idempotencyKey());
+        String intentId = requestedIntentId;
         if (intentId == null || intentId.isBlank()) {
-            intentId = UUID.randomUUID().toString();
+            intentId = stableCreateIdentity ? deriveIntentId(requestKeySeed) : UUID.randomUUID().toString();
         }
 
         if (request.idempotencyKey() != null && !request.idempotencyKey().isBlank()) {
@@ -131,7 +142,8 @@ public class IntentHandler {
             if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
                 Intent raftSnapshot = intent.copy();
                 raftSnapshot.transitionTo(IntentStatus.SCHEDULED);
-                Intent committed = raftWriteCoordinator.commitSnapshot(raftSnapshot, "create");
+                String requestKey = requestKey("create", intentId, body, headers, null, request.idempotencyKey());
+                Intent committed = raftWriteCoordinator.commitSnapshot(raftSnapshot, "create", requestKey);
                 logger.info("Intent created via Raft: id={}, executeAt={}, ackLevel={}",
                     committed.getIntentId(), committed.getExecuteAt(), committed.getAckMode());
                 return new IntentHandler.CreatedResponse(201, IntentResponse.from(committed));
@@ -144,6 +156,9 @@ public class IntentHandler {
         } catch (RaftWriteUnavailableException e) {
             logger.warn("Raft write unavailable for create: {}", e.getMessage());
             return raftWriteUnavailableResponse("create", null, e.reason());
+        } catch (RaftWriteBackPressureException e) {
+            logger.warn("Raft write backpressure for create: {}", e.getMessage());
+            return raftBackPressureResponse("create", null, e.retryAfterMs(), e.getMessage());
         } catch (CompletionException e) {
             if (e.getCause() instanceof BackPressureException bpe) {
                 return new HttpErrorResponse(429, ErrorResponse.of(
@@ -187,6 +202,15 @@ public class IntentHandler {
             return leaderHintWriteResponse("patch", intentId);
         }
         PatchIntentRequest request = jsonCodec.read(body, PatchIntentRequest.class);
+        Long expectedRevision;
+        try {
+            expectedRevision = expectedRevision(headers);
+        } catch (IllegalArgumentException e) {
+            return errorResponse(400, "40001", e.getMessage());
+        }
+        if (raftStatus != null && raftStatus.isRaftEnabled() && expectedRevision == null) {
+            return errorResponse(428, "42801", "X-LoomQ-Expected-Revision header is required for Raft writes");
+        }
 
         Optional<Intent> current = engine.getIntent(intentId);
         if (current.isEmpty()) {
@@ -204,26 +228,32 @@ public class IntentHandler {
             }
         }
 
-        Intent updatedSnapshot = current.get().copy();
-        if (request.deadline() != null) {
-            updatedSnapshot.setDeadline(request.deadline());
-        }
-        if (request.expiredAction() != null) {
-            updatedSnapshot.setExpiredAction(request.expiredAction());
-        }
-        if (request.redelivery() != null) {
-            updatedSnapshot.setRedelivery(request.redelivery());
-        }
-        if (request.tags() != null) {
-            updatedSnapshot.setTags(request.tags());
-        }
-        if (request.executeAt() != null) {
-            updatedSnapshot.setExecuteAt(request.executeAt());
-        }
-
         try {
             if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
-                Intent committed = raftWriteCoordinator.commitSnapshot(updatedSnapshot, "patch");
+                String requestKey = requestKey("patch", intentId, body, headers, expectedRevision, null);
+                Intent committed = raftWriteCoordinator.commitMutation(
+                    intentId,
+                    "patch",
+                    requestKey,
+                    expectedRevision,
+                    snapshot -> {
+                        if (request.deadline() != null) {
+                            snapshot.setDeadline(request.deadline());
+                        }
+                        if (request.expiredAction() != null) {
+                            snapshot.setExpiredAction(request.expiredAction());
+                        }
+                        if (request.redelivery() != null) {
+                            snapshot.setRedelivery(request.redelivery());
+                        }
+                        if (request.tags() != null) {
+                            snapshot.setTags(request.tags());
+                        }
+                        if (request.executeAt() != null) {
+                            snapshot.setExecuteAt(request.executeAt());
+                        }
+                        return snapshot;
+                    });
                 return IntentResponse.from(committed);
             }
 
@@ -250,6 +280,12 @@ public class IntentHandler {
         } catch (RaftWriteUnavailableException e) {
             logger.warn("Raft write unavailable for patch {}: {}", intentId, e.getMessage());
             return raftWriteUnavailableResponse("patch", intentId, e.reason());
+        } catch (RaftWriteBackPressureException e) {
+            logger.warn("Raft write backpressure for patch {}: {}", intentId, e.getMessage());
+            return raftBackPressureResponse("patch", intentId, e.retryAfterMs(), e.getMessage());
+        } catch (RaftWriteConflictException e) {
+            logger.warn("Raft revision conflict for patch {}: {}", intentId, e.getMessage());
+            return raftRevisionConflictResponse("patch", intentId, e.expectedRevision(), e.actualRevision(), e.getMessage());
         }
     }
 
@@ -263,6 +299,15 @@ public class IntentHandler {
         if (isRaftWriteBlocked()) {
             return leaderHintWriteResponse("cancel", intentId);
         }
+        Long expectedRevision;
+        try {
+            expectedRevision = expectedRevision(headers);
+        } catch (IllegalArgumentException e) {
+            return errorResponse(400, "40001", e.getMessage());
+        }
+        if (raftStatus != null && raftStatus.isRaftEnabled() && expectedRevision == null) {
+            return errorResponse(428, "42801", "X-LoomQ-Expected-Revision header is required for Raft writes");
+        }
 
         Optional<Intent> current = engine.getIntent(intentId);
         if (current.isEmpty()) {
@@ -275,11 +320,17 @@ public class IntentHandler {
         }
 
         try {
-            Intent cancelledSnapshot = intent.copy();
-            cancelledSnapshot.transitionTo(IntentStatus.CANCELED);
-
             if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
-                Intent committed = raftWriteCoordinator.commitSnapshot(cancelledSnapshot, "cancel");
+                String requestKey = requestKey("cancel", intentId, body, headers, expectedRevision, null);
+                Intent committed = raftWriteCoordinator.commitMutation(
+                    intentId,
+                    "cancel",
+                    requestKey,
+                    expectedRevision,
+                    snapshot -> {
+                        snapshot.transitionTo(IntentStatus.CANCELED);
+                        return snapshot;
+                    });
                 return IntentResponse.from(committed);
             }
 
@@ -291,6 +342,12 @@ public class IntentHandler {
         } catch (RaftWriteUnavailableException e) {
             logger.warn("Raft write unavailable for cancel {}: {}", intentId, e.getMessage());
             return raftWriteUnavailableResponse("cancel", intentId, e.reason());
+        } catch (RaftWriteBackPressureException e) {
+            logger.warn("Raft write backpressure for cancel {}: {}", intentId, e.getMessage());
+            return raftBackPressureResponse("cancel", intentId, e.retryAfterMs(), e.getMessage());
+        } catch (RaftWriteConflictException e) {
+            logger.warn("Raft revision conflict for cancel {}: {}", intentId, e.getMessage());
+            return raftRevisionConflictResponse("cancel", intentId, e.expectedRevision(), e.actualRevision(), e.getMessage());
         }
     }
 
@@ -304,6 +361,15 @@ public class IntentHandler {
         if (isRaftWriteBlocked()) {
             return leaderHintWriteResponse("fire-now", intentId);
         }
+        Long expectedRevision;
+        try {
+            expectedRevision = expectedRevision(headers);
+        } catch (IllegalArgumentException e) {
+            return errorResponse(400, "40001", e.getMessage());
+        }
+        if (raftStatus != null && raftStatus.isRaftEnabled() && expectedRevision == null) {
+            return errorResponse(428, "42801", "X-LoomQ-Expected-Revision header is required for Raft writes");
+        }
 
         Optional<Intent> current = engine.getIntent(intentId);
         if (current.isEmpty()) {
@@ -311,11 +377,17 @@ public class IntentHandler {
         }
 
         try {
-            Intent fireNowSnapshot = current.get().copy();
-            fireNowSnapshot.setExecuteAt(java.time.Instant.now());
-
             if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
-                raftWriteCoordinator.commitSnapshot(fireNowSnapshot, "fire-now");
+                String requestKey = requestKey("fire-now", intentId, body, headers, expectedRevision, null);
+                raftWriteCoordinator.commitMutation(
+                    intentId,
+                    "fire-now",
+                    requestKey,
+                    expectedRevision,
+                    snapshot -> {
+                        snapshot.setExecuteAt(java.time.Instant.now());
+                        return snapshot;
+                    });
                 return new IntentActionResponse(intentId, IntentStatus.DISPATCHING.name());
             }
 
@@ -327,6 +399,12 @@ public class IntentHandler {
         } catch (RaftWriteUnavailableException e) {
             logger.warn("Raft write unavailable for fire-now {}: {}", intentId, e.getMessage());
             return raftWriteUnavailableResponse("fire-now", intentId, e.reason());
+        } catch (RaftWriteBackPressureException e) {
+            logger.warn("Raft write backpressure for fire-now {}: {}", intentId, e.getMessage());
+            return raftBackPressureResponse("fire-now", intentId, e.retryAfterMs(), e.getMessage());
+        } catch (RaftWriteConflictException e) {
+            logger.warn("Raft revision conflict for fire-now {}: {}", intentId, e.getMessage());
+            return raftRevisionConflictResponse("fire-now", intentId, e.expectedRevision(), e.actualRevision(), e.getMessage());
         }
     }
 
@@ -376,7 +454,7 @@ public class IntentHandler {
     private boolean isRaftFollowerReadBlocked() {
         return raftStatus != null
             && raftStatus.isRaftEnabled()
-            && !raftStatus.isLeader();
+            && !raftStatus.canServeLinearizableRead();
     }
 
     private boolean isRaftWriteBlocked() {
@@ -430,6 +508,115 @@ public class IntentHandler {
                 details
             )
         );
+    }
+
+    private Object raftBackPressureResponse(String operation, String intentId, long retryAfterMs, String reason) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("retryable", true);
+        details.put("nodeRole", raftStatus != null ? raftStatus.role().name() : "UNKNOWN");
+        details.put("operation", operation);
+        if (intentId != null && !intentId.isBlank()) {
+            details.put("intentId", intentId);
+        }
+        details.put("retryAfterMs", retryAfterMs);
+        String leaderId = raftStatus != null ? raftStatus.currentLeaderId() : null;
+        if (leaderId != null && !leaderId.isBlank()) {
+            details.put("leaderId", leaderId);
+        }
+
+        return new HttpErrorResponse(
+            HttpResponseStatus.SERVICE_UNAVAILABLE.code(),
+            ErrorResponse.of(
+                "50303",
+                reason,
+                details
+            )
+        );
+    }
+
+    private Object raftRevisionConflictResponse(String operation, String intentId, long expectedRevision, long actualRevision, String reason) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("retryable", false);
+        details.put("nodeRole", raftStatus != null ? raftStatus.role().name() : "UNKNOWN");
+        details.put("operation", operation);
+        details.put("intentId", intentId);
+        details.put("expectedRevision", expectedRevision);
+        details.put("actualRevision", actualRevision);
+        String leaderId = raftStatus != null ? raftStatus.currentLeaderId() : null;
+        if (leaderId != null && !leaderId.isBlank()) {
+            details.put("leaderId", leaderId);
+        }
+
+        return new HttpErrorResponse(
+            409,
+            ErrorResponse.of(
+                "40902",
+                reason,
+                details
+            )
+        );
+    }
+
+    private Long expectedRevision(Map<String, String> headers) {
+        String value = header(headers, EXPECTED_REVISION_HEADER);
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid X-LoomQ-Expected-Revision header: " + value, e);
+        }
+    }
+
+    private String requestKey(String operation, String intentId, byte[] body, Map<String, String> headers,
+                              Long expectedRevision, String idempotencyKey) {
+        String requestId = header(headers, REQUEST_ID_HEADER);
+        if (requestId != null && !requestId.isBlank()) {
+            return requestId.trim();
+        }
+
+        StringBuilder key = new StringBuilder(operation).append(':').append(intentId);
+        if (expectedRevision != null) {
+            key.append(':').append(expectedRevision);
+        }
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            key.append(':').append(idempotencyKey.trim());
+        }
+        key.append(':').append(sha256Hex(body));
+        return key.toString();
+    }
+
+    private boolean hasStableCreateIdentity(Map<String, String> headers, String idempotencyKey) {
+        return (idempotencyKey != null && !idempotencyKey.isBlank())
+            || (header(headers, REQUEST_ID_HEADER) != null && !header(headers, REQUEST_ID_HEADER).isBlank());
+    }
+
+    private String deriveIntentId(String requestKey) {
+        String hash = sha256Hex(requestKey.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return "intent_" + hash.substring(0, 16);
+    }
+
+    private String header(Map<String, String> headers, String name) {
+        if (headers == null || headers.isEmpty()) {
+            return null;
+        }
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(name)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    private String sha256Hex(byte[] body) {
+        byte[] payload = body != null ? body : new byte[0];
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(payload));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 digest unavailable", e);
+        }
     }
 
     private Object conflictResponse(String intentId) {

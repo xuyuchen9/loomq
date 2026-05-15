@@ -82,7 +82,21 @@ class RaftServerSmokeTest {
             assertTrue(health.body().contains("\"status\":\"OK\""));
             assertTrue(health.body().contains("\"raft\""));
             assertTrue(health.body().contains("\"role\":\"LEADER\""));
+            assertTrue(health.body().contains("\"quorumReachable\":true"));
+            assertTrue(health.body().contains("\"acceptingReads\":true"));
             assertTrue(health.body().contains("\"acceptingWrites\":true"));
+
+            HttpResponse<String> readiness = client.send(
+                HttpRequest.newBuilder()
+                    .uri(URI.create("http://127.0.0.1:" + server.getPort() + "/health/ready"))
+                    .GET()
+                    .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(200, readiness.statusCode());
+            assertTrue(readiness.body().contains("\"ready\":true"));
+            assertTrue(readiness.body().contains("\"mode\":\"raft\""));
+            assertTrue(readiness.body().contains("\"reason\":\"READY\""));
 
             HttpResponse<String> deepHealth = client.send(
                 HttpRequest.newBuilder()
@@ -129,11 +143,13 @@ class RaftServerSmokeTest {
 
             assertEquals(201, created.statusCode());
             assertTrue(created.body().contains(intentId));
+            assertTrue(created.body().contains("\"revision\":1"));
 
             HttpResponse<String> patched = client.send(
                 HttpRequest.newBuilder()
                     .uri(URI.create("http://127.0.0.1:" + server.getPort() + "/v1/intents/" + intentId))
                     .header("Content-Type", "application/json")
+                    .header("X-LoomQ-Expected-Revision", "1")
                     .method("PATCH", HttpRequest.BodyPublishers.ofString("""
                         {
                           "deadline":"%s",
@@ -145,17 +161,20 @@ class RaftServerSmokeTest {
 
             assertEquals(200, patched.statusCode());
             assertTrue(patched.body().contains(intentId));
+            assertTrue(patched.body().contains("\"revision\":2"));
 
             HttpResponse<String> cancelled = client.send(
                 HttpRequest.newBuilder()
                     .uri(URI.create("http://127.0.0.1:" + server.getPort() + "/v1/intents/" + intentId + "/cancel"))
                     .header("Content-Type", "application/json")
+                    .header("X-LoomQ-Expected-Revision", "2")
                     .POST(HttpRequest.BodyPublishers.ofString("{}"))
                     .build(),
                 HttpResponse.BodyHandlers.ofString());
 
             assertEquals(200, cancelled.statusCode());
             assertTrue(cancelled.body().contains("\"status\":\"CANCELED\""));
+            assertTrue(cancelled.body().contains("\"revision\":3"));
 
             String fireNowId = "raft-smoke-fire-" + System.nanoTime();
             Instant fireExecuteAt = Instant.now().plusSeconds(30);
@@ -178,11 +197,13 @@ class RaftServerSmokeTest {
                 HttpResponse.BodyHandlers.ofString());
 
             assertEquals(201, fireCreated.statusCode());
+            assertTrue(fireCreated.body().contains("\"revision\":1"));
 
             HttpResponse<String> fired = client.send(
                 HttpRequest.newBuilder()
                     .uri(URI.create("http://127.0.0.1:" + server.getPort() + "/v1/intents/" + fireNowId + "/fire-now"))
                     .header("Content-Type", "application/json")
+                    .header("X-LoomQ-Expected-Revision", "1")
                     .POST(HttpRequest.BodyPublishers.ofString("{}"))
                     .build(),
                 HttpResponse.BodyHandlers.ofString());

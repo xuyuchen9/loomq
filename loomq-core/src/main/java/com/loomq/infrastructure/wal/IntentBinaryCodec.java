@@ -46,6 +46,8 @@ import java.util.Map;
  * 0x10: attempts (int)
  * 0x11: lastDeliveryId (String)
  * 0x12: walMode (byte ordinal)
+ * 0x13: traceId (String)
+ * 0x14: revision (long)
  *
  * String 编码：length(2B) + UTF-8 bytes
  * Map 编码：entryCount(4B) + [key(String) + value(String)]*
@@ -77,6 +79,7 @@ public class IntentBinaryCodec {
     private static final byte FIELD_LAST_DELIVERY_ID = 0x11;
     private static final byte FIELD_WAL_MODE = 0x12;
     private static final byte FIELD_TRACE_ID = 0x13;
+    private static final byte FIELD_REVISION = 0x14;
 
     // 预分配缓冲区大小（估算平均 Intent 大小）
     private static final int DEFAULT_BUFFER_SIZE = 512;
@@ -187,6 +190,10 @@ public class IntentBinaryCodec {
             writeStringField(buffer, FIELD_LAST_DELIVERY_ID, intent.getLastDeliveryId());
             fieldCount++;
         }
+        if (intent.getRevision() > 0) {
+            writeLongField(buffer, FIELD_REVISION, intent.getRevision());
+            fieldCount++;
+        }
 
         // 回填字段数量
         buffer.put(fieldCountPos, fieldCount);
@@ -222,6 +229,7 @@ public class IntentBinaryCodec {
         Map<String, String> tags = null;
         int attempts = 0;
         String lastDeliveryId = null;
+        long revision = 0L;
 
         byte fieldCount = buffer.get();
 
@@ -265,6 +273,7 @@ public class IntentBinaryCodec {
                     attempts = buffer.getInt();
                 }
                 case FIELD_LAST_DELIVERY_ID -> lastDeliveryId = readString(buffer, fieldLen);
+                case FIELD_REVISION -> revision = buffer.getLong();
                 default -> buffer.position(buffer.position() + fieldLen); // 跳过未知字段
             }
         }
@@ -288,7 +297,8 @@ public class IntentBinaryCodec {
             idempotencyKey,
             tags,
             attempts,
-            lastDeliveryId
+            lastDeliveryId,
+            revision
         );
     }
 

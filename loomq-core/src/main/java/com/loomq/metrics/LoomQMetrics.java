@@ -113,6 +113,14 @@ public class LoomQMetrics {
         raftMetrics.incrementRaftWriteStepDownAborts();
     }
 
+    public void incrementRaftWriteBackpressureRejects() {
+        raftMetrics.incrementRaftWriteBackpressureRejects();
+    }
+
+    public void incrementRaftWriteRevisionConflicts() {
+        raftMetrics.incrementRaftWriteRevisionConflicts();
+    }
+
     // ==================== 单例模式 ====================
     private static final LoomQMetrics INSTANCE = new LoomQMetrics();
 
@@ -244,7 +252,9 @@ public class LoomQMetrics {
             raftMetrics.getRaftAverageWriteProposalLatencyMs(),
             raftMetrics.getRaftWriteProposalLatencyMaxMs(),
             raftMetrics.getRaftWriteTimeouts(),
-            raftMetrics.getRaftWriteStepDownAborts()
+            raftMetrics.getRaftWriteStepDownAborts(),
+            raftMetrics.getRaftWriteBackpressureRejects(),
+            raftMetrics.getRaftWriteRevisionConflicts()
         );
     }
 
@@ -292,7 +302,9 @@ public class LoomQMetrics {
         double raftWriteProposalLatencyMs,
         long raftWriteProposalLatencyMaxMs,
         long raftWriteTimeouts,
-        long raftWriteStepDownAborts
+        long raftWriteStepDownAborts,
+        long raftWriteBackpressureRejects,
+        long raftWriteRevisionConflicts
     ) {}
 
     // ==================== 重置 ====================

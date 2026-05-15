@@ -36,6 +36,14 @@ class LogReplicationTest {
         return IntentBinaryCodec.encode(intent);
     }
 
+    /** handleAppendEntries expects {@code [8B term | payload]} on the wire. */
+    private static byte[] encodeFramedIntent(String id, long term) {
+        byte[] raw = encodeIntent(id);
+        byte[] framed = new byte[8 + raw.length];
+        java.nio.ByteBuffer.wrap(framed).putLong(term).put(raw);
+        return framed;
+    }
+
     @BeforeEach
     void setUp() throws Exception {
         dataDir = Files.createTempDirectory("raft-repl-");
@@ -61,7 +69,7 @@ class LogReplicationTest {
         election.start();
         long term = 1;
 
-        byte[][] entries = { encodeIntent("intent-1") };
+        byte[][] entries = { encodeFramedIntent("intent-1", term) };
         AppendEntriesResult result = replication.handleAppendEntries(
             term, "leader-1", 0, 0, entries, 0);
 
@@ -100,7 +108,7 @@ class LogReplicationTest {
         election.becomeLeader(1); // term=1
 
         // Write an entry at term 1
-        byte[][] entries = { encodeIntent("intent-1") };
+        byte[][] entries = { encodeFramedIntent("intent-1", 1) };
         replication.handleAppendEntries(1, "leader-1", 0, 0, entries, 0);
 
         // Now try to append with wrong prevLogTerm for index 1
@@ -118,10 +126,11 @@ class LogReplicationTest {
         election.start();
         election.becomeLeader(1);
 
-        byte[][] entries = { encodeIntent("intent-1") };
+        byte[][] entries = { encodeFramedIntent("intent-1", 1) };
         replication.handleAppendEntries(1, "leader-1", 0, 0, entries, 5);
 
-        assertEquals(5, replication.commitIndex());
+        // commitIndex = min(leaderCommit, lastLogIndex) — 1 entry appended → lastLogIndex=1
+        assertEquals(1, replication.commitIndex());
         election.stop();
     }
 
@@ -170,7 +179,7 @@ class LogReplicationTest {
         election.start();
         election.becomeLeader(1);
 
-        byte[][] entries = { encodeIntent("intent-1") };
+        byte[][] entries = { encodeFramedIntent("intent-1", 1) };
         replication.handleAppendEntries(1, "leader-1", 0, 0, entries, wal.getWritePosition());
 
         replication.applyCommitted();
@@ -191,7 +200,7 @@ class LogReplicationTest {
         for (int i = 0; i < 3; i++) {
             raftLog.appendEntry(1, encodeIntent("intent-" + i));
         }
-        long index3 = wal.getWritePosition();
+        long index3 = raftLog.lastIndex();
 
         // 3 nodes: majority = 2. With matchIndex [index3, 0, 0], only 1 >= index3
         replication.advanceCommitIndex(new long[]{index3, 0, 0}, 1);
@@ -210,7 +219,7 @@ class LogReplicationTest {
         election.start();
         election.becomeLeader(1);
         raftLog.appendEntry(1, encodeIntent("intent-1"));
-        long index = wal.getWritePosition();
+        long index = raftLog.lastIndex();
 
         // Entry is from term 1, but we pass currentTerm=2
         replication.advanceCommitIndex(new long[]{index, index, index}, 2);
@@ -286,7 +295,7 @@ class LogReplicationTest {
         // which causes readEntryTerm to return -1.
         // The fix in handleAppendEntries checks existingTerm < 0 and
         // rejects gracefully instead of treating it as a term mismatch.
-        byte[][] entries = { encodeIntent("should-not-write") };
+        byte[][] entries = { encodeFramedIntent("should-not-write", 1) };
         AppendEntriesResult result = replication.handleAppendEntries(
             election.currentTerm(), "leader-1", 99999, 1, entries, 0);
 
@@ -434,15 +443,17 @@ class LogReplicationTest {
         assertTrue(idx1 > 0 && idx2 > idx1 && idx3 > idx2);
 
         // Leader sends entries for index 2 only with different data (term 2, new leader)
-        byte[][] newEntries = { encodeIntent("entry-2-new") };
+        byte[][] newEntries = { encodeFramedIntent("entry-2-new", 2) };
         // prevLogIndex = idx1 (last valid entry the leader agrees on)
         AppendEntriesResult result = replication.handleAppendEntries(
             2, "new-leader", idx1, 1, newEntries, 0);
 
         assertTrue(result.success, "should accept after truncating conflicts");
-        // Old entries 2 and 3 should be gone; only new entry at idx1+ onwards
-        assertEquals(-1, raftLog.readEntryTerm(idx2),
-            "old entry at idx2 should be unreachable after truncation");
+        // After truncation at idx1: old entries at idx2 and idx3 are deleted,
+        // new entry is appended at idx1+1 (same numerical index as old idx2).
+        // The old idx2 is replaced by the new entry at term 2; idx3 is gone.
+        assertEquals(2, raftLog.readEntryTerm(idx2),
+            "new entry at term 2 should have replaced old entry at idx2");
         assertEquals(-1, raftLog.readEntryTerm(idx3),
             "old entry at idx3 should be unreachable after truncation");
         // Entry 1 should still be readable
@@ -463,14 +474,17 @@ class LogReplicationTest {
         assertTrue(idx1 > 0 && idx2 > idx1);
 
         // New leader with higher term sends from index 0 (prevLogIndex=0)
-        byte[][] newEntries = { encodeIntent("first-entry") };
+        byte[][] newEntries = { encodeFramedIntent("first-entry", 2) };
         AppendEntriesResult result = replication.handleAppendEntries(
             2, "new-leader", 0, 0, newEntries, 0);
 
         assertTrue(result.success, "should accept with prevLogIndex=0");
-        // Old entries should be gone
-        assertEquals(-1, raftLog.readEntryTerm(idx1),
-            "old entries should be truncated when prevLogIndex=0");
+        // Old entries at idx1 and idx2 are truncated; new entry at term 2
+        // replaces the slot at index 1 (same numerical index as old idx1).
+        assertEquals(2, raftLog.readEntryTerm(idx1),
+            "new entry at term 2 should have replaced old entry at same index");
+        assertEquals(-1, raftLog.readEntryTerm(idx2),
+            "old entry at idx2 should be unreachable after truncation");
         // New entry was written
         assertTrue(raftLog.lastIndex() > 0, "new entry should exist after truncate-to-zero");
 

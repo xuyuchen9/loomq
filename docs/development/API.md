@@ -16,10 +16,24 @@ The current standalone API is intent-based.
 | POST | `/v1/intents/{intentId}/fire-now` | Immediately trigger an intent |
 | GET | `/health` | Health check |
 | GET | `/health/live` | Liveness probe |
-| GET | `/health/ready` | Readiness probe (includes WAL health) |
+| GET | `/health/ready` | Readiness probe (WAL plus Raft client-traffic safety) |
 | GET | `/health/deep` | Deep health probe (includes Raft and tier backpressure) |
 | GET | `/metrics` | JSON metrics snapshot |
 | GET | `/api/v1/metrics` | Same as `/metrics` |
+
+---
+
+## Authentication
+
+By default local development runs without HTTP token authentication. When `security.enabled=true`, all `/v1/**`,
+`/metrics`, and `/api/v1/metrics` requests must include the configured token header:
+
+```http
+X-Loomq-Token: <token>
+```
+
+`Bearer <token>` is also accepted. Health endpoints stay unauthenticated so liveness and readiness probes can keep
+working without sharing application credentials.
 
 ---
 
@@ -83,6 +97,7 @@ The current standalone API is intent-based.
   "ackLevel": "DURABLE",
   "attempts": 0,
   "lastDeliveryId": null,
+  "revision": 1,
   "createdAt": "2026-05-01T09:59:00Z",
   "updatedAt": "2026-05-01T09:59:00Z"
 }
@@ -111,6 +126,7 @@ When Raft is enabled, this endpoint is leader-authoritative:
 - followers return `503 Service Unavailable`
 - the error payload uses code `50301`
 - the `details` map includes `retryable=true`, the node role, and the current leader id when known
+- the leader only serves the read while its quorum freshness lease is valid, so a partitioned leader fails closed instead of serving stale data
 
 ### Error Responses
 
@@ -141,12 +157,15 @@ Partial update. Only provided fields are changed.
 
 Updatable fields: `executeAt`, `deadline`, `expiredAction`, `redelivery`, `tags`.
 
+When Raft is enabled, mutating calls require `X-LoomQ-Expected-Revision` so stale writers fail fast instead of overwriting newer state.
+
 ### Error Responses
 
 | Code | Condition |
 |------|-----------|
 | **404** | Intent not found |
 | **422** | Intent in a non-modifiable terminal state; or `executeAt` in the past |
+| **428** | Missing `X-LoomQ-Expected-Revision` header in Raft mode |
 
 ---
 
@@ -155,6 +174,8 @@ Updatable fields: `executeAt`, `deadline`, `expiredAction`, `redelivery`, `tags`
 `POST /v1/intents/{intentId}/cancel`
 
 Cancels an intent in `SCHEDULED` or `DUE` state.
+
+Raft mode requires `X-LoomQ-Expected-Revision` and rejects stale revisions with a retryable `40902` conflict.
 
 ### Response (200)
 
@@ -171,6 +192,7 @@ Cancels an intent in `SCHEDULED` or `DUE` state.
 |------|-----------|
 | **404** | Intent not found |
 | **422** | Intent in a non-cancellable state (already terminal) |
+| **428** | Missing `X-LoomQ-Expected-Revision` header in Raft mode |
 | **500** | Failed to cancel |
 
 ---
@@ -180,6 +202,8 @@ Cancels an intent in `SCHEDULED` or `DUE` state.
 `POST /v1/intents/{intentId}/fire-now`
 
 Immediately triggers an intent regardless of its scheduled `executeAt`.
+
+Raft mode requires `X-LoomQ-Expected-Revision` and rejects stale revisions with a retryable `40902` conflict.
 
 ### Response (200)
 
@@ -195,6 +219,7 @@ Immediately triggers an intent regardless of its scheduled `executeAt`.
 | Code | Condition |
 |------|-----------|
 | **404** | Intent not found |
+| **428** | Missing `X-LoomQ-Expected-Revision` header in Raft mode |
 | **500** | Failed to fire |
 
 ---
@@ -226,10 +251,13 @@ Immediately triggers an intent regardless of its scheduled `executeAt`.
     "replicationLag": 0,
     "connectedPeers": 2,
     "totalPeers": 2,
+    "quorumReachable": true,
     "peerReachability": {
       "node-2": true,
       "node-3": true
-    }
+    },
+    "acceptingReads": true,
+    "acceptingWrites": true
   }
 }
 ```
@@ -255,11 +283,38 @@ Returns the base health payload plus tier-level backpressure details under `tier
 `GET /health/ready`
 
 ```json
-{"status": "UP"}
+{
+  "status": "UP",
+  "ready": true,
+  "mode": "raft",
+  "raftEnabled": true,
+  "nodeId": "node-1",
+  "role": "LEADER",
+  "leaderId": "node-1",
+  "term": 3,
+  "commitIndex": 42,
+  "lastApplied": 42,
+  "commitLag": 0,
+  "connectedPeers": 2,
+  "totalPeers": 2,
+  "quorumReachable": true,
+  "acceptingReads": true,
+  "acceptingWrites": true,
+  "writePending": 0,
+  "reason": "READY"
+}
 ```
 
-Returns `{"status": "DOWN"}` if WAL is unhealthy.
-This probe only reflects WAL readiness; Raft role and peer reachability are exposed on `GET /health` and `GET /health/deep`.
+In embedded mode readiness reflects WAL health. In Raft mode, readiness is intentionally stricter and only returns HTTP 200 when the node is safe for client traffic:
+
+- WAL is healthy
+- the node is the current leader
+- quorum is reachable
+- the leader read freshness lease is valid
+- `commitLag == 0`
+- `writePending == 0`
+
+Unready nodes return HTTP 503 with error code `50304` and a `details.reason` such as `WAL_UNHEALTHY`, `RAFT_NOT_LEADER`, `RAFT_QUORUM_UNREACHABLE`, `RAFT_READ_LEASE_UNAVAILABLE`, `RAFT_COMMIT_LAG`, or `RAFT_PENDING_WRITES`.
 
 ## Metrics
 

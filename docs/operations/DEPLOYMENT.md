@@ -1,6 +1,6 @@
 # LoomQ Deployment Guide
 
-Version: `0.9.0`
+Version: `0.9.1`
 
 This guide matches the current standalone server, scheduler, persistence, and Raft deployment layout.
 
@@ -23,7 +23,7 @@ mvn clean package -DskipTests
 ### Run
 
 ```bash
-java -jar loomq-server/target/loomq-server-0.9.0.jar
+java -jar loomq-server/target/loomq-server-0.9.1.jar
 ```
 
 The server listens on `http://localhost:7928` by default.
@@ -50,6 +50,8 @@ curl -X POST http://localhost:7928/v1/intents \
     }
   }'
 ```
+
+If `LOOMQ_SECURITY_ENABLED=true`, add `-H "X-Loomq-Token: ${LOOMQ_API_TOKEN}"` to `/v1/**` and metrics requests.
 
 ## Single Node Deployment
 
@@ -82,10 +84,14 @@ Environment="LOOMQ_SERVER_HOST=0.0.0.0"
 Environment="LOOMQ_SERVER_PORT=7928"
 Environment="LOOMQ_DATA_DIR=/opt/loomq/data/wal"
 Environment="LOOMQ_NODE_ID=node-1"
+Environment="LOOMQ_SECURITY_ENABLED=true"
+Environment="LOOMQ_API_TOKEN=replace-with-secret"
 Environment="LOOMQ_SCHEDULER_MAX_PENDING_INTENTS=1000000"
 ExecStart=/usr/bin/java -jar /opt/loomq/bin/loomq-server.jar
 Restart=on-failure
 RestartSec=1
+TimeoutStopSec=35
+KillSignal=SIGTERM
 StandardOutput=journal
 StandardError=journal
 
@@ -96,15 +102,22 @@ WantedBy=multi-user.target
 ### JVM Settings
 
 ```bash
-java -Xms2g -Xmx2g -XX:+UseZGC -jar loomq-server/target/loomq-server-0.9.0.jar
+java -Xms2g -Xmx2g -XX:+UseZGC -jar loomq-server/target/loomq-server-0.9.1.jar
 ```
 
 Tune heap size according to your pending-intent target and WAL retention window.
+
+### Graceful Shutdown
+
+LoomQ handles `SIGTERM` by closing the HTTP listener first, waiting for active HTTP business requests up to
+`netty.gracefulShutdownTimeoutMs`, then closing callback, Raft, WAL, and engine resources. Set the orchestrator stop
+window slightly above `netty.gracefulShutdownTimeoutMs`; for the default 30 seconds, use at least 35 seconds.
 
 ## Raft Deployment
 
 Raft is enabled through the server process and should be deployed with stable node identities.
 In Raft mode, `GET /v1/intents/{intentId}` is leader-authoritative; followers return a retryable 503 with a leader hint when known.
+The leader only serves reads while its quorum freshness lease is valid, so a node that has lost contact with a majority will stop answering reads before it risks serving stale state.
 
 ### Required Variables
 
@@ -131,14 +144,15 @@ export LOOMQ_RAFT_PORT=7930
 - Use a stable host name or IP for every node.
 - Open the Raft port between peers before starting the Raft group.
 - Keep `LOOMQ_DATA_DIR` persistent so snapshots and WAL metadata survive restarts.
-- Verify `/health` and `/metrics` after startup; both endpoints expose Raft role, leader id, term, commit index, and peer reachability.
+- Verify `/health` and `/metrics` after startup; both endpoints expose Raft role, leader id, term, commit index, commit lag, replication lag, peer reachability, and whether the leader is currently accepting reads / writes.
+- Use `/health/live` only for process liveness. Use `/health/ready` for client traffic readiness; in Raft mode followers and leaders without quorum/read lease/zero commit lag return HTTP 503 with a machine-readable reason.
 
 ## Container Deployment
 
 ### Docker
 
 ```bash
-docker build -t loomq:0.9.0 .
+docker build -t loomq:0.9.1 .
 docker run -d \
   --name loomq \
   -p 7928:7928 \
@@ -146,8 +160,10 @@ docker run -d \
   -e LOOMQ_SERVER_PORT=7928 \
   -e LOOMQ_DATA_DIR=/data/wal \
   -e LOOMQ_NODE_ID=node-1 \
+  -e LOOMQ_SECURITY_ENABLED=true \
+  -e LOOMQ_API_TOKEN=replace-with-secret \
   -e LOOMQ_SCHEDULER_MAX_PENDING_INTENTS=1000000 \
-  loomq:0.9.0
+  loomq:0.9.1
 ```
 
 ### Docker Compose
@@ -196,7 +212,7 @@ spec:
     spec:
       containers:
         - name: loomq
-          image: loomq:0.9.0
+          image: loomq:0.9.1
           ports:
             - containerPort: 7928
             - containerPort: 7930
@@ -237,6 +253,8 @@ spec:
 
 - Liveness: `GET /health/live`
 - Readiness: `GET /health/ready`
+
+In Raft mode, readiness is leader-only by design. This keeps generic load balancers from sending client reads or writes to followers that would reject them anyway.
 
 ## Monitoring Setup
 
@@ -280,6 +298,6 @@ Before publishing a GitHub release:
 
 1. Run the formatting gate (`make check-format` or `mvn -B -ntp com.diffplug.spotless:spotless-maven-plugin:3.0.0:check`).
 2. Run the full Maven test suite.
-3. Verify the packaged jar name matches `loomq-server-0.9.0.jar`.
+3. Verify the packaged jar name matches `loomq-server-0.9.1.jar`.
 4. Confirm the README, changelog, deployment guide, and scripts all point at the same version.
 5. Validate at least one single-node and one Raft-style startup path.

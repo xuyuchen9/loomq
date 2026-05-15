@@ -572,6 +572,7 @@ class RaftIntegrationTest {
 
         IntentStore followerStore = (IntentStore) reflectField(n3, "store");
         waitForStoreSize(followerStore, ids.size(), 10_000);
+        waitForAppliedIndex(n3, lastIndex, 10_000);
 
         for (String id : ids) {
             assertNotNull(followerStore.findById(id),
