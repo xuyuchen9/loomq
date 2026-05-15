@@ -27,6 +27,7 @@ public record IntentResponse(
     AckMode ackLevel,
     int attempts,
     String lastDeliveryId,
+    long revision,
     Instant createdAt,
     Instant updatedAt
     ) implements DirectSerializedResponse {
@@ -43,6 +44,7 @@ public record IntentResponse(
             intent.getAckMode(),
             intent.getAttempts(),
             intent.getLastDeliveryId(),
+            intent.getRevision(),
             intent.getCreatedAt(),
             intent.getUpdatedAt()
         );

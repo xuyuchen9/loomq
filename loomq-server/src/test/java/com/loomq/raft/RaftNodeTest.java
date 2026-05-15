@@ -169,6 +169,21 @@ class RaftNodeTest {
     }
 
     @Test
+    void singleNodeLeaderShouldServeReadsAfterLeaseWindow() throws Exception {
+        RaftConfig config = RaftConfig.singleNode("node-1");
+        RaftNode node = new RaftNode(config, wal, store, null);
+        node.start();
+        waitForLeader(node, 3000);
+
+        Thread.sleep(config.electionMinMs() * 2);
+
+        assertTrue(node.isLeader(), "single node should remain leader");
+        assertTrue(node.canServeLinearizableRead(),
+            "single-node quorum is local, so read availability should not depend on remote heartbeats");
+        node.close();
+    }
+
+    @Test
     void raftMetricsShouldReflectRoleAndCommitProgress() {
         LoomQMetrics metrics = LoomQMetrics.getInstance();
         metrics.reset();

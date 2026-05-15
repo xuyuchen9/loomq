@@ -1,5 +1,6 @@
 package com.loomq.http.netty;
 
+import com.loomq.config.SecurityConfig;
 import com.loomq.http.json.JsonCodec;
 import com.loomq.metrics.LoomQMetrics;
 import io.netty.buffer.ByteBuf;
@@ -19,6 +20,7 @@ import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.ReferenceCountUtil;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -54,6 +56,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
     private final Semaphore concurrencyLimit;
     private final int semaphoreTimeoutMs;
     private final JsonCodec jsonCodec;
+    private final SecurityConfig securityConfig;
     private static final byte[] EMPTY_BODY = new byte[0];
 
     // 预序列化的静态响应 - 避免重复序列化
@@ -62,6 +65,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
     private static final byte[] INTERNAL_ERROR_RESPONSE = "{\"error\":\"Internal Server Error\"}".getBytes(StandardCharsets.UTF_8);
     private static final byte[] PAYLOAD_TOO_LARGE_RESPONSE = "{\"error\":\"Payload Too Large\"}".getBytes(StandardCharsets.UTF_8);
     private static final byte[] TOO_MANY_REQUESTS_RESPONSE = "{\"error\":\"Too Many Requests\"}".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] UNAUTHORIZED_RESPONSE = "{\"error\":\"Unauthorized\"}".getBytes(StandardCharsets.UTF_8);
 
     // 指标
     private final HttpMetrics metrics;
@@ -71,11 +75,17 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
     private static final long OVERLOAD_LOG_INTERVAL_MS = 1000;
 
     public NettyRequestHandler(RadixRouter router, int maxConcurrentRequests, int semaphoreTimeoutMs, HttpMetrics metrics) {
+        this(router, maxConcurrentRequests, semaphoreTimeoutMs, metrics, SecurityConfig.disabled());
+    }
+
+    public NettyRequestHandler(RadixRouter router, int maxConcurrentRequests, int semaphoreTimeoutMs, HttpMetrics metrics,
+                               SecurityConfig securityConfig) {
         this.router = router;
         this.businessExecutor = Executors.newVirtualThreadPerTaskExecutor();
         this.concurrencyLimit = new Semaphore(maxConcurrentRequests);
         this.semaphoreTimeoutMs = semaphoreTimeoutMs;
         this.metrics = metrics;
+        this.securityConfig = securityConfig == null ? SecurityConfig.disabled() : securityConfig;
 
         this.jsonCodec = JsonCodec.instance();
     }
@@ -88,12 +98,29 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
         }
 
         boolean permitAcquired = false;
+        boolean permitHandedOff = false;
         try {
             // 1. 获取方法和 URI
             HttpMethod method = req.method();
             String uri = req.uri();
 
-            // 2. 背压控制：信号量限流（带超时）
+            // 2. 先做路由匹配，404 直接返回，避免无谓的 body 拷贝和信号量占用
+            RouteMatch match = router.match(method, uri);
+            if (match == null) {
+                writeResponse(ctx, HttpResponseStatus.NOT_FOUND, NOT_FOUND_RESPONSE);
+                metrics.recordRequest(0L, 404);
+                return;
+            }
+
+            // 3. 认证发生在业务信号量之前，避免未授权请求占用业务容量
+            Map<String, String> headers = copyRequestHeaders(req);
+            if (!securityConfig.isAuthorized(uri, headers)) {
+                writeUnauthorizedResponse(ctx);
+                metrics.recordRequest(0L, 401);
+                return;
+            }
+
+            // 4. 背压控制：信号量限流（带超时）
             long waitStartNanos = System.nanoTime();
             permitAcquired = concurrencyLimit.tryAcquire(semaphoreTimeoutMs, TimeUnit.MILLISECONDS);
             long waitNanos = System.nanoTime() - waitStartNanos;
@@ -115,22 +142,10 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
 
             metrics.recordAccepted();
 
-            // 3. 先做路由匹配，404 直接返回，避免无谓的 body/header 拷贝
-            RouteMatch match = router.match(method, uri);
-            if (match == null) {
-                ctx.executor().execute(() -> {
-                    writeResponse(ctx, HttpResponseStatus.NOT_FOUND, NOT_FOUND_RESPONSE);
-                    concurrencyLimit.release();
-                });
-                metrics.recordRequest(0L, 404);
-                return;
-            }
-
-            // 4. 仅在命中路由后，再把请求体和请求头复制到堆内存
+            // 5. 仅在命中路由并通过认证后，再把请求体复制到堆内存
             byte[] bodyBytes = readRequestBodyToHeap(req);
-            Map<String, String> headers = Collections.emptyMap();
 
-            // 5. 提交业务逻辑到虚拟线程
+            // 6. 提交业务逻辑到虚拟线程
             businessExecutor.execute(() -> {
                 long startTime = System.nanoTime();
                 try {
@@ -218,6 +233,7 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                     });
                 }
             });
+            permitHandedOff = true;
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -229,13 +245,11 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
             logger.error("Request handling error", e);
             writeResponse(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, INTERNAL_ERROR_RESPONSE);
             // permitAcquired controls release in finally
-        }
-        // Note: permit release is handled within the business executor callback or the 404 path
-        // If we reach here with permitAcquired=true but didn't dispatch to businessExecutor,
-        // we must release. This shouldn't happen given current control flow, but guard:
-        if (permitAcquired) {
-            // Only reached if we acquired but fell through without dispatching
-            // (currently impossible, but defensive)
+        } finally {
+            if (permitAcquired && !permitHandedOff) {
+                concurrencyLimit.release();
+            }
+            ReferenceCountUtil.release(req);
         }
     }
 
@@ -248,6 +262,18 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
             return EMPTY_BODY;
         }
         return ByteBufUtil.getBytes(content, content.readerIndex(), content.readableBytes(), false);
+    }
+
+    private Map<String, String> copyRequestHeaders(FullHttpRequest req) {
+        if (req.headers().isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Map<String, String> headers = new LinkedHashMap<>();
+        for (Map.Entry<String, String> header : req.headers()) {
+            headers.put(header.getKey(), header.getValue());
+        }
+        return Collections.unmodifiableMap(headers);
     }
 
     /**
@@ -295,6 +321,20 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
         response.headers().set(HttpHeaderNames.CONTENT_LENGTH, TOO_MANY_REQUESTS_RESPONSE.length);
         response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
         response.headers().set("Retry-After", String.valueOf(Math.max(1, semaphoreTimeoutMs / 1000)));
+
+        ctx.writeAndFlush(response);
+    }
+
+    private void writeUnauthorizedResponse(ChannelHandlerContext ctx) {
+        FullHttpResponse response = new DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            HttpResponseStatus.UNAUTHORIZED,
+            Unpooled.wrappedBuffer(UNAUTHORIZED_RESPONSE)
+        );
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, UNAUTHORIZED_RESPONSE.length);
+        response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+        response.headers().set(HttpHeaderNames.WWW_AUTHENTICATE, "Bearer realm=\"loomq\"");
 
         ctx.writeAndFlush(response);
     }

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-LoomQ is a durable time kernel for distributed systems. It schedules, persists, and delivers future events called **Intent**s. Built on Java 25 Virtual Threads. Two modules: `loomq-core` (embeddable, HTTP-free kernel) and `loomq-server` (standalone Netty HTTP server).
+LoomQ is a durable time kernel for distributed systems. It schedules, persists, and delivers future events called **Intent**s. Built on Java 25 Virtual Threads. Three modules: `loomq-bom` (version management), `loomq-core` (embeddable, HTTP-free kernel), and `loomq-server` (standalone Netty HTTP server).
 
 ## Build & Run Commands
 
@@ -14,21 +14,57 @@ mvn clean package              # full build with tests
 mvn clean package -DskipTests  # fast build, skip tests
 make build / make build-fast   # Makefile shortcuts
 
+# Formatting (Spotless — enforced in CI; import ordering + unused import removal)
+make format                    # apply formatting
+make check-format              # verify formatting (same as CI gate)
+
 # Test (Maven Surefire profiles with JUnit 5 tags)
 mvn test                       # default: excludes benchmark/slow/integration
-mvn test -Pintegration-tests   # integration group only
+mvn test -Pfast-tests          # same as default, used in CI matrix per module
+mvn test -Pslow-tests          # @Tag("slow") only
+mvn test -Pintegration-tests   # @Tag("integration") only
 mvn test -Pfull-tests          # everything including slow/benchmark
 mvn test -Dtest=ClassName      # single test class
 mvn test -Dtest=ClassName#methodName  # single test method
 
+# Module-scoped test (CI pattern — builds deps with -am)
+mvn test -pl loomq-core -am
+mvn test -pl loomq-server -am
+
+# Run benchmark tests locally
+mvn test -pl loomq-server -am -Dtest=SchedulerTriggerBenchmarkWithMockServer#testQuickTierComparison -DfailIfNoTests=false
+mvn test -pl loomq-server -am -Dtest=SchedulerTriggerBenchmarkWithMockServer#test100kTierThroughput -DfailIfNoTests=false
+
+# Pre-push gate (same checks CI runs)
+make check                     # check-format + test
+
 # Run
-java -jar loomq-server/target/loomq-server-0.9.0.jar
+java -jar loomq-server/target/loomq-server-0.9.1.jar
 make run-jar                   # Makefile shortcut
 
 # Docker
 make docker-build && make docker-run          # single container
 make docker-compose-up                        # cluster + monitoring stack
 ```
+
+### JUnit 5 Tag System
+
+Tests are categorized with `@Tag` annotations. Maven Surefire uses `groups`/`excludedGroups` properties to include/exclude:
+
+| Tag | Maven Profile | What |
+|-----|--------------|------|
+| *(none)* | default / `fast-tests` | Fast unit tests, always run |
+| `slow` | `slow-tests` | PrecisionSchedulerTest, RaftNodeTest, BackPressureTest, SegmentedWalTest |
+| `integration` | `integration-tests` | Tests requiring full server startup, HTTP, or multi-node |
+| `benchmark` | (included in `full-tests`) | Performance benchmarks with mock server |
+
+## Modules
+
+| Module | Purpose |
+|--------|---------|
+| `loomq-bom` | Bill of Materials — centralized version management |
+| `loomq-core` | Embeddable kernel, zero HTTP/JSON deps |
+| `loomq-server` | Standalone Netty HTTP server (`LoomqServerApplication` entry point) |
 
 ## Architecture
 
@@ -55,7 +91,7 @@ loomq-server (Netty HTTP + Raft/cluster wiring + JSON + webhook delivery)
 ## Key Design Decisions
 
 - **"Intent" is the public model** — older docs/code may use legacy terminology; always use "Intent" in new code.
-- **Core has zero HTTP/JSON dependencies** — `loomq-core` depends only on SLF4J, Owner, SnakeYAML, HdrHistogram. All transport concerns live in `loomq-server`.
+- **Core has zero HTTP/JSON dependencies** — `loomq-core` depends only on `slf4j-api` at compile scope. All transport, serialization, and config-parsing concerns live in `loomq-server`.
 - **DeliveryHandler SPI** — the scheduler in core delegates delivery through this interface; `loomq-server` provides `HttpDeliveryHandler`. Embedders supply their own.
 - **Virtual threads everywhere** — `Executors.newVirtualThreadPerTaskExecutor()` for batch consumers; no traditional thread pool tuning.
 - **Cohort-based wakeup (CSA-inspired)** — intents with delay > precision window are grouped by cohort key; one daemon thread wakes thousands, replacing per-intent VT sleep.
@@ -74,7 +110,7 @@ Priority (highest→lowest): JVM system properties (`-Dloomq.xxx`) → external 
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`): Oracle JDK 25. `balanced-tests` on PR/push, `full-regression` on schedule/manual, `package` for fat JAR on push.
+GitHub Actions (`.github/workflows/ci.yml`): Oracle JDK 25. Jobs: `format-check` → `fast-tests` (matrix per module), `slow-tests`, `integration-tests`, `benchmark-quick` (PR only). On push to main: `package` (fat JAR). Scheduled/manual: `full-regression` + `benchmark-full` with regression detection. Use `make check` locally to simulate the CI gate.
 
 ## Language
 

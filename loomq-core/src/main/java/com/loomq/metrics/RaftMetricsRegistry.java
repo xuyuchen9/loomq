@@ -26,6 +26,8 @@ final class RaftMetricsRegistry {
     private final AtomicLong raftWriteProposalLatencyMaxMs = new AtomicLong(0);
     private final LongAdder raftWriteTimeouts = new LongAdder();
     private final LongAdder raftWriteStepDownAborts = new LongAdder();
+    private final LongAdder raftWriteBackpressureRejects = new LongAdder();
+    private final LongAdder raftWriteRevisionConflicts = new LongAdder();
 
     void updateRaftRole(String role) {
         raftRole.set(role == null || role.isBlank() ? "OFFLINE" : role);
@@ -76,6 +78,14 @@ final class RaftMetricsRegistry {
 
     void incrementRaftWriteStepDownAborts() {
         raftWriteStepDownAborts.increment();
+    }
+
+    void incrementRaftWriteBackpressureRejects() {
+        raftWriteBackpressureRejects.increment();
+    }
+
+    void incrementRaftWriteRevisionConflicts() {
+        raftWriteRevisionConflicts.increment();
     }
 
     String getRaftRole() {
@@ -138,6 +148,14 @@ final class RaftMetricsRegistry {
         return raftWriteStepDownAborts.sum();
     }
 
+    long getRaftWriteBackpressureRejects() {
+        return raftWriteBackpressureRejects.sum();
+    }
+
+    long getRaftWriteRevisionConflicts() {
+        return raftWriteRevisionConflicts.sum();
+    }
+
     void reset() {
         raftRole.set("OFFLINE");
         raftLeaderId.set(null);
@@ -153,5 +171,7 @@ final class RaftMetricsRegistry {
         raftWriteProposalLatencyMaxMs.set(0);
         raftWriteTimeouts.reset();
         raftWriteStepDownAborts.reset();
+        raftWriteBackpressureRejects.reset();
+        raftWriteRevisionConflicts.reset();
     }
 }

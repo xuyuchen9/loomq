@@ -218,7 +218,7 @@ public class RaftLog {
         Long startPos = startPositions.get(index);
         Integer recordLen = recordLengths.get(index);
         if (startPos == null || recordLen == null) {
-            if (wal != null && index == wal.getSnapshotIndex()) {
+            if (wal != null && wal.getSnapshotIndex() > 0 && index == wal.getSnapshotIndex()) {
                 return wal.getSnapshotTerm();
             }
             return -1;

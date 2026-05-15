@@ -1,6 +1,6 @@
 #
 # LoomQ Startup Script (Windows PowerShell)
-# Version: 0.9.0
+# Version: 0.9.1
 #
 
 param(
@@ -16,7 +16,7 @@ param(
 )
 
 # Default values
-$JAR_FILE = "loomq-server/target/loomq-server-0.9.0.jar"
+$JAR_FILE = "loomq-server/target/loomq-server-0.9.1.jar"
 if (-not $JVM_XMS) { $JVM_XMS = "2g" }
 if (-not $JVM_XMX) { $JVM_XMX = "2g" }
 if (-not $JVM_GC) { $JVM_GC = "ZGC" }
@@ -173,7 +173,7 @@ $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
 }
 
 # Main execution
-Write-Info "LoomQ Startup Script v0.9.0"
+Write-Info "LoomQ Startup Script v0.9.1"
 
 Test-Java
 Test-Jar

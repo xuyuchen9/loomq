@@ -251,7 +251,8 @@ class IntentStateTransitionTest {
             "idem-123",
             Map.of("team", "core"),
             3,
-            "delivery-7"
+            "delivery-7",
+            7L
         );
 
         assertEquals("intent-restore", restored.getIntentId());
@@ -269,6 +270,7 @@ class IntentStateTransitionTest {
         assertEquals(Map.of("team", "core"), restored.getTags());
         assertEquals(3, restored.getAttempts());
         assertEquals("delivery-7", restored.getLastDeliveryId());
+        assertEquals(7L, restored.getRevision());
     }
 
     @Test
@@ -279,9 +281,10 @@ class IntentStateTransitionTest {
             Instant.now(), Instant.now(), Instant.now(), null,
             ExpiredAction.DISCARD, PrecisionTier.HIGH, null,
             "s", "s1", AckMode.DURABLE,
-            null, null, null, Map.of(), 1, null
+            null, null, null, Map.of(), 1, null, 2L
         );
         assertEquals(IntentStatus.ACKED, restored.getStatus());
+        assertEquals(2L, restored.getRevision());
         assertThrows(IllegalStateException.class, () -> restored.transitionTo(IntentStatus.DUE));
     }
 

@@ -25,6 +25,7 @@ public final class LoomqConfig {
     private final DispatcherConfig dispatcherConfig;
     private final RetryConfig retryConfig;
     private final RecoveryConfig recoveryConfig;
+    private final SecurityConfig securityConfig;
 
     private LoomqConfig(Properties properties) {
         Properties source = properties == null ? new Properties() : properties;
@@ -34,6 +35,7 @@ public final class LoomqConfig {
         this.dispatcherConfig = DispatcherConfig.fromProperties(source);
         this.retryConfig = RetryConfig.fromProperties(source);
         this.recoveryConfig = RecoveryConfig.fromProperties(source);
+        this.securityConfig = SecurityConfig.fromProperties(source);
     }
 
     public static LoomqConfig getInstance() {
@@ -117,5 +119,9 @@ public final class LoomqConfig {
 
     public RecoveryConfig getRecoveryConfig() {
         return recoveryConfig;
+    }
+
+    public SecurityConfig getSecurityConfig() {
+        return securityConfig;
     }
 }

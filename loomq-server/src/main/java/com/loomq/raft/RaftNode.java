@@ -36,8 +36,10 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private final List<String> peers;
     private final ScheduledExecutorService heartbeatTimer;
     private final long heartbeatMs;
+    private final long readLeaseMs;
     private final ConcurrentMap<String, PeerReplicationState> peerStates;
     private ScheduledFuture<?> heartbeatTask;
+    private volatile long readLeaseUntilMs = 0L;
     /**
      * Leader generation counter — incremented each time this node becomes leader.
      * Heartbeat callbacks check this against their captured generation to discard
@@ -58,6 +60,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         this.runtimeListener = runtimeListener;
         this.peers = config.peers();
         this.heartbeatMs = config.heartbeatMs();
+        this.readLeaseMs = computeReadLeaseMs(config.electionMinMs(), config.heartbeatMs());
         this.peerStates = new ConcurrentHashMap<>();
         for (String peerId : peers) {
             if (!peerId.equals(nodeId)) {
@@ -141,6 +144,17 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     @Override
     public boolean isRaftEnabled() {
         return true;
+    }
+
+    @Override
+    public boolean canServeLinearizableRead() {
+        if (!isLeader()) {
+            return false;
+        }
+        if (peerStates.isEmpty()) {
+            return true;
+        }
+        return System.currentTimeMillis() <= readLeaseUntilMs;
     }
 
     @Override
@@ -307,6 +321,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
     private void onBecomeLeader(long term) {
         leaderGeneration++;
+        renewReadLease();
         syncRaftMetrics();
         notifyRuntimeRole();
         log.info("Node {} became LEADER at term {} (gen {})", nodeId, term, leaderGeneration);
@@ -314,6 +329,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     }
 
     private void onBecomeFollower(long term) {
+        readLeaseUntilMs = 0L;
         syncRaftMetrics();
         replication.failPendingWaiters(new IllegalStateException("Leadership lost"));
         notifyRuntimeRole();
@@ -335,6 +351,9 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                 long currentTerm = election.currentTerm();
                 long commitIdx = replication.commitIndex();
                 long lastIdx = raftLog.lastIndex();
+                int majority = ((peerStates.size() + 1) / 2) + 1;
+                java.util.concurrent.atomic.AtomicInteger quorumAcks = new java.util.concurrent.atomic.AtomicInteger(1);
+                java.util.concurrent.atomic.AtomicBoolean leaseRenewed = new java.util.concurrent.atomic.AtomicBoolean(false);
 
                 for (PeerReplicationState ps : peerStates.values()) {
                     // Stop sending if we lost leadership mid-iteration (stepDown via callback)
@@ -387,6 +406,9 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                                 if (result.success) {
                                     ps.matchIndex = result.matchIndex;
                                     ps.nextIndex = result.matchIndex + 1;
+                                    if (quorumAcks.incrementAndGet() >= majority && leaseRenewed.compareAndSet(false, true)) {
+                                        renewReadLease();
+                                    }
                                     advanceCommitIndexFromAllPeers();
                                 } else if (result.term > currentTerm) {
                                     election.stepDown(result.term);
@@ -519,5 +541,15 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         PeerReplicationState(String peerId) {
             this.peerId = peerId;
         }
+    }
+
+    private void renewReadLease() {
+        readLeaseUntilMs = System.currentTimeMillis() + readLeaseMs;
+    }
+
+    private static long computeReadLeaseMs(long electionMinMs, long heartbeatMs) {
+        long heartbeatLease = Math.max(heartbeatMs * 2L, 100L);
+        long maxSafeLease = Math.max(1L, electionMinMs - 1L);
+        return Math.max(1L, Math.min(maxSafeLease, heartbeatLease));
     }
 }

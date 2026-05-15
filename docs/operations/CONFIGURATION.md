@@ -24,7 +24,7 @@ LoomQ 当前使用两层配置来源：
 
 | Key | 默认值 | 作用 | 生产建议 |
 |-----|--------|------|----------|
-| `server.host` | `0.0.0.0` | 绑定地址 | 生产环境绑定到明确网卡或容器入口 |
+| `server.host` | `0.0.0.0` | HTTP 绑定地址 | 生产环境绑定到明确网卡或容器入口 |
 | `server.port` | `7928` | HTTP 监听端口 | 与负载均衡和探针端口保持一致 |
 | `server.backlog` | `1024` | 连接队列长度 | 高并发入口可适度调大 |
 | `server.virtual_threads` | `true` | 是否启用虚拟线程处理请求 | 默认开启 |
@@ -56,8 +56,8 @@ Raft 启动时会直接 fail fast，常见约束包括：
 
 | Key | 默认值 | 作用 | 生产建议 |
 |-----|--------|------|----------|
-| `netty.host` | `0.0.0.0` | Netty 绑定地址 | 与 `server.host` 保持一致 |
-| `netty.port` | `7928` | Netty 监听端口 | 与 `server.port` 保持一致 |
+| `netty.host` | `0.0.0.0` | 预留/兼容项；当前 HTTP 绑定以 `server.host` 为准 | 与 `server.host` 保持一致，避免配置摘要误导 |
+| `netty.port` | `7928` | 预留/兼容项；当前 HTTP 监听以 `server.port` 为准 | 与 `server.port` 保持一致，避免配置摘要误导 |
 | `netty.bossThreads` | `1` | boss 线程数 | 一般保持 1 |
 | `netty.workerThreads` | `0` | worker 线程数 | `0` 表示使用 Netty 默认值 |
 | `netty.maxContentLength` | `10485760` | HTTP body 上限，字节 | 与 `server.max_request_size` 对齐 |
@@ -138,13 +138,26 @@ AdapTBF 跨层借用约束（当前硬编码）：
 | `recovery.auto_start` | `true` | 启动时是否自动恢复 |
 | `recovery.checkpoint_interval_sec` | `60` | 检查点间隔，秒 |
 
-### Security / Metrics / Health / Logging
+### Security
+
+| Key | 默认值 | 作用 | 生产建议 |
+|-----|--------|------|----------|
+| `security.enabled` | `false` | 是否启用 HTTP token 认证 | 生产环境建议开启 |
+| `security.token_header` | `X-Loomq-Token` | 认证 token 所在请求头 | 与网关或 sidecar 配置一致 |
+| `security.tokens` | 空 | 允许的 token 列表 | 使用环境变量或外部配置注入，不要提交明文生产 token |
+
+开启 `security.enabled=true` 时，`/v1/**` 和 `/metrics` / `/api/v1/metrics` 需要携带 token；`/health`、
+`/health/live`、`/health/ready`、`/health/deep` 保持开放，便于负载均衡器和 Kubernetes 探针工作。token
+既可以直接放在 `X-Loomq-Token`，也可以使用 `Bearer <token>` 形式。
+
+如果开启 security 但没有配置任何非空 token，进程会在启动阶段 fail fast，避免进入“看似开启、实际裸奔”的状态。
+
+### Metrics / Health / Logging
 
 这些项当前都在配置文件里支持：
 
-- `security.*`
 - `metrics.*`（包含 Raft 的 role、leader、term、commit lag、peer reachability 等运行态字段）
-- `health.*`（`/health` 和 `/health/deep` 会包含 WAL 与 Raft 安全信号）
+- `health.*`（`/health` 和 `/health/deep` 会包含 WAL 与 Raft 安全信号；`/health/ready` 在 Raft 模式下只允许当前安全 leader 接客户端流量）
 - `logging.*`
 
 ## 启动摘要

@@ -15,6 +15,7 @@ Use this before tagging or publishing a LoomQ release.
 - Run the normal test suite.
 - Run any required integration or full-test profile if the change touches persistence, recovery, or HTTP behavior.
 - Build the server artifact from the root module.
+- Confirm the PR CI package job passed, not just the test jobs.
 - Start the server locally once and confirm it boots with the intended config.
 
 ## Runtime
@@ -23,7 +24,9 @@ Use this before tagging or publishing a LoomQ release.
 - Confirm `/health` returns healthy.
 - Confirm `/metrics` returns a response and the key counters move as expected.
 - Confirm a basic `POST /v1/intents` create flow still works.
-- If the release touches Raft, confirm follower reads return a retryable `503` and `/health` / `/metrics` expose Raft role, leader id, term, commit index, and peer reachability.
+- Confirm `server.host` / `server.port` are the actual HTTP bind target expected by the deployment.
+- Confirm `SIGTERM` or orchestrator stop drains active HTTP requests within `netty.gracefulShutdownTimeoutMs`.
+- If the release touches Raft, confirm follower reads and writes return retryable `503` responses and `/health` / `/metrics` expose Raft role, leader id, term, commit index, peer reachability, and write safety signals.
 
 ## Release Notes
 

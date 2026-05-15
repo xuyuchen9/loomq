@@ -4,6 +4,56 @@ All notable changes to LoomQ are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.1] - 2026-05-15
+
+### Added
+
+- **Raft consensus graduated from beta**
+  - Leader-only writes and reads with consistent authority checks
+  - `RaftWriteCoordinator`: bounded backpressure, request deduplication, optimistic concurrency via revision checking
+  - `RaftRuntimeListener`: scheduler pause/resume/rebuild on leader transitions and committed-intent application
+  - `RaftStatusProvider` API: exposes role, leader, cluster topology, read-lease status
+  - Structured health endpoints: `/health` and `/ready` return Raft status alongside WAL status
+  - `RaftWriteBackPressureException`, `RaftWriteConflictException`, `RaftWriteUnavailableException` for fine-grained error handling
+
+- **Peer replication hardening**
+  - `appendInFlight` guard prevents duplicate log entries during concurrent AppendEntries
+  - `awaitApplied` / `failPendingWaiters` in `LogReplication` for coordinator-proposal lifecycle
+  - Peer reachability tracking via `RaftTransport.isPeerConnected()`
+
+- **Security**
+  - `SecurityConfig`: optional token authentication via `X-Loomq-Token` header
+  - Constant-time token comparison, Bearer prefix stripping, health endpoints exempt
+  - Fail-fast startup validation when security is enabled but no tokens configured
+
+- **Test coverage**
+  - `RaftWriteAuthorityIntegrationTest`: 3-node cluster write authority and idempotency
+  - `RaftServerSmokeTest`: full-stack single-node Raft server smoke test
+  - `IntentHandlerRaftReadTest`: leader-authoritative read rejection on followers
+  - `SecurityConfigTest`: token authentication validation
+
+### API Changes
+
+- New error codes: `50301` (follower read rejected), `50302` (follower write rejected), `40902` (stale revision conflict)
+- `GET /v1/intents/{intentId}` may return 503 with leader redirect in Raft mode
+- `GET /health` returns expanded Raft health section in structured JSON
+- `GET /health/ready` returns 503 with Raft reason code when not ready
+- `/metrics` endpoint now includes Raft-specific counters
+
+### Changed
+
+- RaftNode directly implements `RaftStatusProvider`
+- `IntentHandler` routes writes through `RaftWriteCoordinator` when Raft is enabled
+- Raft startup validation: peer consistency, port conflicts, endpoint format checks
+- `LoomqServerApplication` starts Raft after engine (not before) for correct lifecycle ordering
+
+### Fixed
+
+- Heartbeat task no longer silently cancelled by `ScheduledExecutorService` on unexpected errors
+- Peer replication: in-flight AppendEntries tracking prevents concurrent append to same peer
+- Clean shutdown: pending waiters are failed and metrics reset when RaftNode closes
+- Follower metrics: role, leader id, replication lag, peer counts now reported correctly
+
 ## [0.9.0] - 2026-05-13
 
 ### Added

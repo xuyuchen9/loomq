@@ -10,7 +10,7 @@ info:
     - Raft-backed replication and snapshot recovery
     - Immediate fire-now execution
     - 幂等性保证（24h 窗口期）
-  version: 0.9.0
+  version: 0.9.1
 
 servers:
   - url: http://localhost:7928
@@ -258,11 +258,35 @@ paths:
   /health/ready:
     get:
       summary: 就绪探针（K8s readiness）
-      description: 仅反映 WAL 就绪状态；Raft 安全信号在 `/health` 与 `/health/deep` 中展示。
+      description: |
+        反映节点是否适合接收客户端流量。
+
+        embedded 模式下主要检查 WAL 健康；Raft 模式下只有当前 leader 在 quorum 可达、读租约有效、commit/apply 无积压且写队列无积压时才返回 200。
       operationId: readiness
       responses:
         '200':
           description: 就绪
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        '503':
+          description: 未就绪
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: 503
+                error:
+                  code: "50304"
+                  message: "Node is not ready to serve client traffic"
+                  details:
+                    ready: false
+                    mode: raft
+                    role: FOLLOWER
+                    leaderId: node-1
+                    reason: RAFT_NOT_LEADER
 
   /health/deep:
     get:
@@ -307,6 +331,12 @@ paths:
                 $ref: '#/components/schemas/MetricsSnapshot'
 
 components:
+  securitySchemes:
+    ApiTokenAuth:
+      type: apiKey
+      in: header
+      name: X-Loomq-Token
+      description: Required for `/v1/**` and metrics endpoints when `security.enabled=true`.
   schemas:
     CreateIntentRequest:
       type: object
@@ -514,6 +544,67 @@ components:
                   underBackpressure:
                     type: boolean
 
+    ReadinessResponse:
+      type: object
+      required:
+        - status
+        - ready
+        - mode
+        - raftEnabled
+        - walHealthy
+        - acceptingReads
+        - acceptingWrites
+        - reason
+      properties:
+        status:
+          type: string
+          enum: [UP, DOWN]
+        ready:
+          type: boolean
+        mode:
+          type: string
+          enum: [embedded, raft]
+        raftEnabled:
+          type: boolean
+        walHealthy:
+          type: boolean
+        nodeId:
+          type: string
+        role:
+          type: string
+        leaderId:
+          type: string
+        term:
+          type: integer
+        commitIndex:
+          type: integer
+        lastApplied:
+          type: integer
+        commitLag:
+          type: integer
+        connectedPeers:
+          type: integer
+        totalPeers:
+          type: integer
+        quorumReachable:
+          type: boolean
+        acceptingReads:
+          type: boolean
+        acceptingWrites:
+          type: boolean
+        writePending:
+          type: integer
+        reason:
+          type: string
+          enum:
+            - READY
+            - WAL_UNHEALTHY
+            - RAFT_NOT_LEADER
+            - RAFT_QUORUM_UNREACHABLE
+            - RAFT_READ_LEASE_UNAVAILABLE
+            - RAFT_COMMIT_LAG
+            - RAFT_PENDING_WRITES
+
     WalHealth:
       type: object
       required:
@@ -566,6 +657,22 @@ components:
           type: object
           additionalProperties:
             type: boolean
+        quorumReachable:
+          type: boolean
+        writePending:
+          type: integer
+        writeProposalLatencyMs:
+          type: number
+        writeProposalLatencyMaxMs:
+          type: integer
+        writeTimeouts:
+          type: integer
+        writeStepDownAborts:
+          type: integer
+        acceptingReads:
+          type: boolean
+        acceptingWrites:
+          type: boolean
 
     MetricsSnapshot:
       type: object
@@ -643,6 +750,20 @@ components:
         raftConnectedPeers:
           type: integer
         raftTotalPeers:
+          type: integer
+        raftPendingWrites:
+          type: integer
+        raftWriteProposalLatencyMs:
+          type: number
+        raftWriteProposalLatencyMaxMs:
+          type: integer
+        raftWriteTimeouts:
+          type: integer
+        raftWriteStepDownAborts:
+          type: integer
+        raftWriteBackpressureRejects:
+          type: integer
+        raftWriteRevisionConflicts:
           type: integer
       additionalProperties: true
 

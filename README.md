@@ -46,7 +46,7 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 <dependency>
     <groupId>com.loomq</groupId>
     <artifactId>loomq-core</artifactId>
-    <version>0.9.0</version>
+    <version>0.9.1</version>
 </dependency>
 ```
 
@@ -61,7 +61,7 @@ mvn clean package -DskipTests
 ### Start Server
 
 ```bash
-java -jar loomq-server/target/loomq-server-0.9.0.jar
+java -jar loomq-server/target/loomq-server-0.9.1.jar
 ```
 
 Server listens on `http://localhost:7928` by default.
@@ -93,7 +93,7 @@ When `LOOMQ_RAFT_ENABLED=true`, the standalone server switches to Raft mode:
 
 - `GET /v1/intents/{intentId}` becomes leader-authoritative
 - followers return `503` with error code `50301`, `retryable=true`, and the leader id in `details` when known
-- `/health` and `/metrics` expose Raft signals such as role, leader id, term, commit index, commit lag, replication lag, and peer reachability
+- `/health` and `/metrics` expose Raft signals such as role, leader id, term, commit index, commit lag, replication lag, peer reachability, and whether the leader is currently accepting reads / writes
 - `/health/deep` adds tier backpressure data on top of the Raft view
 
 ---
@@ -387,7 +387,7 @@ make docker-build   # Build Docker image
 
 ## Roadmap
 
-### v0.9.0 (current)
+### v0.9.1 (current)
 - [x] Cohort-based batched wakeup (CSA-inspired)
 - [x] Arrow cross-tier slot borrowing + AdapTBF constraints
 - [x] ResizableSemaphore (runtime concurrency adjustment)

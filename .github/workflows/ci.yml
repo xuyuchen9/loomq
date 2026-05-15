@@ -3,14 +3,8 @@ name: Java CI
 on:
   push:
     branches: [ "main" ]
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
   pull_request:
     branches: [ "main" ]
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
   workflow_dispatch:
   schedule:
     - cron: "0 2 * * *"   # daily 2am UTC
@@ -127,7 +121,7 @@ jobs:
 
       - name: Integration Tests
         # PrecisionTierIntegrationTest excluded: pre-existing issue (missing HTTP server, tracked separately)
-        run: mvn -B -ntp -Pintegration-tests test -Dtest='!com.loomq.scheduler.PrecisionTierIntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false
+        run: mvn -B -ntp -Pintegration-tests test -Dtest='!com.loomq.scheduler.PrecisionTierIntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false -Dsurefire.forkedProcessTimeoutInSeconds=600
 
       - name: Upload Test Reports on Failure
         if: failure()
@@ -160,7 +154,8 @@ jobs:
         run: |
           mvn -B -ntp test -pl loomq-server -am \
             -Dtest="com.loomq.scheduler.SchedulerTriggerBenchmarkWithMockServer#testQuickTierComparison" \
-            -DfailIfNoTests=false 2>&1 | tee benchmark-quick.log
+            -Dtest.excludedGroups="slow,integration" \
+            -Dsurefire.failIfNoSpecifiedTests=false 2>&1 | tee benchmark-quick.log
 
       - name: Show Benchmark Results
         if: always()
@@ -176,10 +171,10 @@ jobs:
           path: benchmark-quick.log
 
   # ============================================================
-  #  Push to main only: package fat JAR
+  #  PR / Push: package fat JAR
   # ============================================================
   package:
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
     needs: format-check
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -219,7 +214,7 @@ jobs:
           cache: maven
 
       - name: Full Regression
-        run: mvn -B -ntp -Pfull-tests test
+        run: mvn -B -ntp -Pfull-tests test -Dsurefire.forkedProcessTimeoutInSeconds=3600
 
       - name: Upload Test Reports on Failure
         if: failure()

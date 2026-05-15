@@ -1,11 +1,11 @@
 # =====================================================
-# LoomQ Configuration v0.9.0
+# LoomQ Configuration v0.9.1
 # High-Performance Delayed Intent Queue
 # =====================================================
 
 # -----------------------------------------------------
 # Server Configuration
-# v0.9.0: Netty 原生 HTTP 服务器，目标 300K+ QPS
+# v0.9.1: Netty 原生 HTTP 服务器，目标 300K+ QPS
 # -----------------------------------------------------
 server:
   host: "${LOOMQ_SERVER_HOST:0.0.0.0}"
@@ -15,7 +15,7 @@ server:
   max_request_size: ${LOOMQ_MAX_REQUEST_SIZE:10485760}
   thread_pool_size: ${LOOMQ_THREAD_POOL_SIZE:200}
 
-# Netty HTTP 服务器配置 (v0.9.0)
+# Netty HTTP 服务器配置 (v0.9.1)
 netty:
   port: ${LOOMQ_NETTY_PORT:7928}
   host: "${LOOMQ_NETTY_HOST:0.0.0.0}"
@@ -96,10 +96,10 @@ recovery:
 # Security Configuration
 # -----------------------------------------------------
 security:
-  enabled: ${LOOMQ_SECURITY_ENABLED:true}
+  enabled: ${LOOMQ_SECURITY_ENABLED:false}
   token_header: "X-Loomq-Token"
   tokens:
-    - "${LOOMQ_DEV_TOKEN:dev-token-12345}"
+    - "${LOOMQ_API_TOKEN:}"
 
 # -----------------------------------------------------
 # Metrics & Monitoring Configuration
