@@ -279,36 +279,6 @@ public class Intent {
         );
     }
 
-    /**
-     * 创建当前 Intent 的独立副本。
-     *
-     * Raft 写路径会先在内存中生成最终快照，再提交到日志，避免直接
-     * 修改 store 中的当前态对象。
-     */
-    public Intent copy() {
-        return restore(
-            traceId,
-            intentId,
-            status,
-            createdAt,
-            updatedAt,
-            executeAt,
-            deadline,
-            expiredAction,
-            precisionTier,
-            walMode,
-            shardKey,
-            shardId,
-            ackLevel,
-            callback,
-            redelivery,
-            idempotencyKey,
-            tags,
-            attempts,
-            lastDeliveryId
-        );
-    }
-
     // ========== 业务方法 ==========
 
     /**
