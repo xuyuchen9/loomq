@@ -2,6 +2,7 @@ package com.loomq.store;
 
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -30,7 +31,7 @@ public interface IntentStore {
     /**
      * 写入或更新 Intent。
      *
-     * 适用于“应用当前态”的场景，例如快照恢复、WAL 回放、Raft 提交应用。
+     * 适用于”应用当前态”的场景，例如快照恢复、WAL 回放、Raft 提交应用。
      */
     default void upsert(Intent intent) {
         Intent existing = findById(intent.getIntentId());
@@ -57,6 +58,22 @@ public interface IntentStore {
 
     /** 待处理 Intent 数量 */
     long getPendingCount();
+
+    /**
+     * 按状态查询 Intent，支持分页。
+     *
+     * @param status 目标状态
+     * @param offset 跳过前 N 条
+     * @param limit  最大返回条数
+     * @return 匹配的 Intent 列表
+     */
+    default List<Intent> findByStatus(IntentStatus status, int offset, int limit) {
+        return getAllIntents().values().stream()
+            .filter(i -> i.getStatus() == status)
+            .skip(offset)
+            .limit(limit)
+            .toList();
+    }
 
     /** 关闭存储，释放资源 */
     void shutdown();

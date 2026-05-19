@@ -26,5 +26,6 @@ public record CreateIntentRequest(
     Callback callback,
     RedeliveryPolicy redelivery,
     String idempotencyKey,
-    Map<String, String> tags
+    Map<String, String> tags,
+    SloRequest slo
 ) {}

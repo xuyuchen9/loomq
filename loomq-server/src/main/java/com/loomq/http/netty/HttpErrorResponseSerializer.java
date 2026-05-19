@@ -1,10 +1,12 @@
 package com.loomq.http.netty;
 
 import com.loomq.api.ErrorResponse;
+import com.loomq.api.RecoveryHint;
 import com.loomq.http.json.JsonCodec;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * ErrorResponse 的零拷贝序列化器。
@@ -31,6 +33,14 @@ public final class HttpErrorResponseSerializer {
     private static final byte[] FIELD_CODE = "\"code\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_MESSAGE = "\"message\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_DETAILS = "\"details\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RECOVERY = "\"recovery\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_SUGGESTION = "\"suggestion\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RELEVANT_ENDPOINT = "\"relevantEndpoint\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_ESTIMATED_WAIT_MS = "\"estimatedWaitMs\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_CURRENT_STATE = "\"currentState\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_TRANSITIONS_TO = "\"transitionsTo\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_TEMPORAL = "\"temporal\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_LEADER_ID = "\"leaderId\"".getBytes(StandardCharsets.UTF_8);
 
     private HttpErrorResponseSerializer() {}
 
@@ -83,6 +93,13 @@ public final class HttpErrorResponseSerializer {
             }
             buf.writeBytes(detailsBytes);
         }
+        buf.writeBytes(COMMA);
+        writeFieldName(buf, FIELD_RECOVERY);
+        if (error.recovery() == null) {
+            buf.writeBytes(NULL_LITERAL);
+        } else {
+            writeRecoveryObject(error.recovery(), buf);
+        }
         buf.writeBytes(CLOSE_OBJECT);
     }
 
@@ -91,7 +108,71 @@ public final class HttpErrorResponseSerializer {
         size += length(error.code());
         size += length(error.message());
         size += error.details() != null ? 32 : 4;
+        size += error.recovery() != null ? estimateRecoverySize(error.recovery()) : 4;
         return size;
+    }
+
+    private static void writeRecoveryObject(RecoveryHint recovery, ByteBuf buf) {
+        buf.writeBytes(OPEN_OBJECT);
+        writeFieldName(buf, FIELD_SUGGESTION);
+        writeStringValue(buf, recovery.suggestion());
+        buf.writeBytes(COMMA);
+        writeFieldName(buf, FIELD_RELEVANT_ENDPOINT);
+        writeStringValue(buf, recovery.relevantEndpoint());
+        buf.writeBytes(COMMA);
+        writeFieldName(buf, FIELD_ESTIMATED_WAIT_MS);
+        if (recovery.estimatedWaitMs() == null) {
+            buf.writeBytes(NULL_LITERAL);
+        } else {
+            writeLong(buf, recovery.estimatedWaitMs());
+        }
+        buf.writeBytes(COMMA);
+        writeFieldName(buf, FIELD_CURRENT_STATE);
+        writeStringValue(buf, recovery.currentState());
+        buf.writeBytes(COMMA);
+        writeFieldName(buf, FIELD_TRANSITIONS_TO);
+        if (recovery.transitionsTo() == null) {
+            buf.writeBytes(NULL_LITERAL);
+        } else {
+            writeStringList(buf, recovery.transitionsTo());
+        }
+        buf.writeBytes(COMMA);
+        writeFieldName(buf, FIELD_TEMPORAL);
+        buf.writeBytes(recovery.temporal()
+            ? "true".getBytes(StandardCharsets.UTF_8)
+            : "false".getBytes(StandardCharsets.UTF_8));
+        buf.writeBytes(COMMA);
+        writeFieldName(buf, FIELD_LEADER_ID);
+        writeStringValue(buf, recovery.leaderId());
+        buf.writeBytes(CLOSE_OBJECT);
+    }
+
+    private static int estimateRecoverySize(RecoveryHint recovery) {
+        int size = 128;
+        size += length(recovery.suggestion());
+        size += length(recovery.relevantEndpoint());
+        size += recovery.estimatedWaitMs() != null ? 12 : 4;
+        size += length(recovery.currentState());
+        size += recovery.transitionsTo() != null ? recovery.transitionsTo().size() * 32 : 4;
+        size += length(recovery.leaderId());
+        return size;
+    }
+
+    private static void writeLong(ByteBuf buf, long value) {
+        ByteBufUtil.writeUtf8(buf, Long.toString(value));
+    }
+
+    private static void writeStringList(ByteBuf buf, List<String> list) {
+        buf.writeByte('[');
+        for (int i = 0; i < list.size(); i++) {
+            if (i > 0) {
+                buf.writeBytes(COMMA);
+            }
+            buf.writeBytes(QUOTE);
+            writeEscapedString(list.get(i), buf);
+            buf.writeBytes(QUOTE);
+        }
+        buf.writeByte(']');
     }
 
     private static void writeFieldName(ByteBuf buf, byte[] fieldName) {

@@ -150,7 +150,18 @@ class IntentStateTransitionTest {
         intent.transitionTo(IntentStatus.DUE);
         intent.transitionTo(IntentStatus.DISPATCHING);
         intent.transitionTo(IntentStatus.DEAD_LETTERED);
-        assertThrows(IllegalStateException.class, () -> intent.transitionTo(IntentStatus.SCHEDULED));
+        assertThrows(IllegalStateException.class, () -> intent.transitionTo(IntentStatus.DUE));
+    }
+
+    @Test
+    void shouldAllowReviveFromDeadLetteredToScheduled() {
+        Intent intent = new Intent("intent-revive");
+        intent.transitionTo(IntentStatus.SCHEDULED);
+        intent.transitionTo(IntentStatus.DUE);
+        intent.transitionTo(IntentStatus.DISPATCHING);
+        intent.transitionTo(IntentStatus.DEAD_LETTERED);
+        intent.transitionTo(IntentStatus.SCHEDULED);
+        assertEquals(IntentStatus.SCHEDULED, intent.getStatus());
     }
 
     // ========== illegal jump transitions ==========

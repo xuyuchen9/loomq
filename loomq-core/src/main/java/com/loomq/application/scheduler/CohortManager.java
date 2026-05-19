@@ -3,6 +3,7 @@ package com.loomq.application.scheduler;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
@@ -94,6 +95,37 @@ public final class CohortManager {
 
     public int pendingIntentCount() {
         return cohorts.values().stream().mapToInt(ConcurrentLinkedDeque::size).sum();
+    }
+
+    /**
+     * Snapshot of a cohort wake window for the timeline API.
+     */
+    public record CohortWake(long wakeAtMs, int intentCount, String tier) {}
+
+    /**
+     * Return upcoming cohort wakes in the given time range.
+     * Uses {@code cohorts.subMap} which is O(log N) on the skip-list.
+     */
+    public List<CohortWake> getUpcomingWakes(Instant from, Instant to) {
+        long fromMs = from.toEpochMilli();
+        long toMs = to.toEpochMilli();
+        List<CohortWake> result = new ArrayList<>();
+        var snapshot = new ArrayList<>(cohorts.subMap(fromMs, true, toMs, true).entrySet());
+        for (var entry : snapshot) {
+            ConcurrentLinkedDeque<Intent> cohort = entry.getValue();
+            if (cohort.isEmpty()) {
+                continue;
+            }
+            int count = cohort.size();
+            String tier = resolveDominantTier(cohort);
+            result.add(new CohortWake(entry.getKey(), count, tier));
+        }
+        return result;
+    }
+
+    private static String resolveDominantTier(ConcurrentLinkedDeque<Intent> cohort) {
+        var first = cohort.peekFirst();
+        return first != null ? first.getPrecisionTier().name() : "UNKNOWN";
     }
 
     public long getTotalRegistered() { return totalRegistered.get(); }

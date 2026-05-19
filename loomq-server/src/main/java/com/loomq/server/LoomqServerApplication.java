@@ -411,8 +411,14 @@ public class LoomqServerApplication {
 
     private static void registerSystemRoutes(RadixRouter router, LoomqEngine engine,
                                              RaftStatusProvider raftStatus) {
-        router.add(HttpMethod.GET, "/health", (method, uri, body, headers, pathParams) ->
-            buildHealthResponse(engine, raftStatus));
+        router.add(HttpMethod.GET, "/health", (method, uri, body, headers, pathParams) -> {
+            String accept = headers != null ? headers.getOrDefault("Accept", "") : "";
+            if (accept.contains("text/plain")) {
+                var health = buildHealthResponse(engine, raftStatus);
+                return health.get("status") + " — " + health.get("timestamp");
+            }
+            return com.loomq.common.HealthNarrator.narrate(engine);
+        });
         router.add(HttpMethod.GET, "/health/live", (method, uri, body, headers, pathParams) ->
             HEALTH_LIVE_RESPONSE);
         router.add(HttpMethod.GET, "/health/ready", (method, uri, body, headers, pathParams) ->
@@ -423,6 +429,62 @@ public class LoomqServerApplication {
             LoomQMetrics.getInstance().snapshot());
         router.add(HttpMethod.GET, "/api/v1/metrics", (method, uri, body, headers, pathParams) ->
             LoomQMetrics.getInstance().snapshot());
+        router.add(HttpMethod.GET, "/v1/system/chronoscope", (method, uri, body, headers, pathParams) ->
+            com.loomq.application.scheduler.ChronoscopeSnapshot.from(
+                engine.getScheduler(),
+                engine.getBucketGroupManager(),
+                engine.getScheduler().getCohortManager()));
+        router.add(HttpMethod.GET, "/v1/system/timeline", (method, uri, body, headers, pathParams) -> {
+            java.time.Instant now = java.time.Instant.now();
+            java.time.Instant from = now;
+            java.time.Instant to = now.plusSeconds(1800); // default 30 min window
+            int queryStart = uri.indexOf('?');
+            if (queryStart >= 0 && queryStart < uri.length() - 1) {
+                String query = uri.substring(queryStart + 1);
+                for (String pair : query.split("&")) {
+                    int eq = pair.indexOf('=');
+                    if (eq <= 0) continue;
+                    String key = pair.substring(0, eq);
+                    String value = pair.substring(eq + 1);
+                    if ("from".equals(key) && !value.isBlank()) {
+                        from = java.time.Instant.parse(value);
+                    } else if ("to".equals(key) && !value.isBlank()) {
+                        to = java.time.Instant.parse(value);
+                    }
+                }
+            }
+            if (!from.isBefore(to)) {
+                return new HttpErrorResponse(400,
+                    ErrorResponse.of("40010", "Query parameter 'from' must be before 'to'"));
+            }
+            if (java.time.Duration.between(from, to).toHours() > 24) {
+                return new HttpErrorResponse(400,
+                    ErrorResponse.of("40011", "Timeline window exceeds maximum of 24 hours"));
+            }
+            return com.loomq.common.TimelineService.build(
+                engine.getScheduler().getCohortManager(), engine.getScheduler(), from, to);
+        });
+        router.add(HttpMethod.GET, "/v1/system/wal/segments", (method, uri, body, headers, pathParams) ->
+            com.loomq.common.WalReplayService.listSegments(engine.getWalAccessor()));
+        router.add(HttpMethod.GET, "/v1/system/wal/replay", (method, uri, body, headers, pathParams) -> {
+            String intentId = null;
+            int queryStart = uri.indexOf('?');
+            if (queryStart >= 0 && queryStart < uri.length() - 1) {
+                String query = uri.substring(queryStart + 1);
+                for (String pair : query.split("&")) {
+                    int eq = pair.indexOf('=');
+                    if (eq <= 0) continue;
+                    if ("intentId".equals(pair.substring(0, eq))) {
+                        intentId = pair.substring(eq + 1);
+                    }
+                }
+            }
+            if (intentId == null || intentId.isBlank()) {
+                return new HttpErrorResponse(400,
+                    com.loomq.api.ErrorResponse.of("40004", "Query parameter 'intentId' is required"));
+            }
+            return com.loomq.common.WalReplayService.replayByIntentId(engine.getWalAccessor(), intentId);
+        });
     }
 
     private static Map<String, Object> buildHealthResponse(LoomqEngine engine, RaftStatusProvider raftStatus) {

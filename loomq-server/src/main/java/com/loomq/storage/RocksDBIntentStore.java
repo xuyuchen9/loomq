@@ -10,8 +10,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
@@ -254,6 +256,68 @@ public class RocksDBIntentStore implements IntentStore {
     public long countByStatus(IntentStatus status) {
         AtomicLong counter = statusCounts.get(status);
         return counter != null ? counter.get() : 0L;
+    }
+
+    @Override
+    public List<Intent> findByStatus(IntentStatus status, int offset, int limit) {
+        // Collect extra keys to compensate for TOCTOU filtering.
+        // Between the index scan and multiGet, an intent's status may change
+        // concurrently. We over-fetch and filter to reduce the chance of
+        // returning fewer results than requested. A full fix would require
+        // RocksDB snapshot isolation across both operations.
+        int fetchLimit = limit * 2;
+        List<byte[]> intentKeys = new ArrayList<>(fetchLimit);
+        byte[] prefix = statusPrefix(status);
+        int skipped = 0;
+
+        try (RocksIterator it = db.newIterator()) {
+            it.seek(prefix);
+            while (it.isValid() && intentKeys.size() < fetchLimit) {
+                byte[] key = it.key();
+                if (!startsWith(key, prefix)) {
+                    break;
+                }
+
+                String keyStr = new String(key, StandardCharsets.UTF_8);
+                int hashIdx = keyStr.indexOf('#');
+                if (hashIdx < 0) {
+                    it.next();
+                    continue;
+                }
+
+                if (skipped < offset) {
+                    skipped++;
+                    it.next();
+                    continue;
+                }
+
+                String intentId = keyStr.substring(hashIdx + 1);
+                intentKeys.add(intentKey(intentId));
+                it.next();
+            }
+        }
+
+        if (intentKeys.isEmpty()) {
+            return List.of();
+        }
+
+        List<Intent> result = new ArrayList<>(Math.min(limit, intentKeys.size()));
+        try {
+            List<byte[]> values = db.multiGetAsList(intentKeys);
+            for (int i = 0; i < values.size() && result.size() < limit; i++) {
+                byte[] value = values.get(i);
+                if (value == null) {
+                    continue;
+                }
+                Intent intent = IntentBinaryCodec.decode(value);
+                if (intent.getStatus() == status) {
+                    result.add(intent);
+                }
+            }
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to batch-fetch intents by status: " + status, e);
+        }
+        return result;
     }
 
     @Override
