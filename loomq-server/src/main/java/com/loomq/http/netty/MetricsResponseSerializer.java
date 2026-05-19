@@ -67,6 +67,8 @@ public final class MetricsResponseSerializer {
     private static final byte[] FIELD_RAFT_WRITE_PROPOSAL_LATENCY_MAX = "\"raftWriteProposalLatencyMaxMs\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_RAFT_WRITE_TIMEOUTS = "\"raftWriteTimeouts\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_RAFT_WRITE_STEPDOWN_ABORTS = "\"raftWriteStepDownAborts\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_WRITE_BACKPRESSURE_REJECTS = "\"raftWriteBackpressureRejects\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_RAFT_WRITE_REVISION_CONFLICTS = "\"raftWriteRevisionConflicts\"".getBytes(StandardCharsets.UTF_8);
 
     private MetricsResponseSerializer() {}
 
@@ -114,7 +116,9 @@ public final class MetricsResponseSerializer {
         first = writeDoubleField(buf, first, FIELD_RAFT_WRITE_PROPOSAL_LATENCY, snapshot.raftWriteProposalLatencyMs());
         first = writeLongField(buf, first, FIELD_RAFT_WRITE_PROPOSAL_LATENCY_MAX, snapshot.raftWriteProposalLatencyMaxMs());
         first = writeLongField(buf, first, FIELD_RAFT_WRITE_TIMEOUTS, snapshot.raftWriteTimeouts());
-        writeLongField(buf, first, FIELD_RAFT_WRITE_STEPDOWN_ABORTS, snapshot.raftWriteStepDownAborts());
+        first = writeLongField(buf, first, FIELD_RAFT_WRITE_STEPDOWN_ABORTS, snapshot.raftWriteStepDownAborts());
+        first = writeLongField(buf, first, FIELD_RAFT_WRITE_BACKPRESSURE_REJECTS, snapshot.raftWriteBackpressureRejects());
+        writeLongField(buf, first, FIELD_RAFT_WRITE_REVISION_CONFLICTS, snapshot.raftWriteRevisionConflicts());
 
         buf.writeBytes(CLOSE_OBJECT);
     }

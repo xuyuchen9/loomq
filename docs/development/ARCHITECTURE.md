@@ -1,6 +1,6 @@
 # LoomQ Architecture
 
-This document describes the current codebase structure as of v0.9.0.
+This document describes the current codebase structure as of v0.9.1.
 
 ## High-Level Layers
 
@@ -67,7 +67,8 @@ flowchart TB
 
 1. In Raft mode, `GET /v1/intents/{intentId}` is leader-authoritative
 2. Followers reject reads with a retryable 503 and leader hint when known
-3. `/health` and `/metrics` expose role, leader id, term, commit index, commit lag, replication lag, and peer reachability so operators can tell whether reads are safe
+3. The leader only serves reads while its quorum freshness lease is valid, which prevents stale reads after it has lost contact with a majority
+4. `/health` and `/metrics` expose role, leader id, term, commit index, commit lag, replication lag, peer reachability, and whether the leader is currently accepting reads / writes so operators can tell whether reads are safe
 
 ### Recovery and Snapshot Path
 

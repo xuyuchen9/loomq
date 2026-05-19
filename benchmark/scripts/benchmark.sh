@@ -34,7 +34,7 @@ for arg in "$@"; do
         --verbose)         VERBOSE=true ;;
         --help|-h)
             echo ""
-            echo "LoomQ Performance Benchmark v0.9.0"
+            echo "LoomQ Performance Benchmark v0.9.1"
             echo ""
             echo "Usage: ./benchmark.sh [Options]"
             echo ""
@@ -120,7 +120,7 @@ fi
 
 echo ""
 echo "+--------------------------------------------------------------+"
-echo "|          LoomQ 性能基准测试 v0.9.0                            |"
+echo "|          LoomQ 性能基准测试 v0.9.1                            |"
 echo "+--------------------------------------------------------------+"
 echo ""
 echo "Scenario: $SCENARIO"
@@ -203,7 +203,7 @@ if [ "$SCENARIO" = "all" ] || [ "$SCENARIO" = "internal" ]; then
         run_scenario "1) In-process upper bound" "$BM_CLASS_INTERNAL" "$INTERNAL_LOG"
     fi
 
-    # ---- 新增组件基准测试 (v0.9.0) ----
+    # ---- 新增组件基准测试 (v0.9.1) ----
     run_scenario "1b) WAL Write Throughput" "$BM_CLASS_WAL" "$WAL_LOG"
     run_scenario "1c) Storage Engine Comparison" "$BM_CLASS_STORAGE" "$STORAGE_LOG"
     run_scenario "1d) Observer Overhead" "$BM_CLASS_OBSERVER" "$OBSERVER_LOG"

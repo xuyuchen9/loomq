@@ -1,4 +1,4 @@
-# LoomQ v0.9.0 Benchmark Dockerfile
+# LoomQ v0.9.1 Benchmark Dockerfile
 FROM eclipse-temurin:25-jdk-alpine
 
 # 安装 wrk 压测工具和依赖
@@ -7,7 +7,7 @@ RUN apk add --no-cache wrk curl
 WORKDIR /app
 
 # 复制 jar 文件
-COPY loomq-server/target/loomq-server-0.9.0.jar /app/loomq.jar
+COPY loomq-server/target/loomq-server-0.9.1.jar /app/loomq.jar
 
 # 暴露端口
 EXPOSE 7928

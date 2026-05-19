@@ -136,6 +136,31 @@ Reported via `RESULT_RTT` marker in benchmark output. Parsed by `run-all.ps1` in
 
 ---
 
+## Raft Control Plane
+
+| Field | Description |
+|-------|-------------|
+| `raftRole` | Current Raft role (`LEADER`, `FOLLOWER`, or `CANDIDATE`) |
+| `raftLeaderId` | Current leader id when known |
+| `raftTerm` | Current election term |
+| `raftCommitIndex` | Highest log index known committed |
+| `raftLastApplied` | Highest committed log index applied to the local state machine |
+| `raftCommitLag` | `commitIndex - lastApplied`; should be zero on a healthy serving leader |
+| `raftReplicationLag` | Maximum observed follower replication lag |
+| `raftConnectedPeers` | Remote peers currently reachable from this node |
+| `raftTotalPeers` | Configured remote peer count |
+| `raftPendingWrites` | Mutating API calls currently waiting for Raft commit/apply |
+| `raftWriteProposalLatencyMs` | Average leader proposal-to-apply latency |
+| `raftWriteProposalLatencyMaxMs` | Maximum observed proposal-to-apply latency |
+| `raftWriteTimeouts` | Writes that timed out waiting for Raft commit/apply |
+| `raftWriteStepDownAborts` | Writes aborted because the node lost write authority |
+| `raftWriteBackpressureRejects` | Writes rejected before proposal due to bounded coordinator capacity |
+| `raftWriteRevisionConflicts` | Stale write attempts rejected by expected-revision checks |
+
+`/health` and `/health/ready` add higher-level booleans (`quorumReachable`, `acceptingReads`, `acceptingWrites`) for automation. Prefer those booleans for routing decisions and use raw metrics for dashboards and alert drill-downs.
+
+---
+
 ## What To Watch
 
 ### Kernel Health
@@ -149,12 +174,21 @@ Reported via `RESULT_RTT` marker in benchmark output. Parsed by `run-all.ps1` in
 - Non-zero `loomq_http_concurrency_limit_exceeded_total` → server shedding load
 - Non-zero `backpressure_events{*}` → tier dispatch queue full
 - Rising `borrow_timeouts` → AdapTBF cap may be too tight for workload
+- Rising `raftWriteBackpressureRejects` → Raft write coordinator is protecting the leader from too many concurrent proposals
 
 ### Latency Degradation
 
 - Rising `wakeup_latency_ms` → scheduler scan falling behind
 - Rising `dispatch_queue_lag_ms` → insufficient consumers or semaphore too tight
 - Rising RTT p95 → downstream webhook slow or network issue
+- Rising `raftWriteProposalLatencyMs` or `raftCommitLag` → write path is waiting on consensus or local apply
+
+### Raft Safety
+
+- `/health/ready` should be HTTP 200 on exactly the node intended for client traffic.
+- `acceptingReads=false` on a leader usually means the quorum freshness lease is unavailable.
+- `acceptingWrites=false` on a leader usually means quorum is unavailable, commit/apply is lagging, or write proposals are still in flight.
+- Rising `raftWriteRevisionConflicts` means clients are writing from stale snapshots and should refresh before retrying.
 
 ### Borrowing Health
 

@@ -37,7 +37,7 @@ class IntentHandlerRaftReadTest {
 
         try {
             IntentHandler handler = new IntentHandler(engine,
-                new FixedRaftStatusProvider(true, RaftRole.FOLLOWER, "node-1"));
+                new FixedRaftStatusProvider(true, RaftRole.FOLLOWER, "node-1", false));
 
             Object result = handler.getIntent(null, "/v1/intents/intent-1", new byte[0],
                 Map.of(), Map.of("intentId", "intent-1"));
@@ -76,7 +76,7 @@ class IntentHandlerRaftReadTest {
             engine.getIntentStore().save(intent);
 
             IntentHandler handler = new IntentHandler(engine,
-                new FixedRaftStatusProvider(true, RaftRole.LEADER, "node-1"));
+                new FixedRaftStatusProvider(true, RaftRole.LEADER, "node-1", true));
 
             Object result = handler.getIntent(null, "/v1/intents/intent-1", new byte[0],
                 Map.of(), Map.of("intentId", "intent-1"));
@@ -92,15 +92,56 @@ class IntentHandlerRaftReadTest {
         }
     }
 
+    @Test
+    @DisplayName("Leader reads should be rejected when the read lease expires")
+    void leaderReadShouldReturnLeaderHintWhenLeaseExpired() throws Exception {
+        LoomqEngine engine = LoomqEngine.builder()
+            .nodeId("node-1")
+            .walDir(tempDir.resolve("leader-read-expired"))
+            .deliveryHandler(new NettyHttpDeliveryHandler())
+            .build();
+
+        try {
+            Intent intent = new Intent("intent-lease-expired");
+            intent.setExecuteAt(Instant.now().plusSeconds(5));
+            intent.setDeadline(Instant.now().plusSeconds(60));
+            intent.setPrecisionTier(PrecisionTier.STANDARD);
+            intent.transitionTo(IntentStatus.SCHEDULED);
+            engine.getIntentStore().save(intent);
+
+            IntentHandler handler = new IntentHandler(engine,
+                new FixedRaftStatusProvider(true, RaftRole.LEADER, "node-1", false));
+
+            Object result = handler.getIntent(null, "/v1/intents/intent-lease-expired", new byte[0],
+                Map.of(), Map.of("intentId", "intent-lease-expired"));
+
+            HttpErrorResponse error = assertInstanceOf(HttpErrorResponse.class, result);
+            assertEquals(503, error.status());
+            assertEquals("50301", error.error().code());
+            assertEquals("Read must be served by the Raft leader", error.error().message());
+            assertNotNull(error.error().details());
+            assertEquals(Boolean.TRUE, error.error().details().get("retryable"));
+            assertEquals("LEADER", error.error().details().get("nodeRole"));
+            assertEquals("node-1", error.error().details().get("leaderId"));
+        } finally {
+            try {
+                engine.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     private static final class FixedRaftStatusProvider implements RaftStatusProvider {
         private final boolean enabled;
         private final RaftRole role;
         private final String leaderId;
+        private final boolean canServeReads;
 
-        private FixedRaftStatusProvider(boolean enabled, RaftRole role, String leaderId) {
+        private FixedRaftStatusProvider(boolean enabled, RaftRole role, String leaderId, boolean canServeReads) {
             this.enabled = enabled;
             this.role = role;
             this.leaderId = leaderId;
+            this.canServeReads = canServeReads;
         }
 
         @Override
@@ -116,6 +157,11 @@ class IntentHandlerRaftReadTest {
         @Override
         public String currentLeaderId() {
             return leaderId;
+        }
+
+        @Override
+        public boolean canServeLinearizableRead() {
+            return canServeReads;
         }
 
         @Override

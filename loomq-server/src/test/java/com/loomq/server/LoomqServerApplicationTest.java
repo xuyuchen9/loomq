@@ -1,10 +1,18 @@
 package com.loomq.server;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.loomq.config.ServerConfig;
+import com.loomq.http.netty.HttpErrorResponse;
+import com.loomq.metrics.LoomQMetrics;
+import com.loomq.raft.RaftRole;
+import com.loomq.raft.RaftStatusProvider;
+import com.loomq.raft.RaftStatusSnapshot;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import org.junit.jupiter.api.Test;
 
@@ -70,12 +78,127 @@ class LoomqServerApplicationTest {
                 "node-1", peers, List.of(), 7930, serverConfig));
     }
 
+    @Test
+    void buildReadinessResponseShouldAllowEmbeddedModeWhenWalIsHealthy() {
+        Object response = LoomqServerApplication.buildReadinessResponse(null, metrics(true, 0));
+
+        Map<?, ?> body = assertInstanceOf(Map.class, response);
+        assertEquals("UP", body.get("status"));
+        assertEquals("embedded", body.get("mode"));
+        assertEquals(Boolean.TRUE, body.get("ready"));
+        assertEquals(Boolean.TRUE, body.get("acceptingReads"));
+        assertEquals(Boolean.TRUE, body.get("acceptingWrites"));
+    }
+
+    @Test
+    void buildReadinessResponseShouldRejectUnhealthyWal() {
+        Object response = LoomqServerApplication.buildReadinessResponse(null, metrics(false, 0));
+
+        HttpErrorResponse error = assertInstanceOf(HttpErrorResponse.class, response);
+        assertEquals(503, error.status());
+        assertEquals("50304", error.error().code());
+        assertEquals("WAL_UNHEALTHY", error.error().details().get("reason"));
+    }
+
+    @Test
+    void buildReadinessResponseShouldRejectRaftFollowerForClientTraffic() {
+        Object response = LoomqServerApplication.buildReadinessResponse(
+            raftStatus(RaftRole.FOLLOWER, "node-2", 0, 2, 2, false),
+            metrics(true, 0));
+
+        HttpErrorResponse error = assertInstanceOf(HttpErrorResponse.class, response);
+        assertEquals(503, error.status());
+        assertEquals("RAFT_NOT_LEADER", error.error().details().get("reason"));
+        assertEquals(Boolean.FALSE, error.error().details().get("acceptingReads"));
+        assertEquals(Boolean.FALSE, error.error().details().get("acceptingWrites"));
+    }
+
+    @Test
+    void buildReadinessResponseShouldAllowRaftLeaderWithFreshQuorum() {
+        Object response = LoomqServerApplication.buildReadinessResponse(
+            raftStatus(RaftRole.LEADER, "node-1", 0, 2, 2, true),
+            metrics(true, 0));
+
+        Map<?, ?> body = assertInstanceOf(Map.class, response);
+        assertEquals(Boolean.TRUE, body.get("ready"));
+        assertEquals("raft", body.get("mode"));
+        assertEquals("READY", body.get("reason"));
+        assertEquals(Boolean.TRUE, body.get("quorumReachable"));
+        assertEquals(Boolean.TRUE, body.get("acceptingReads"));
+        assertEquals(Boolean.TRUE, body.get("acceptingWrites"));
+    }
+
+    @Test
+    void buildReadinessResponseShouldRejectLeaderWithoutQuorum() {
+        Object response = LoomqServerApplication.buildReadinessResponse(
+            raftStatus(RaftRole.LEADER, "node-1", 0, 0, 2, true),
+            metrics(true, 0));
+
+        HttpErrorResponse error = assertInstanceOf(HttpErrorResponse.class, response);
+        assertEquals(503, error.status());
+        assertEquals("RAFT_QUORUM_UNREACHABLE", error.error().details().get("reason"));
+        assertEquals(Boolean.FALSE, error.error().details().get("quorumReachable"));
+    }
+
     private static void restoreProperty(String key, String previousValue) {
         if (previousValue == null) {
             System.clearProperty(key);
         } else {
             System.setProperty(key, previousValue);
         }
+    }
+
+    private static LoomQMetrics.MetricsSnapshot metrics(boolean walHealthy, long raftPendingWrites) {
+        LoomQMetrics metrics = LoomQMetrics.getInstance();
+        metrics.reset();
+        metrics.updateWalHealth(walHealthy);
+        metrics.updateRaftPendingWrites(raftPendingWrites);
+        return metrics.snapshot();
+    }
+
+    private static RaftStatusProvider raftStatus(RaftRole role,
+                                                 String leaderId,
+                                                 long commitLag,
+                                                 int connectedPeers,
+                                                 int totalPeers,
+                                                 boolean canServeLinearizableRead) {
+        return new RaftStatusProvider() {
+            @Override
+            public boolean isRaftEnabled() {
+                return true;
+            }
+
+            @Override
+            public RaftRole role() {
+                return role;
+            }
+
+            @Override
+            public String currentLeaderId() {
+                return leaderId;
+            }
+
+            @Override
+            public boolean canServeLinearizableRead() {
+                return canServeLinearizableRead;
+            }
+
+            @Override
+            public RaftStatusSnapshot snapshotStatus() {
+                return new RaftStatusSnapshot(
+                    "node-1",
+                    role,
+                    leaderId,
+                    7,
+                    11,
+                    11 - commitLag,
+                    commitLag,
+                    0,
+                    connectedPeers,
+                    totalPeers,
+                    Map.of());
+            }
+        };
     }
 
     private static ServerConfig serverConfig(int port, int nettyPort) {

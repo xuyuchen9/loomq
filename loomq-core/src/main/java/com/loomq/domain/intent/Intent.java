@@ -126,6 +126,11 @@ public class Intent {
      */
     private String lastDeliveryId;
 
+    /**
+     * 单调递增的写版本号，用于 Raft 写幂等和乐观并发控制。
+     */
+    private long revision;
+
     // ========== 构造函数 ==========
 
     public Intent() {
@@ -138,6 +143,7 @@ public class Intent {
         this.precisionTier = defaultPrecisionTier();
         this.ackLevel = AckMode.DURABLE;
         this.attempts = 0;
+        this.revision = 0L;
     }
 
     public Intent(String intentId) {
@@ -150,6 +156,7 @@ public class Intent {
         this.precisionTier = defaultPrecisionTier();
         this.ackLevel = AckMode.DURABLE;
         this.attempts = 0;
+        this.revision = 0L;
     }
 
     private Intent(String traceId,
@@ -170,7 +177,8 @@ public class Intent {
                    String idempotencyKey,
                    Map<String, String> tags,
                    int attempts,
-                   String lastDeliveryId) {
+                   String lastDeliveryId,
+                   long revision) {
         this.traceId = traceId != null ? traceId : generateTraceId();
         this.intentId = Objects.requireNonNullElse(intentId, generateIntentId());
         this.status = status != null ? status : IntentStatus.CREATED;
@@ -190,6 +198,7 @@ public class Intent {
         this.tags = tags != null && !tags.isEmpty() ? Map.copyOf(tags) : null;
         this.attempts = attempts;
         this.lastDeliveryId = lastDeliveryId;
+        this.revision = Math.max(0L, revision);
     }
 
     /**
@@ -213,7 +222,8 @@ public class Intent {
                                  String idempotencyKey,
                                  Map<String, String> tags,
                                  int attempts,
-                                 String lastDeliveryId) {
+                                 String lastDeliveryId,
+                                 long revision) {
         return new Intent(
             traceId,
             intentId,
@@ -233,7 +243,8 @@ public class Intent {
             idempotencyKey,
             tags,
             attempts,
-            lastDeliveryId
+            lastDeliveryId,
+            revision
         );
     }
 
@@ -263,7 +274,8 @@ public class Intent {
             idempotencyKey,
             tags,
             attempts,
-            lastDeliveryId
+            lastDeliveryId,
+            revision
         );
     }
 
@@ -336,6 +348,17 @@ public class Intent {
      */
     public void incrementAttempts() {
         this.attempts++;
+        this.updatedAt = Instant.now();
+    }
+
+    /**
+     * 增加写版本号。
+     *
+     * Raft 写路径和本地写路径都会在状态变更后调用它，避免重复提交
+     * 或陈旧写请求覆盖更新后的状态。
+     */
+    public void incrementRevision() {
+        this.revision++;
         this.updatedAt = Instant.now();
     }
 
@@ -480,6 +503,10 @@ public class Intent {
 
     public String getLastDeliveryId() {
         return lastDeliveryId;
+    }
+
+    public long getRevision() {
+        return revision;
     }
 
     @Override

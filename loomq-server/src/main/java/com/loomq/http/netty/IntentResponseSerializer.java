@@ -25,6 +25,7 @@ public final class IntentResponseSerializer {
     private static final byte[] ESCAPED_CARRIAGE_RETURN = "\\r".getBytes(StandardCharsets.UTF_8);
     private static final byte[] ESCAPED_TAB = "\\t".getBytes(StandardCharsets.UTF_8);
     private static final byte[] MIN_INT_BYTES = "-2147483648".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] MIN_LONG_BYTES = "-9223372036854775808".getBytes(StandardCharsets.UTF_8);
     private static final DateTimeFormatter ISO_INSTANT = DateTimeFormatter.ISO_INSTANT;
 
     private static final byte[] FIELD_INTENT_ID = "\"intentId\":".getBytes(StandardCharsets.UTF_8);
@@ -37,6 +38,7 @@ public final class IntentResponseSerializer {
     private static final byte[] FIELD_ACK_LEVEL = "\"ackLevel\":".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_ATTEMPTS = "\"attempts\":".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_LAST_DELIVERY_ID = "\"lastDeliveryId\":".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FIELD_REVISION = "\"revision\":".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_CREATED_AT = "\"createdAt\":".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FIELD_UPDATED_AT = "\"updatedAt\":".getBytes(StandardCharsets.UTF_8);
 
@@ -56,6 +58,7 @@ public final class IntentResponseSerializer {
         first = writeEnumField(buf, first, FIELD_ACK_LEVEL, response.ackLevel());
         first = writeIntField(buf, first, FIELD_ATTEMPTS, response.attempts());
         first = writeStringField(buf, first, FIELD_LAST_DELIVERY_ID, response.lastDeliveryId());
+        first = writeLongField(buf, first, FIELD_REVISION, response.revision());
         first = writeInstantField(buf, first, FIELD_CREATED_AT, response.createdAt());
         writeInstantField(buf, first, FIELD_UPDATED_AT, response.updatedAt());
 
@@ -74,6 +77,7 @@ public final class IntentResponseSerializer {
         size += quotedLength(response.ackLevel());
         size += 12;
         size += length(response.lastDeliveryId());
+        size += 12;
         size += quotedLength(response.createdAt());
         size += quotedLength(response.updatedAt());
         return size;
@@ -130,6 +134,12 @@ public final class IntentResponseSerializer {
     private static boolean writeIntField(ByteBuf buf, boolean first, byte[] fieldName, int value) {
         writeFieldPrefix(buf, first, fieldName);
         writeInt(buf, value);
+        return false;
+    }
+
+    private static boolean writeLongField(ByteBuf buf, boolean first, byte[] fieldName, long value) {
+        writeFieldPrefix(buf, first, fieldName);
+        writeLong(buf, value);
         return false;
     }
 
@@ -246,6 +256,45 @@ public final class IntentResponseSerializer {
             digits++;
         }
         return digits;
+    }
+
+    private static int digitCount(long value) {
+        int digits = 1;
+        while ((value /= 10L) != 0L) {
+            digits++;
+        }
+        return digits;
+    }
+
+    private static void writeLong(ByteBuf buf, long value) {
+        if (value == 0L) {
+            buf.writeByte('0');
+            return;
+        }
+        if (value == Long.MIN_VALUE) {
+            buf.writeBytes(MIN_LONG_BYTES);
+            return;
+        }
+
+        boolean negative = value < 0;
+        long v = negative ? -value : value;
+        int digits = digitCount(v) + (negative ? 1 : 0);
+        int writerIndex = buf.writerIndex();
+        buf.ensureWritable(digits);
+
+        int pos = writerIndex + digits - 1;
+        do {
+            long q = v / 10;
+            int r = (int) (v - (q * 10));
+            buf.setByte(pos--, '0' + r);
+            v = q;
+        } while (v != 0L);
+
+        if (negative) {
+            buf.setByte(pos, '-');
+        }
+
+        buf.writerIndex(writerIndex + digits);
     }
 
     private static final class ByteBufAppendable implements Appendable {

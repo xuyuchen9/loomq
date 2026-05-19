@@ -97,6 +97,7 @@ public final class IntentCommandService {
             }
 
             intent.transitionTo(IntentStatus.SCHEDULED);
+            intent.incrementRevision();
 
             // Pipeline overlap (DeepSeek V4 compute-comm overlap):
             // 1. Pre-encode WAL payload (CPU)
@@ -176,6 +177,7 @@ public final class IntentCommandService {
                     intent.setExecuteAt(newExecuteAt);
                 }
 
+                intent.incrementRevision();
                 persistIntentState(intent, AckMode.DURABLE);
                 intentStore.update(intent);
 
@@ -205,6 +207,7 @@ public final class IntentCommandService {
         try {
             intent.transitionTo(IntentStatus.CANCELED);
             scheduler.getBucketGroupManager().remove(intent);
+            intent.incrementRevision();
             persistIntentState(intent, AckMode.DURABLE);
             intentStore.update(intent);
             dispatchCallback(intent, CallbackHandler.EventType.CANCELLED, null);
@@ -232,6 +235,7 @@ public final class IntentCommandService {
         try {
             scheduler.getBucketGroupManager().remove(intent);
             intent.setExecuteAt(Instant.now());
+            intent.incrementRevision();
             persistIntentState(intent, AckMode.DURABLE);
             intentStore.update(intent);
             scheduler.restore(intent);
