@@ -79,12 +79,11 @@ class RaftServerSmokeTest {
                 HttpResponse.BodyHandlers.ofString());
 
             assertEquals(200, health.statusCode());
-            assertTrue(health.body().contains("\"status\":\"OK\""));
-            assertTrue(health.body().contains("\"raft\""));
-            assertTrue(health.body().contains("\"role\":\"LEADER\""));
-            assertTrue(health.body().contains("\"quorumReachable\":true"));
-            assertTrue(health.body().contains("\"acceptingReads\":true"));
-            assertTrue(health.body().contains("\"acceptingWrites\":true"));
+            assertTrue(health.body().contains("\"status\":\"UP\""));
+            assertTrue(health.body().contains("\"narrative\""));
+            assertTrue(health.body().contains("\"vitals\""));
+            assertTrue(health.body().contains("\"durability\""));
+            // raft details are served via /health/ready and /health/deep
 
             HttpResponse<String> readiness = client.send(
                 HttpRequest.newBuilder()

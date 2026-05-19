@@ -945,7 +945,8 @@ public class PrecisionScheduler {
                 availablePermits,
                 queueSize,
                 underPressure,
-                precisionTierCatalog.maxConcurrency(tier) - availablePermits
+                precisionTierCatalog.maxConcurrency(tier) - availablePermits,
+                semaphore.getBorrowedCount()
             ));
         }
 
@@ -960,7 +961,8 @@ public class PrecisionScheduler {
         int availablePermits,
         int queueSize,
         boolean underBackpressure,
-        int activeDispatches
+        int activeDispatches,
+        int borrowedCount
     ) {
         /** Utilization percentage: active dispatches / max concurrency × 100 */
         public double utilizationPct() {

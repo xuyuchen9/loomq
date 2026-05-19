@@ -27,8 +27,8 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 
 | Category | Examples |
 |----------|----------|
-| **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics, pluggable storage (in-memory + RocksDB), WAL segment rotation with snapshot compaction, IntentObserver lifecycle hooks |
-| **Beta** | Raft leader election, log replication, snapshot catch-up, leader-authoritative reads, Raft observability |
+| **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics, pluggable storage (in-memory + RocksDB), WAL segment rotation with snapshot compaction, IntentObserver lifecycle hooks, Raft leader election + log replication + snapshot catch-up, leader-authoritative reads/writes, Raft observability, token authentication, error recovery advisor, health narration, dead letter revival |
+| **Beta** | dynamic Raft membership, Kubernetes operator |
 | **Not yet committed** | distributed coordination primitives, lock/lease semantics |
 
 ---
@@ -91,10 +91,27 @@ curl http://localhost:7928/v1/intents/{intentId}
 
 When `LOOMQ_RAFT_ENABLED=true`, the standalone server switches to Raft mode:
 
-- `GET /v1/intents/{intentId}` becomes leader-authoritative
-- followers return `503` with error code `50301`, `retryable=true`, and the leader id in `details` when known
-- `/health` and `/metrics` expose Raft signals such as role, leader id, term, commit index, commit lag, replication lag, peer reachability, and whether the leader is currently accepting reads / writes
+- Leader-authoritative reads AND writes — `GET /v1/intents/{intentId}` and `POST/PATCH /v1/intents` require leader
+- followers return `503` with error codes `50301` (read redirect), `50302` (write redirect), `50303` (write backpressure); `retryable=true` and leader id in `details` when known
+- `RaftWriteCoordinator` provides bounded backpressure, request deduplication, and optimistic concurrency via `X-LoomQ-Expected-Revision` header
+- `/health` and `/metrics` expose Raft signals: role, leader id, term, commit index, commit lag, replication lag, peer reachability, and leader read/write acceptance status
 - `/health/deep` adds tier backpressure data on top of the Raft view
+- `/health/ready` returns `503` with Raft reason codes when not in ready state
+
+### LoomQ CLI — Interactive Temporal Explorer
+
+```bash
+# Build the CLI
+mvn package -pl loomq-cli -am -DskipTests
+
+# Run (defaults to http://localhost:8080, override with LOOMQ_URL env var)
+java -jar loomq-cli/target/loomq-cli-0.9.1.jar
+
+# Or set a custom server URL
+$env:LOOMQ_URL="http://localhost:7928"; java -jar loomq-cli/target/loomq-cli-0.9.1.jar
+```
+
+Interactive commands: `schedule`, `get`, `list`, `chronoscope`, `timeline`, `dead-letters`, `revive`, `health`, `follow`, `help`, `exit`.
 
 ---
 
@@ -116,6 +133,15 @@ When `LOOMQ_RAFT_ENABLED=true`, the standalone server switches to Raft mode:
 | **Crash Recovery** | Snapshot + WAL replay pipeline, gzip-compressed binary snapshots every 5 minutes |
 | **Observability** | Per-tier latency histograms (P50–P99.9), RTT metrics, Prometheus export, borrow stats |
 | **Engine DefaultTier** | `builder.defaultTier(Tier)` sets engine-wide tier; auto-applied to all intents at creation |
+| **SLO TierAdvisor** | Maps SLO declarations (maxTardinessMs + Reliability) to cost-optimal tier; 2x safety margin |
+| **HealthNarrator** | Narrative health responses — upgrades binary UP/DOWN to "is it on time?" with structured vitals and anomaly detection |
+| **TimelineService** | Temporal forecast — upcoming cohort wakes, scheduler activity preview for the next N minutes |
+| **WalReplayService** | WAL time-travel debugging — reconstruct intent lifecycle or system state at any point in time |
+| **Intent Listing** | `GET /v1/intents` with optional status filter, paginated results |
+| **Dead Letter Revival** | Revive dead-lettered intents with optional reschedule time via `POST /v1/intents/{id}/revive` |
+| **Error Recovery Advisor** | Actionable recovery hints per error code — tells what went wrong, next steps, and transient wait times |
+| **Token Authentication** | Optional `X-LoomQ-Token` header auth with constant-time comparison; health endpoints exempt |
+| **LoomQ CLI** | Interactive temporal explorer shell (`loomq-cli`) — schedule, get, list, chronoscope, timeline, dead-letters, revive, health, follow |
 
 ---
 
@@ -246,18 +272,27 @@ Use cases for embedded mode: single-node apps, integration tests, resource-const
 ## Architecture
 
 ```
-loomq-server (Netty HTTP + JSON + webhook delivery)
-    ├── IntentHandler        — REST API routing (RadixTree)
+loomq-cli (interactive temporal explorer shell)
+    └── HTTP client → loomq-server REST API
+
+loomq-server (Netty HTTP + JSON + webhook delivery + security)
+    ├── IntentHandler        — REST API routing (RadixTree) + error recovery advisor
     ├── NettyHttpServer      — epoll + pooled allocator + semaphore backpressure
-    └── HttpDeliveryHandler  — Reactor Netty HTTP client
+    ├── HttpDeliveryHandler  — Reactor Netty HTTP client
+    └── SecurityConfig       — token-based authentication
 
 loomq-core (embeddable kernel, zero HTTP/JSON deps)
     ├── LoomqEngine           — builder-pattern entry point
     ├── PrecisionScheduler    — time-wheel buckets, per-tier scan + batch consumers
     │   ├── CohortManager     — CSA-style batched wakeup (replaces per-intent VT sleep)
     │   ├── BucketGroupManager — per-tier time-bucket storage
-    │   └── ResizableSemaphore — runtime-adjustable concurrency (extends Semaphore)
+    │   ├── ResizableSemaphore — runtime-adjustable concurrency (extends Semaphore)
+    │   ├── ChronoscopeSnapshot — scheduler internal state X-ray for diagnostics
+    │   └── TierAdvisor       — SLO → tier recommendation with safety margin
     ├── ColdIntentSwapper     — long-delay intent memory swap-out/in; 72.5% heap reduction
+    ├── HealthNarrator        — narrative health with vitals and anomaly detection
+    ├── TimelineService       — temporal forecast (upcoming wakes, scheduler preview)
+    ├── WalReplayService      — WAL time-travel debugging (intent lifecycle reconstruction)
     ├── IntentStore (interface) — pluggable storage (ConcurrentIntentStore / RocksDBIntentStore)
     ├── SimpleWalWriter       — segmented WAL with FFM API, auto-truncation
     ├── RecoveryPipeline      — snapshot + WAL replay on restart
@@ -279,13 +314,19 @@ loomq-core (embeddable kernel, zero HTTP/JSON deps)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/v1/intents` | Create an intent |
+| GET | `/v1/intents` | List intents (optional `?status=` filter) |
 | GET | `/v1/intents/{id}` | Get intent by ID |
 | PATCH | `/v1/intents/{id}` | Update intent fields |
 | POST | `/v1/intents/{id}/cancel` | Cancel an intent |
 | POST | `/v1/intents/{id}/fire-now` | Trigger immediately |
-| GET | `/health` | Health check |
+| POST | `/v1/intents/{id}/revive` | Revive dead-lettered intent |
+| GET | `/v1/admin/chronoscope` | Scheduler internal state snapshot |
+| GET | `/v1/admin/timeline` | Temporal forecast (cohort wakes, activity preview) |
+| GET | `/v1/admin/dead-letters` | List dead-lettered intents |
+| GET | `/health` | Health check with narrative vitals |
 | GET | `/health/live` | Liveness probe |
-| GET | `/health/ready` | Readiness probe (WAL health) |
+| GET | `/health/ready` | Readiness probe (WAL + Raft health) |
+| GET | `/health/deep` | Deep health with tier backpressure data |
 | GET | `/metrics` | JSON metrics snapshot |
 
 ### Create Intent Request
@@ -316,12 +357,20 @@ loomq-core (embeddable kernel, zero HTTP/JSON deps)
 
 ### Error Responses
 
-| Code | When |
-|------|------|
-| **404** | Intent not found |
-| **409** | Idempotency key conflict (duplicate with terminal state) |
-| **422** | Validation error (invalid time, unmodifiable state, etc.) |
-| **429** | Backpressure — retry after `retryAfterMs` from response body |
+| Code | Error Code | When |
+|------|------------|------|
+| **400** | `40001`–`40004` | Bad request (missing params, invalid revision header) |
+| **404** | `40401` | Intent not found |
+| **409** | `40901` | Idempotency key conflict (duplicate with terminal state) |
+| **409** | `40902` | Revision conflict — optimistic concurrency failure, retry with fresh revision |
+| **422** | `42201`–`42207` | Validation error (invalid time, unmodifiable state, missing fields, etc.) |
+| **429** | `42900` | Backpressure — retry after `retryAfterMs` from response body |
+| **503** | `50301` | Raft: follower read rejected — redirect to leader (retryable) |
+| **503** | `50302` | Raft: follower write rejected — redirect to leader (retryable) |
+| **503** | `50303` | Raft: leader write backpressure — retry with delay (retryable) |
+| **500** | `50001`–`50003` | Internal server error (cancel/fire-now/revive failures) |
+
+All error responses include a structured `ErrorResponse` body with `errorCode`, `message`, `retryable` flag, and optional `recoveryHint` providing actionable next steps.
 
 ---
 
@@ -354,6 +403,14 @@ See [Configuration Reference](docs/operations/CONFIGURATION.md) for the complete
 ---
 
 ## Deployment
+
+### Diagnostics Tools
+
+- **LoomQ CLI** — interactive terminal for scheduling, querying, and troubleshooting
+- **`/v1/admin/chronoscope`** — scheduler X-ray snapshot (per-tier state, semaphore, borrow stats)
+- **`/v1/admin/timeline`** — temporal forecast (cohort wakes, scheduler activity preview)
+- **`/health/deep`** — deep health with tier backpressure data
+- **`/v1/admin/dead-letters`** — dead letter queue inspection and triage
 
 ### Docker
 
@@ -396,16 +453,27 @@ make docker-build   # Build Docker image
 - [x] Pluggable storage engine: `IntentStore` interface + `ConcurrentIntentStore` + `RocksDBIntentStore`
 - [x] `IntentObserver` SPI for lifecycle hooks
 - [x] `WalAccessor` SPI for WAL read/truncation
-- [x] Raft leader election and log replication
+- [x] Raft leader election, log replication, snapshot catch-up, leader-authoritative reads/writes
+- [x] Raft write coordination: bounded backpressure, request deduplication, optimistic concurrency
 - [x] Observable backpressure (no silent drops)
 - [x] Expiry index: O(log n) expired intent scanning
+- [x] LoomQ CLI: interactive temporal explorer shell with 10+ commands
+- [x] HealthNarrator: narrative health with vitals and anomaly detection
+- [x] ErrorRecoveryAdvisor: actionable recovery hints per error code
+- [x] TimelineService: temporal forecast and cohort wake preview
+- [x] TierAdvisor: SLO → tier recommendation with safety margin
+- [x] WalReplayService: WAL time-travel debugging
+- [x] Dead letter revival: revive dead-lettered intents with optional reschedule
+- [x] Intent listing: `GET /v1/intents` with status filter
+- [x] Token authentication: `X-LoomQ-Token` header with constant-time comparison
+- [x] ChronoscopeSnapshot: scheduler internal state X-ray for diagnostics
 - [x] Benchmark suite: WAL throughput, storage comparison, observer overhead
 
-### Future
-- Dynamic Raft membership management
-- Linearizable leader-read path
-- Kubernetes operator
-- Web-based management console
+### v0.9.2 (next)
+- [ ] Dynamic Raft membership management
+- [ ] Kubernetes operator
+- [ ] Web-based management console
+- [ ] gRPC delivery handler
 
 ---
 

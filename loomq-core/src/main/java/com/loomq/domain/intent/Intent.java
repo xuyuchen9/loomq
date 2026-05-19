@@ -305,10 +305,19 @@ public class Intent {
      * 验证状态转换是否合法
      */
     private void validateTransition(IntentStatus from, IntentStatus to) {
-        // 终态不可转换
-        if (from.isTerminal()) {
+        // 终态不可转换（DEAD_LETTERED 除外，可通过 revive 转回 SCHEDULED）
+        if (from.isTerminal() && from != IntentStatus.DEAD_LETTERED) {
             throw new IllegalStateException(
                 "Cannot transition from terminal state: " + from);
+        }
+
+        // DEAD_LETTERED 只能 revive 到 SCHEDULED
+        if (from == IntentStatus.DEAD_LETTERED) {
+            if (to != IntentStatus.SCHEDULED) {
+                throw new IllegalStateException(
+                    String.format("Invalid state transition: %s -> %s (DEAD_LETTERED can only revive to SCHEDULED)", from, to));
+            }
+            return;
         }
 
         // 特定转换规则
@@ -499,6 +508,10 @@ public class Intent {
 
     public int getAttempts() {
         return attempts;
+    }
+
+    public void setAttempts(int attempts) {
+        this.attempts = attempts;
     }
 
     public String getLastDeliveryId() {
