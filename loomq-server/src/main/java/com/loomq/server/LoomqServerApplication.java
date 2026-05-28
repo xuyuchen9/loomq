@@ -10,6 +10,9 @@ import com.loomq.config.ServerConfig;
 import com.loomq.config.WalConfig;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
+import com.loomq.grpc.GlobalIntentObserver;
+import com.loomq.grpc.LoomqGrpcServer;
+import com.loomq.grpc.config.GrpcConfig;
 import com.loomq.http.netty.HttpErrorResponse;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;
@@ -66,6 +69,13 @@ public class LoomqServerApplication {
             .deliveryHandler(new NettyHttpDeliveryHandler())
             .build();
 
+        // ---- Global observer for gRPC streaming (registered only when gRPC is enabled) ----
+        GrpcConfig grpcConfig = config.getGrpcConfig();
+        GlobalIntentObserver globalObserver = grpcConfig.enabled() ? new GlobalIntentObserver() : null;
+        if (globalObserver != null) {
+            engine.registerObserver(globalObserver);
+        }
+
         // ---- Raft 共识模式（v0.9.1）----
         final com.loomq.raft.RaftNode raftNode;
         final RaftRuntimeListener raftRuntimeListener;
@@ -118,12 +128,33 @@ public class LoomqServerApplication {
 
         NettyHttpServer server = new NettyHttpServer(serverConfig, router, config.getSecurityConfig());
 
+        // ---- Optional gRPC server ----
+        final LoomqGrpcServer grpcServer;
+        if (grpcConfig.enabled()) {
+            grpcServer = new LoomqGrpcServer(grpcConfig, engine, raftStatus, raftWriteCoordinator, globalObserver);
+            logger.info("gRPC server will be started on {}:{}", grpcConfig.host(), grpcConfig.port());
+        } else {
+            grpcServer = null;
+        }
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            logger.info("Shutdown signal received, stopping Netty server and engine...");
+            logger.info("Shutdown signal received, stopping servers and engine...");
             try {
                 server.stop();
             } catch (Exception e) {
                 logger.warn("Error while stopping Netty server", e);
+            }
+
+            if (grpcServer != null) {
+                try {
+                    grpcServer.stop();
+                } catch (Exception e) {
+                    logger.warn("Error while stopping gRPC server", e);
+                }
+            }
+
+            if (globalObserver != null) {
+                globalObserver.close();
             }
 
             try {
@@ -149,6 +180,10 @@ public class LoomqServerApplication {
                 raftNode.start();
             }
             server.start();
+            if (grpcServer != null) {
+                grpcServer.start();
+                logger.info("LoomQ gRPC server started on {}:{}", grpcConfig.host(), grpcServer.getPort());
+            }
 
             logger.info("LoomQ Netty server started on http://{}:{}", serverConfig.host(), server.getPort());
 
@@ -164,6 +199,13 @@ public class LoomqServerApplication {
                 server.stop();
             } catch (Exception stopError) {
                 logger.warn("Error while stopping Netty server after startup failure", stopError);
+            }
+            if (grpcServer != null) {
+                try {
+                    grpcServer.stop();
+                } catch (Exception stopError) {
+                    logger.warn("Error while stopping gRPC server after startup failure", stopError);
+                }
             }
             try {
                 callbackHandler.close();

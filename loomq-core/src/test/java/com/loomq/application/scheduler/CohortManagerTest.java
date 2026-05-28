@@ -22,7 +22,7 @@ class CohortManagerTest {
 
     private static CohortManager createCohortManager() {
         BucketGroupManager bucketGroupManager = new BucketGroupManager();
-        return new CohortManager(bucketGroupManager, PrecisionTierCatalog.defaultCatalog());
+        return new CohortManager(bucketGroupManager, PrecisionTierCatalog.defaultCatalog(), null);
     }
 
     private static Intent readyIntent(String id, long delaySeconds, PrecisionTier tier) {

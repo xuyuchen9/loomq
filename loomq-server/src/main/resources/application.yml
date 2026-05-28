@@ -35,6 +35,15 @@ netty:
   httpSemaphoreTimeoutMs: 500
   gracefulShutdownTimeoutMs: 30000
 
+# gRPC 服务器配置 (可选，默认关闭)
+grpc:
+  enabled: ${LOOMQ_GRPC_ENABLED:false}
+  host: "${LOOMQ_GRPC_HOST:0.0.0.0}"
+  port: ${LOOMQ_GRPC_PORT:7929}
+  max_inbound_message_size: ${LOOMQ_GRPC_MAX_INBOUND_MESSAGE_SIZE:4194304}
+  boss_threads: 1
+  worker_threads: 0
+
 # -----------------------------------------------------
 # WAL (Write-Ahead Log) Configuration
 # -----------------------------------------------------

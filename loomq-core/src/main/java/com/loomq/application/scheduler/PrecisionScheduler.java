@@ -16,9 +16,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -192,9 +194,20 @@ public class PrecisionScheduler {
             ? precisionTierCatalog
             : PrecisionTierCatalog.defaultCatalog();
         this.bucketGroupManager = new BucketGroupManager(this.precisionTierCatalog);
-        this.cohortManager = new CohortManager(this.bucketGroupManager, this.precisionTierCatalog);
         this.scanSchedulers = new ConcurrentHashMap<>();
         this.scanFutures = new ConcurrentHashMap<>();
+        this.cohortManager = new CohortManager(this.bucketGroupManager, this.precisionTierCatalog, flushedIntents -> {
+            Set<PrecisionTier> tiers = EnumSet.noneOf(PrecisionTier.class);
+            for (Intent intent : flushedIntents) {
+                tiers.add(intent.getPrecisionTier());
+            }
+            for (PrecisionTier tier : tiers) {
+                ScheduledExecutorService scanScheduler = scanSchedulers.get(tier);
+                if (scanScheduler != null) {
+                    scanScheduler.submit(() -> scanAndDispatch(tier));
+                }
+            }
+        });
 
         // 加载重投决策器
         if (redeliveryDecider != null) {
@@ -749,8 +762,8 @@ public class PrecisionScheduler {
      */
     private void recordWakeupLatency(Intent intent, Instant actualTime) {
         Instant executeAt = intent.getExecuteAt();
-        long latencyMs = Duration.between(executeAt, actualTime).toMillis();
-        metrics.recordWakeupLatencyByTier(intent.getPrecisionTier(), latencyMs);
+        long latencyUs = Duration.between(executeAt, actualTime).toNanos() / 1_000;
+        metrics.recordWakeupLatencyByTier(intent.getPrecisionTier(), latencyUs);
     }
 
     /**

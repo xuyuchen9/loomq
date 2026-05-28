@@ -1,0 +1,168 @@
+syntax = "proto3";
+
+package loomq.v1;
+
+option java_package = "com.loomq.grpc.gen";
+option java_multiple_files = true;
+
+import "google/protobuf/timestamp.proto";
+
+// ──────────────────────────────────────────────
+// Domain messages (Pb suffix avoids collision with domain Java classes)
+// ──────────────────────────────────────────────
+
+message IntentMessage {
+  string intent_id = 1;
+  string status = 2;
+  google.protobuf.Timestamp execute_at = 3;
+  google.protobuf.Timestamp deadline = 4;
+  string expired_action = 5;
+  string precision_tier = 6;
+  string wal_mode = 7;
+  string ack_level = 8;
+  string shard_key = 9;
+  string shard_id = 22;
+  CallbackMessage callback = 10;
+  RedeliveryPolicyMessage redelivery = 11;
+  string idempotency_key = 12;
+  map<string, string> tags = 13;
+  int32 attempts = 14;
+  string last_delivery_id = 15;
+  int64 revision = 16;
+  google.protobuf.Timestamp created_at = 17;
+  google.protobuf.Timestamp updated_at = 18;
+  string trace_id = 19;
+}
+
+message CallbackMessage {
+  string url = 1;
+  string method = 2;
+  map<string, string> headers = 3;
+  bytes body = 4;
+}
+
+message RedeliveryPolicyMessage {
+  int32 max_attempts = 1;
+  string backoff = 2;
+  int64 initial_delay_ms = 3;
+  int64 max_delay_ms = 4;
+  double multiplier = 5;
+  bool jitter = 6;
+}
+
+message SloRequestMessage {
+  int64 max_tardiness_ms = 1;
+  string reliability = 2;
+}
+
+// ──────────────────────────────────────────────
+// Request messages
+// ──────────────────────────────────────────────
+
+message CreateIntentRequest {
+  string intent_id = 1;
+  google.protobuf.Timestamp execute_at = 2;
+  google.protobuf.Timestamp deadline = 3;
+  string expired_action = 4;
+  string precision_tier = 5;
+  string wal_mode = 6;
+  string shard_key = 7;
+  string ack_level = 8;
+  CallbackMessage callback = 9;
+  RedeliveryPolicyMessage redelivery = 10;
+  string idempotency_key = 11;
+  map<string, string> tags = 12;
+  SloRequestMessage slo = 13;
+  string request_id = 14;
+  int64 expected_revision = 15;
+}
+
+message GetIntentRequest {
+  string intent_id = 1;
+}
+
+message ListIntentsRequest {
+  string status = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message PatchIntentRequest {
+  string intent_id = 1;
+  google.protobuf.Timestamp execute_at = 2;
+  google.protobuf.Timestamp deadline = 3;
+  string expired_action = 4;
+  RedeliveryPolicyMessage redelivery = 5;
+  map<string, string> tags = 6;
+  int64 expected_revision = 7;
+}
+
+message CancelIntentRequest {
+  string intent_id = 1;
+  int64 expected_revision = 2;
+}
+
+message FireNowRequest {
+  string intent_id = 1;
+  int64 expected_revision = 2;
+}
+
+message ReviveIntentRequest {
+  string intent_id = 1;
+  google.protobuf.Timestamp execute_at = 2;
+  google.protobuf.Timestamp deadline = 3;
+  CallbackMessage callback = 4;
+  RedeliveryPolicyMessage redelivery = 5;
+}
+
+message HealthCheckRequest {}
+
+message WatchIntentRequest {
+  repeated string intent_ids = 1;
+  repeated string status_filter = 2;
+}
+
+// ──────────────────────────────────────────────
+// Response messages
+// ──────────────────────────────────────────────
+
+message ListIntentsResponse {
+  repeated IntentMessage intents = 1;
+  int64 total = 2;
+  int32 offset = 3;
+  int32 limit = 4;
+}
+
+message IntentActionResponse {
+  string intent_id = 1;
+  string status = 2;
+}
+
+message HealthCheckResponse {
+  string status = 1;
+  map<string, string> details = 2;
+}
+
+message IntentEvent {
+  string intent_id = 1;
+  string from_status = 2;
+  string to_status = 3;
+  google.protobuf.Timestamp timestamp = 4;
+  string trace_id = 5;
+}
+
+// ──────────────────────────────────────────────
+// Service definition
+// ──────────────────────────────────────────────
+
+service LoomQService {
+  rpc CreateIntent(CreateIntentRequest) returns (IntentMessage);
+  rpc GetIntent(GetIntentRequest) returns (IntentMessage);
+  rpc ListIntents(ListIntentsRequest) returns (ListIntentsResponse);
+  rpc PatchIntent(PatchIntentRequest) returns (IntentMessage);
+  rpc CancelIntent(CancelIntentRequest) returns (IntentMessage);
+  rpc FireNow(FireNowRequest) returns (IntentActionResponse);
+  rpc ReviveIntent(ReviveIntentRequest) returns (IntentMessage);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc WatchIntent(WatchIntentRequest) returns (stream IntentEvent);
+}

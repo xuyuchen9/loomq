@@ -41,7 +41,7 @@ for arg in "$@"; do
             echo "Options:"
             echo "  --quick              Quick test mode"
             echo "  --full               Full test mode (default)"
-            echo "  --scenario=<name>    Scenario: all, internal, http, scheduler (default: all)"
+            echo "  --scenario=<name>    Scenario: all, internal, http, grpc, scheduler (default: all)"
             echo "  --workload=<name>    Workload: uniform, prod-typical, burst-ultra, mixed-heavy (default: uniform)"
             echo "  --no-compile         Skip compilation"
             echo "  --compare            Show history comparison"
@@ -155,6 +155,7 @@ rotate_reports
 BM_CLASS_SCHEDULER="com.loomq.scheduler.SchedulerTriggerBenchmarkWithMockServer"
 BM_CLASS_INTERNAL="com.loomq.benchmark.InternalBenchmark"
 BM_CLASS_HTTP="com.loomq.benchmark.HttpVirtualThreadBenchmark"
+BM_CLASS_GRPC="com.loomq.benchmark.GrpcVirtualThreadBenchmark"
 BM_CLASS_WAL="com.loomq.benchmark.WalThroughputBenchmark"
 BM_CLASS_STORAGE="com.loomq.benchmark.StorageBenchmark"
 BM_CLASS_OBSERVER="com.loomq.benchmark.ObserverOverheadBenchmark"
@@ -162,6 +163,7 @@ BM_CLASS_OBSERVER="com.loomq.benchmark.ObserverOverheadBenchmark"
 SCHEDULER_LOG="$LOGS_DIR/benchmark-scheduler-$TIMESTAMP.log"
 INTERNAL_LOG="$LOGS_DIR/benchmark-internal-$TIMESTAMP.log"
 HTTP_LOG="$LOGS_DIR/benchmark-http-$TIMESTAMP.log"
+GRPC_LOG="$LOGS_DIR/benchmark-grpc-$TIMESTAMP.log"
 WAL_LOG="$LOGS_DIR/benchmark-wal-$TIMESTAMP.log"
 STORAGE_LOG="$LOGS_DIR/benchmark-storage-$TIMESTAMP.log"
 OBSERVER_LOG="$LOGS_DIR/benchmark-observer-$TIMESTAMP.log"
@@ -215,6 +217,13 @@ if [ "$SCENARIO" = "all" ] || [ "$SCENARIO" = "http" ]; then
     echo ""
     echo "=== 2) HTTP create path ==="
     echo "  (Skipped — requires a running LoomQ server. Use run-all.sh for full suite.)"
+fi
+
+# Scenario 2b: gRPC create path (requires running server with gRPC enabled)
+if [ "$SCENARIO" = "all" ] || [ "$SCENARIO" = "grpc" ]; then
+    echo ""
+    echo "=== 2b) gRPC create path ==="
+    echo "  (Skipped — requires a running LoomQ server with gRPC enabled. Use run-all.sh for full suite.)"
 fi
 
 # Scenario 3: Scheduler trigger path

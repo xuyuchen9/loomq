@@ -810,10 +810,10 @@ public class SchedulerTriggerBenchmarkWithMockServer {
                 result.efficiencyPct(),
                 result.backpressureEvents());
 
-            // 维度 1: 延迟分布 (scheduler-internal wakeup latency)
+            // 维度 1: 延迟分布 (scheduler-internal wakeup latency, microseconds)
             var lat = result.latencySnapshot();
             System.out.printf(Locale.ROOT,
-                "RESULT_LATENCY|tier=%s|type=wakeup|p50=%d|p75=%d|p90=%d|p95=%d|p99=%d|p999=%d|max=%d|mean=%d|samples=%d%n",
+                "RESULT_LATENCY|tier=%s|type=wakeup_us|p50=%d|p75=%d|p90=%d|p95=%d|p99=%d|p999=%d|max=%d|mean=%d|samples=%d%n",
                 result.tier().name(), lat.p50(), lat.p75(), lat.p90(),
                 lat.p95(), lat.p99(), lat.p999(), lat.max(), lat.mean(), lat.sampleCount());
 

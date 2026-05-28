@@ -14,7 +14,8 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 final class PrecisionTierMetricsRegistry {
 
-    private static final int[] LATENCY_BOUNDS = {0, 1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000};
+    // Microsecond buckets: 0, 10, 25, 50, 100, 500, 1ms, 2.5ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s
+    private static final int[] LATENCY_BOUNDS = {0, 10, 25, 50, 100, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000};
 
     private final PrecisionTierCatalog precisionTierCatalog;
     private final Map<PrecisionTier, AtomicLong> intentByTier = new EnumMap<>(PrecisionTier.class);
@@ -214,7 +215,10 @@ final class PrecisionTierMetricsRegistry {
         if (totalSamples == 0) return 0;
         long sum = 0;
         for (int i = 0; i < LATENCY_BOUNDS.length; i++) {
-            sum += LATENCY_BOUNDS[i] * buckets.get(i).get();
+            long lower = LATENCY_BOUNDS[i];
+            long upper = (i + 1 < LATENCY_BOUNDS.length) ? LATENCY_BOUNDS[i + 1] : lower;
+            long midpoint = (lower + upper) / 2;
+            sum += midpoint * buckets.get(i).get();
         }
         return sum / totalSamples;
     }
