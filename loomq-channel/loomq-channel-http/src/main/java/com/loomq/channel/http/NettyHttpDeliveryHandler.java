@@ -1,4 +1,4 @@
-package com.loomq.callback;
+package com.loomq.channel.http;
 
 import com.loomq.domain.intent.Intent;
 import com.loomq.spi.DeliveryContext;

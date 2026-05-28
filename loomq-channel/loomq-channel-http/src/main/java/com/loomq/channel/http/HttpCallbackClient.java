@@ -1,4 +1,4 @@
-package com.loomq.http;
+package com.loomq.channel.http;
 
 import com.loomq.domain.intent.Intent;
 import java.net.URI;

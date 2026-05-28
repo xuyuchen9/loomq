@@ -29,6 +29,12 @@
             <artifactId>loomq-raft</artifactId>
         </dependency>
 
+        <!-- LoomQ Channel HTTP -->
+        <dependency>
+            <groupId>com.loomq</groupId>
+            <artifactId>loomq-channel-http</artifactId>
+        </dependency>
+
         <!-- JSON Serialization -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>

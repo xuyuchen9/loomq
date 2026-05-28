@@ -1,4 +1,4 @@
-package com.loomq.callback;
+package com.loomq.channel.http;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 

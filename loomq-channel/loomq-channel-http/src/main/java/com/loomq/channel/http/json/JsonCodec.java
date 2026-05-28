@@ -1,4 +1,4 @@
-package com.loomq.http.json;
+package com.loomq.channel.http.json;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;

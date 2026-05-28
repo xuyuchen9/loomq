@@ -1,8 +1,8 @@
-package com.loomq.callback;
+package com.loomq.channel.http;
 
+import com.loomq.channel.http.json.JsonCodec;
 import com.loomq.domain.intent.Callback;
 import com.loomq.domain.intent.Intent;
-import com.loomq.http.json.JsonCodec;
 import com.loomq.spi.CallbackHandler;
 import java.net.URI;
 import java.net.http.HttpClient;
