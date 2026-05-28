@@ -44,7 +44,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        module: [loomq-core, loomq-server]
+        module: [loomq-core, loomq-raft, loomq-channel/loomq-channel-http, loomq-channel/loomq-channel-grpc, loomq-server]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -66,8 +66,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: surefire-reports-fast-${{ matrix.module }}
-          path: ${{ matrix.module }}/target/surefire-reports/
+          name: surefire-reports-fast-${{ strategy.job-index }}
+          path: '**/target/surefire-reports/'
 
   # ============================================================
   #  PR / Push: slow tests (PrecisionSchedulerTest, ~110s)

@@ -1,12 +1,11 @@
 package com.loomq.api;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-
-import com.loomq.common.IntentValidator;
-import com.loomq.common.ValidationResult;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.loomq.common.IntentValidator;
+import com.loomq.common.ValidationResult;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 

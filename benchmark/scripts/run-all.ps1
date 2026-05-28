@@ -183,6 +183,21 @@ $coreFast = Parse-TestCount $r.Output
 if ($r.ExitCode -eq 0) { Write-Pass "loomq-core fast tests: $($coreFast.Total) run, 0 failures" }
 else { Write-Fail "loomq-core fast tests: $($coreFast.Failed) failures"; exit 1 }
 
+$r = Invoke-Mvn -Goal test -Profile fast-tests -Module loomq-raft
+$raftFast = Parse-TestCount $r.Output
+if ($r.ExitCode -eq 0) { Write-Pass "loomq-raft fast tests: $($raftFast.Total) run, 0 failures" }
+else { Write-Fail "loomq-raft fast tests: $($raftFast.Failed) failures"; exit 1 }
+
+$r = Invoke-Mvn -Goal test -Profile fast-tests -Module "loomq-channel/loomq-channel-http"
+$httpFast = Parse-TestCount $r.Output
+if ($r.ExitCode -eq 0) { Write-Pass "loomq-channel-http fast tests: $($httpFast.Total) run, 0 failures" }
+else { Write-Fail "loomq-channel-http fast tests: $($httpFast.Failed) failures"; exit 1 }
+
+$r = Invoke-Mvn -Goal test -Profile fast-tests -Module "loomq-channel/loomq-channel-grpc"
+$grpcFast = Parse-TestCount $r.Output
+if ($r.ExitCode -eq 0) { Write-Pass "loomq-channel-grpc fast tests: $($grpcFast.Total) run, 0 failures" }
+else { Write-Fail "loomq-channel-grpc fast tests: $($grpcFast.Failed) failures"; exit 1 }
+
 $r = Invoke-Mvn -Goal test -Profile fast-tests -Module loomq-server
 $serverFast = Parse-TestCount $r.Output
 if ($r.ExitCode -eq 0) { Write-Pass "loomq-server fast tests: $($serverFast.Total) run, 0 failures" }
@@ -190,6 +205,9 @@ else { Write-Fail "loomq-server fast tests: $($serverFast.Failed) failures"; exi
 
 $Results.phases["fast-tests"] = @{
     core   = $coreFast
+    raft   = $raftFast
+    http   = $httpFast
+    grpc   = $grpcFast
     server = $serverFast
 }
 

@@ -5,12 +5,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.loomq.common.RaftRole;
+import com.loomq.common.RaftStatusSnapshot;
 import com.loomq.config.ServerConfig;
 import com.loomq.http.netty.HttpErrorResponse;
 import com.loomq.metrics.LoomQMetrics;
-import com.loomq.common.RaftRole;
 import com.loomq.spi.RaftStatusProvider;
-import com.loomq.common.RaftStatusSnapshot;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;

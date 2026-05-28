@@ -94,8 +94,11 @@ FAILED_PHASES=""
 # ---- Phase 1: Fast Unit Tests ----
 echo ">>> Phase 1/4: Fast unit tests" | tee -a "$ALL_LOG"
 
-run_mvn "fast-tests (core)"   test -Pfast-tests -pl loomq-core -am -f "$PROJECT_ROOT/pom.xml"
-run_mvn "fast-tests (server)" test -Pfast-tests -pl loomq-server -am -f "$PROJECT_ROOT/pom.xml"
+run_mvn "fast-tests (core)"        test -Pfast-tests -pl loomq-core -am -f "$PROJECT_ROOT/pom.xml"
+run_mvn "fast-tests (raft)"        test -Pfast-tests -pl loomq-raft -am -f "$PROJECT_ROOT/pom.xml"
+run_mvn "fast-tests (channel-http)" test -Pfast-tests -pl loomq-channel/loomq-channel-http -am -f "$PROJECT_ROOT/pom.xml"
+run_mvn "fast-tests (channel-grpc)" test -Pfast-tests -pl loomq-channel/loomq-channel-grpc -am -f "$PROJECT_ROOT/pom.xml"
+run_mvn "fast-tests (server)"      test -Pfast-tests -pl loomq-server -am -f "$PROJECT_ROOT/pom.xml"
 
 # ---- Phase 2: Slow Tests ----
 echo "" | tee -a "$ALL_LOG"

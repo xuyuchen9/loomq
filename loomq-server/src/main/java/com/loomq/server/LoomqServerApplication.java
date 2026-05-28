@@ -2,11 +2,11 @@ package com.loomq.server;
 
 import com.loomq.LoomqEngine;
 import com.loomq.api.ErrorResponse;
-import com.loomq.channel.http.HttpCallbackHandler;
-import com.loomq.channel.http.NettyHttpDeliveryHandler;
+import com.loomq.channel.grpc.config.GrpcConfig;
 import com.loomq.channel.grpc.server.GlobalIntentObserver;
 import com.loomq.channel.grpc.server.LoomqGrpcServer;
-import com.loomq.channel.grpc.config.GrpcConfig;
+import com.loomq.channel.http.HttpCallbackHandler;
+import com.loomq.channel.http.NettyHttpDeliveryHandler;
 import com.loomq.common.MetricsCollector;
 import com.loomq.common.RaftStatusSnapshot;
 import com.loomq.config.LoomqConfig;

@@ -1,18 +1,21 @@
 package com.loomq.channel.grpc.server;
 
+import com.loomq.channel.grpc.converter.ProtoConverter;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
-import com.loomq.channel.grpc.converter.ProtoConverter;
 import com.loomq.grpc.gen.IntentEvent;
 import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.spi.IntentObserver;
 import io.grpc.stub.ServerCallStreamObserver;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,7 +31,16 @@ public final class GlobalIntentObserver implements IntentObserver {
 
     private final ConcurrentHashMap<String, CopyOnWriteArraySet<WatchEntry>> watchersByIntentId = new ConcurrentHashMap<>();
     private final CopyOnWriteArraySet<WatchEntry> wildcardWatchers = new CopyOnWriteArraySet<>();
-    private final ExecutorService dispatchExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    private final AtomicBoolean hasWildcardWatchers = new AtomicBoolean(false);
+    private final AtomicBoolean hasSpecificWatchers = new AtomicBoolean(false);
+    private final ExecutorService dispatchExecutor = new ThreadPoolExecutor(
+        Runtime.getRuntime().availableProcessors() * 2,
+        Runtime.getRuntime().availableProcessors() * 2,
+        60L, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(1024),
+        Thread.ofPlatform().daemon(true).name("grpc-observer-dispatch", 0).factory(),
+        new ThreadPoolExecutor.DiscardOldestPolicy()
+    );
 
     static final class WatchEntry {
         private static final int MAX_PENDING = 256;
@@ -79,11 +91,16 @@ public final class GlobalIntentObserver implements IntentObserver {
             : Set.of();
         WatchEntry entry = new WatchEntry(filter, observer);
 
+        // Set flag BEFORE adding watcher to narrow the concurrent window:
+        // a dispatch() call may miss this watcher, but won't miss later ones.
+        // This is acceptable — WatchIntent follows "best-effort delivery" semantics.
         if (request.getIntentIdsCount() > 0) {
+            hasSpecificWatchers.set(true);
             for (String id : request.getIntentIdsList()) {
                 watchersByIntentId.computeIfAbsent(id, k -> new CopyOnWriteArraySet<>()).add(entry);
             }
         } else {
+            hasWildcardWatchers.set(true);
             wildcardWatchers.add(entry);
         }
         return entry;
@@ -93,12 +110,28 @@ public final class GlobalIntentObserver implements IntentObserver {
      * Remove a watcher (called when the gRPC stream is cancelled).
      */
     public void unregister(WatchEntry entry) {
+        // Remove watcher first, then clear flag if collection is empty.
+        // This ordering ensures dispatch() won't iterate an empty collection
+        // (it may short-circuit past a newly added watcher — acceptable).
         wildcardWatchers.remove(entry);
+        if (wildcardWatchers.isEmpty()) {
+            hasWildcardWatchers.set(false);
+        }
         watchersByIntentId.values().forEach(set -> set.remove(entry));
         watchersByIntentId.values().removeIf(Set::isEmpty);
+        if (watchersByIntentId.isEmpty()) {
+            hasSpecificWatchers.set(false);
+        }
     }
 
     private void dispatch(String intentId, String traceId, String fromStatus, String toStatus) {
+        // Fast path: no watchers registered, skip entirely.
+        // AtomicBoolean.get() is a volatile read — negligible cost vs.
+        // creating a virtual thread + building proto for every state transition.
+        if (!hasWildcardWatchers.get() && !hasSpecificWatchers.get()) {
+            return;
+        }
+
         // Dispatch asynchronously to avoid blocking the scheduler thread.
         // IntentObserver contract: "callbacks execute in the scheduler thread,
         // implementations should stay lightweight, avoid synchronous blocking."
@@ -176,6 +209,14 @@ public final class GlobalIntentObserver implements IntentObserver {
      * Shut down the dispatch executor. Call during server shutdown.
      */
     public void close() {
-        dispatchExecutor.shutdownNow();
+        dispatchExecutor.shutdown();
+        try {
+            if (!dispatchExecutor.awaitTermination(3, TimeUnit.SECONDS)) {
+                dispatchExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            dispatchExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

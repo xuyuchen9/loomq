@@ -1,12 +1,10 @@
 package com.loomq.raft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-
-import com.loomq.common.RaftRole;
-import com.loomq.common.RaftStatusSnapshot;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.loomq.common.RaftRole;
 import com.loomq.config.WalConfig;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
