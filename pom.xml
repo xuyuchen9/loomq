@@ -15,6 +15,7 @@
     <modules>
         <module>loomq-bom</module>
         <module>loomq-core</module>
+        <module>loomq-raft</module>
         <module>loomq-server</module>
         <module>loomq-cli</module>
     </modules>

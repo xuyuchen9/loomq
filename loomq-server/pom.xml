@@ -23,6 +23,12 @@
             <artifactId>loomq-core</artifactId>
         </dependency>
 
+        <!-- LoomQ Raft -->
+        <dependency>
+            <groupId>com.loomq</groupId>
+            <artifactId>loomq-raft</artifactId>
+        </dependency>
+
         <!-- JSON Serialization -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
