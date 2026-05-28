@@ -18,5 +18,6 @@
 
     <modules>
         <module>loomq-channel-http</module>
+        <module>loomq-channel-grpc</module>
     </modules>
 </project>

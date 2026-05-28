@@ -1,4 +1,4 @@
-package com.loomq.grpc;
+package com.loomq.channel.grpc.server;
 
 import com.loomq.LoomqEngine;
 import com.loomq.common.IntentValidator;
@@ -10,8 +10,8 @@ import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.domain.intent.Reliability;
-import com.loomq.grpc.converter.GrpcStatusAdapter;
-import com.loomq.grpc.converter.ProtoConverter;
+import com.loomq.channel.grpc.converter.GrpcStatusAdapter;
+import com.loomq.channel.grpc.converter.ProtoConverter;
 import com.loomq.grpc.gen.CreateIntentRequest;
 import com.loomq.grpc.gen.GetIntentRequest;
 import com.loomq.grpc.gen.HealthCheckRequest;
@@ -23,7 +23,7 @@ import com.loomq.grpc.gen.ListIntentsResponse;
 import com.loomq.grpc.gen.LoomQServiceGrpc;
 import com.loomq.grpc.gen.PatchIntentRequest;
 import com.loomq.spi.RaftStatusProvider;
-import com.loomq.raft.RaftWriteCoordinator;
+import com.loomq.spi.WriteCoordinator;
 import com.loomq.store.IdempotencyResult;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
@@ -49,15 +49,15 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
 
     private final LoomqEngine engine;
     private final RaftStatusProvider raftStatus;
-    private final RaftWriteCoordinator raftWriteCoordinator;
+    private final WriteCoordinator writeCoordinator;
     private final GlobalIntentObserver globalObserver;
 
     public LoomqGrpcService(LoomqEngine engine, RaftStatusProvider raftStatus,
-                            RaftWriteCoordinator raftWriteCoordinator,
+                            WriteCoordinator writeCoordinator,
                             GlobalIntentObserver globalObserver) {
         this.engine = engine;
         this.raftStatus = raftStatus;
-        this.raftWriteCoordinator = raftWriteCoordinator;
+        this.writeCoordinator = writeCoordinator;
         this.globalObserver = globalObserver;
     }
 
@@ -123,10 +123,10 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
             }
 
             // Create (Raft or direct)
-            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+            if (writeCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
                 Intent snapshot = intent.copy();
                 snapshot.transitionTo(IntentStatus.SCHEDULED);
-                Intent committed = raftWriteCoordinator.commitSnapshot(snapshot, "create", buildRequestKey(request));
+                Intent committed = writeCoordinator.commitSnapshot(snapshot, "create", buildRequestKey(request));
                 response.onNext(ProtoConverter.toProto(committed));
                 response.onCompleted();
             } else {
@@ -238,13 +238,13 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
                 }
             }
 
-            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+            if (writeCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
                 long expectedRevision = request.getExpectedRevision();
                 if (expectedRevision <= 0) {
                     throw GrpcStatusAdapter.invalidArgument("42801",
                         "expected_revision is required for Raft writes");
                 }
-                Intent committed = raftWriteCoordinator.commitMutation(
+                Intent committed = writeCoordinator.commitMutation(
                     intentId, "patch", "", expectedRevision,
                     snapshot -> applyPatch(snapshot, request, newExecuteAt));
                 response.onNext(ProtoConverter.toProto(committed));
@@ -280,13 +280,13 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
                     "Intent cannot be cancelled in state: " + current.get().getStatus());
             }
 
-            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+            if (writeCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
                 long expectedRevision = request.getExpectedRevision();
                 if (expectedRevision <= 0) {
                     throw GrpcStatusAdapter.invalidArgument("42801",
                         "expected_revision is required for Raft writes");
                 }
-                Intent committed = raftWriteCoordinator.commitMutation(
+                Intent committed = writeCoordinator.commitMutation(
                     intentId, "cancel", "", expectedRevision,
                     snapshot -> { snapshot.transitionTo(IntentStatus.CANCELED); return snapshot; });
                 response.onNext(ProtoConverter.toProto(committed));
@@ -320,13 +320,13 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
                 throw GrpcStatusAdapter.notFound(intentId);
             }
 
-            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+            if (writeCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
                 long expectedRevision = request.getExpectedRevision();
                 if (expectedRevision <= 0) {
                     throw GrpcStatusAdapter.invalidArgument("42801",
                         "expected_revision is required for Raft writes");
                 }
-                Intent committed = raftWriteCoordinator.commitMutation(
+                Intent committed = writeCoordinator.commitMutation(
                     intentId, "fire-now", "", expectedRevision,
                     snapshot -> { snapshot.setExecuteAt(Instant.now()); return snapshot; });
                 response.onNext(IntentActionResponse.newBuilder()
@@ -371,12 +371,12 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
                     "Intent can only be revived from DEAD_LETTERED state, current state: " + intent.getStatus());
             }
 
-            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+            if (writeCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
                 // Raft path — work on a snapshot and commit through consensus
                 Intent snapshot = intent.copy();
                 applyReviveModifications(snapshot, request);
                 snapshot.transitionTo(IntentStatus.SCHEDULED);
-                Intent committed = raftWriteCoordinator.commitSnapshot(snapshot, "revive", intentId);
+                Intent committed = writeCoordinator.commitSnapshot(snapshot, "revive", intentId);
                 response.onNext(ProtoConverter.toProto(committed));
                 response.onCompleted();
             } else {

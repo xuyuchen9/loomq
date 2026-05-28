@@ -1,4 +1,4 @@
-package com.loomq.grpc.converter;
+package com.loomq.channel.grpc.converter;
 
 import com.loomq.common.exception.BackPressureException;
 import com.loomq.raft.RaftWriteBackPressureException;

@@ -1,9 +1,9 @@
-package com.loomq.grpc;
+package com.loomq.channel.grpc.server;
 
 import com.loomq.LoomqEngine;
-import com.loomq.grpc.config.GrpcConfig;
+import com.loomq.channel.grpc.config.GrpcConfig;
 import com.loomq.spi.RaftStatusProvider;
-import com.loomq.raft.RaftWriteCoordinator;
+import com.loomq.spi.WriteCoordinator;
 import io.grpc.Server;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.netty.shaded.io.netty.channel.EventLoopGroup;
@@ -28,7 +28,7 @@ public class LoomqGrpcServer {
     private final GrpcConfig config;
     private final LoomqEngine engine;
     private final RaftStatusProvider raftStatus;
-    private final RaftWriteCoordinator raftWriteCoordinator;
+    private final WriteCoordinator writeCoordinator;
     private final GlobalIntentObserver globalObserver;
 
     private Server server;
@@ -37,12 +37,12 @@ public class LoomqGrpcServer {
 
     public LoomqGrpcServer(GrpcConfig config, LoomqEngine engine,
                            RaftStatusProvider raftStatus,
-                           RaftWriteCoordinator raftWriteCoordinator,
+                           WriteCoordinator writeCoordinator,
                            GlobalIntentObserver globalObserver) {
         this.config = config;
         this.engine = engine;
         this.raftStatus = raftStatus;
-        this.raftWriteCoordinator = raftWriteCoordinator;
+        this.writeCoordinator = writeCoordinator;
         this.globalObserver = globalObserver;
     }
 
@@ -55,7 +55,7 @@ public class LoomqGrpcServer {
             ? new NioEventLoopGroup(config.workerThreads())
             : new NioEventLoopGroup();
 
-        LoomqGrpcService service = new LoomqGrpcService(engine, raftStatus, raftWriteCoordinator, globalObserver);
+        LoomqGrpcService service = new LoomqGrpcService(engine, raftStatus, writeCoordinator, globalObserver);
 
         server = NettyServerBuilder.forAddress(new InetSocketAddress(config.host(), config.port()))
             .bossEventLoopGroup(bossGroup)

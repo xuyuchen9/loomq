@@ -1,6 +1,8 @@
 package com.loomq.spi;
 
+import com.loomq.domain.intent.Intent;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 
 /**
  * Coordinates write operations across the system.
@@ -33,4 +35,28 @@ public interface WriteCoordinator {
      * @return true if the node is ready to accept writes
      */
     boolean canHandleWrite();
+
+    /**
+     * Propose a fully materialized intent snapshot and wait for it to be applied.
+     *
+     * @param snapshot the intent snapshot to commit
+     * @param operation the operation name (e.g., "create", "revive")
+     * @param requestKey the request key for deduplication
+     * @return the committed intent
+     */
+    Intent commitSnapshot(Intent snapshot, String operation, String requestKey);
+
+    /**
+     * Apply a mutating operation against the current authoritative state and
+     * commit the resulting snapshot through the coordinator.
+     *
+     * @param intentId the target intent id
+     * @param operation the operation name (e.g., "patch", "cancel", "fire-now")
+     * @param requestKey the request key for deduplication
+     * @param expectedRevision the expected revision for optimistic concurrency
+     * @param mutator the mutation function
+     * @return the committed intent
+     */
+    Intent commitMutation(String intentId, String operation, String requestKey,
+                         long expectedRevision, Function<Intent, Intent> mutator);
 }

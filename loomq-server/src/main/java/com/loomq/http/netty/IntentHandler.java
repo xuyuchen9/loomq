@@ -19,7 +19,7 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
-import com.loomq.http.json.JsonCodec;
+import com.loomq.channel.http.json.JsonCodec;
 import com.loomq.spi.RaftStatusProvider;
 import com.loomq.raft.RaftWriteBackPressureException;
 import com.loomq.raft.RaftWriteConflictException;

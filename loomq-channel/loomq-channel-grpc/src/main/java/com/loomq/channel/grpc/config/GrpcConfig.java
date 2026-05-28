@@ -1,4 +1,4 @@
-package com.loomq.grpc.config;
+package com.loomq.channel.grpc.config;
 
 import com.loomq.config.ConfigSupport;
 import java.util.Properties;

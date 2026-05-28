@@ -1,7 +1,7 @@
 package com.loomq.http.netty;
 
 import com.loomq.config.SecurityConfig;
-import com.loomq.http.json.JsonCodec;
+import com.loomq.channel.http.json.JsonCodec;
 import com.loomq.metrics.LoomQMetrics;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;

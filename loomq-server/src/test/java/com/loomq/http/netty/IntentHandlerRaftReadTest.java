@@ -6,7 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import com.loomq.LoomqEngine;
 import com.loomq.api.IntentResponse;
-import com.loomq.callback.NettyHttpDeliveryHandler;
+import com.loomq.channel.http.NettyHttpDeliveryHandler;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;

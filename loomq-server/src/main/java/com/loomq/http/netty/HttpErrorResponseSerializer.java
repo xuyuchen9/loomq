@@ -2,7 +2,7 @@ package com.loomq.http.netty;
 
 import com.loomq.api.ErrorResponse;
 import com.loomq.api.RecoveryHint;
-import com.loomq.http.json.JsonCodec;
+import com.loomq.channel.http.json.JsonCodec;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import java.nio.charset.StandardCharsets;

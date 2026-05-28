@@ -3,6 +3,9 @@ package com.loomq.raft;
 import com.loomq.domain.intent.Intent;
 import com.loomq.infrastructure.wal.IntentBinaryCodec;
 import com.loomq.metrics.LoomQMetrics;
+import com.loomq.spi.WriteCommand;
+import com.loomq.spi.WriteCoordinator;
+import com.loomq.spi.WriteResult;
 import com.loomq.store.IntentStore;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -20,7 +23,7 @@ import java.util.function.Function;
  * requests, applies bounded backpressure, proposes the final intent snapshot
  * to the Raft log, then waits for the committed entry to be applied.
  */
-public final class RaftWriteCoordinator {
+public final class RaftWriteCoordinator implements WriteCoordinator {
 
     private static final long DEFAULT_WRITE_TIMEOUT_MS = 5_000L;
     private static final long DEFAULT_BACKPRESSURE_TIMEOUT_MS = 500L;
@@ -50,6 +53,36 @@ public final class RaftWriteCoordinator {
         this.acquireTimeoutMs = Math.max(1L, acquireTimeoutMs);
         this.writeTimeoutMs = Math.max(1_000L, writeTimeoutMs);
         this.requestCacheTtlMs = DEFAULT_REQUEST_CACHE_TTL_MS;
+    }
+
+    @Override
+    public boolean isWriteEnabled() {
+        return true;
+    }
+
+    @Override
+    public CompletableFuture<WriteResult> submitWrite(WriteCommand command) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                Intent result;
+                if (command.isSnapshot()) {
+                    result = commitSnapshot(command.snapshot(), command.operation(), command.requestKey());
+                } else if (command.isMutation()) {
+                    result = commitMutation(command.intentId(), command.operation(), command.requestKey(),
+                        command.expectedRevision(), command.mutator());
+                } else {
+                    return WriteResult.failure("400", "Invalid write command");
+                }
+                return WriteResult.success(result);
+            } catch (Exception e) {
+                return WriteResult.failure("500", e.getMessage());
+            }
+        });
+    }
+
+    @Override
+    public boolean canHandleWrite() {
+        return raftNode.isLeader();
     }
 
     /**

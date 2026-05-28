@@ -1,6 +1,6 @@
 package com.loomq.config;
 
-import com.loomq.grpc.config.GrpcConfig;
+import com.loomq.channel.grpc.config.GrpcConfig;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;

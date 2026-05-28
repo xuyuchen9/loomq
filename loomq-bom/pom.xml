@@ -38,6 +38,11 @@
             </dependency>
             <dependency>
                 <groupId>com.loomq</groupId>
+                <artifactId>loomq-channel-grpc</artifactId>
+                <version>${loomq.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.loomq</groupId>
                 <artifactId>loomq-server</artifactId>
                 <version>${loomq.version}</version>
             </dependency>

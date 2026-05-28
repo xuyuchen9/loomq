@@ -1,8 +1,8 @@
-package com.loomq.grpc;
+package com.loomq.channel.grpc.server;
 
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
-import com.loomq.grpc.converter.ProtoConverter;
+import com.loomq.channel.grpc.converter.ProtoConverter;
 import com.loomq.grpc.gen.IntentEvent;
 import com.loomq.spi.DeliveryHandler.DeliveryResult;
 import com.loomq.spi.IntentObserver;

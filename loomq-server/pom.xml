@@ -35,6 +35,12 @@
             <artifactId>loomq-channel-http</artifactId>
         </dependency>
 
+        <!-- LoomQ Channel gRPC -->
+        <dependency>
+            <groupId>com.loomq</groupId>
+            <artifactId>loomq-channel-grpc</artifactId>
+        </dependency>
+
         <!-- JSON Serialization -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>

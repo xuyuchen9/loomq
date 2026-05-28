@@ -1,7 +1,7 @@
 package com.loomq.benchmark;
 
 import com.loomq.benchmark.framework.ProtocolBenchmark;
-import com.loomq.grpc.converter.ProtoConverter;
+import com.loomq.channel.grpc.converter.ProtoConverter;
 import com.loomq.grpc.gen.CallbackMessage;
 import com.loomq.grpc.gen.CreateIntentRequest;
 import com.loomq.grpc.gen.IntentMessage;

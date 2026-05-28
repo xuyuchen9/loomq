@@ -1,4 +1,4 @@
-package com.loomq.grpc.converter;
+package com.loomq.channel.grpc.converter;
 
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
