@@ -10,7 +10,7 @@ import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
 import com.loomq.raft.RaftConfig;
 import com.loomq.raft.RaftNode;
-import com.loomq.raft.RaftStatusProvider;
+import com.loomq.spi.RaftStatusProvider;
 import com.loomq.raft.RaftTransport;
 import com.loomq.raft.RaftWriteCoordinator;
 import com.loomq.spi.DeliveryHandler;

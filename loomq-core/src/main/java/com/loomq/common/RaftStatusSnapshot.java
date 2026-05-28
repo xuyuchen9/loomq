@@ -1,4 +1,4 @@
-package com.loomq.raft;
+package com.loomq.common;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;

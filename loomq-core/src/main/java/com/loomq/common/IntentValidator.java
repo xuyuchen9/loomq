@@ -1,4 +1,4 @@
-package com.loomq.api;
+package com.loomq.common;
 
 import java.time.Instant;
 

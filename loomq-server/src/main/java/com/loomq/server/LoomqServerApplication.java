@@ -19,8 +19,8 @@ import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
 import com.loomq.metrics.LoomQMetrics;
 import com.loomq.raft.RaftRuntimeListener;
-import com.loomq.raft.RaftStatusProvider;
-import com.loomq.raft.RaftStatusSnapshot;
+import com.loomq.spi.RaftStatusProvider;
+import com.loomq.common.RaftStatusSnapshot;
 import com.loomq.raft.RaftWriteCoordinator;
 import io.netty.handler.codec.http.HttpMethod;
 import java.nio.charset.StandardCharsets;
@@ -706,8 +706,8 @@ public class LoomqServerApplication {
         }
 
         @Override
-        public void onRoleChanged(com.loomq.raft.RaftRole role, long term) {
-            if (role == com.loomq.raft.RaftRole.LEADER) {
+        public void onRoleChanged(com.loomq.common.RaftRole role, long term) {
+            if (role == com.loomq.common.RaftRole.LEADER) {
                 engine.getScheduler().rebuildFromCommittedState(engine.getIntentStore().getAllIntents().values());
                 engine.getScheduler().resume();
             } else {

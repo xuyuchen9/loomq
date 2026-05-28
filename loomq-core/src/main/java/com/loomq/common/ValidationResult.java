@@ -1,4 +1,4 @@
-package com.loomq.api;
+package com.loomq.common;
 
 /**
  * 验证结果

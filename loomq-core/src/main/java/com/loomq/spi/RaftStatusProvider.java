@@ -1,4 +1,7 @@
-package com.loomq.raft;
+package com.loomq.spi;
+
+import com.loomq.common.RaftRole;
+import com.loomq.common.RaftStatusSnapshot;
 
 /**
  * Exposes the current Raft control-plane status to the HTTP layer.

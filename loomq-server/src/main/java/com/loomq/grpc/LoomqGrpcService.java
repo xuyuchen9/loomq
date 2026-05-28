@@ -1,8 +1,8 @@
 package com.loomq.grpc;
 
 import com.loomq.LoomqEngine;
-import com.loomq.api.IntentValidator;
-import com.loomq.api.ValidationResult;
+import com.loomq.common.IntentValidator;
+import com.loomq.common.ValidationResult;
 import com.loomq.application.scheduler.TierAdvisor;
 import com.loomq.common.exception.BackPressureException;
 import com.loomq.domain.intent.Intent;
@@ -22,7 +22,7 @@ import com.loomq.grpc.gen.ListIntentsRequest;
 import com.loomq.grpc.gen.ListIntentsResponse;
 import com.loomq.grpc.gen.LoomQServiceGrpc;
 import com.loomq.grpc.gen.PatchIntentRequest;
-import com.loomq.raft.RaftStatusProvider;
+import com.loomq.spi.RaftStatusProvider;
 import com.loomq.raft.RaftWriteCoordinator;
 import com.loomq.store.IdempotencyResult;
 import io.grpc.StatusRuntimeException;

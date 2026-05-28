@@ -2,7 +2,7 @@ package com.loomq.grpc;
 
 import com.loomq.LoomqEngine;
 import com.loomq.grpc.config.GrpcConfig;
-import com.loomq.raft.RaftStatusProvider;
+import com.loomq.spi.RaftStatusProvider;
 import com.loomq.raft.RaftWriteCoordinator;
 import io.grpc.Server;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
