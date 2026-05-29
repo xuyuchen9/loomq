@@ -206,6 +206,25 @@ function Get-ResultInt {
     return $Default
 }
 
+function Get-ResultString {
+    param(
+        [hashtable]$Data,
+        [string]$Key,
+        [string]$Default = ""
+    )
+
+    if ($null -eq $Data -or -not $Data.ContainsKey($Key)) {
+        return $Default
+    }
+
+    $Value = $Data[$Key]
+    if ($null -eq $Value) {
+        return $Default
+    }
+
+    return [string]$Value
+}
+
 function Get-BenchmarkRowData {
     param([string[]]$Rows)
 
