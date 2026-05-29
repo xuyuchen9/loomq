@@ -442,7 +442,7 @@ NettyRequestHandler 响应写回:
 IntentCommandService.createIntent()
   │
   ├─ IntentBinaryCodec.encode(intent) [CPU, 与 IO 重叠]
-  │     └─ 格式: fieldCount(1B) + [fieldType(1B) + fieldLen(4B) + fieldValue]* 
+  │     └─ 格式: fieldCount(1B) + [fieldType(1B) + fieldLen(4B) + fieldValue]*
   │
   ├─ SimpleWalWriter.writeAsync/writeDurable(payload)
   │     │

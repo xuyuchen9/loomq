@@ -10,7 +10,7 @@ benchmark/
 │   ├── run-all.ps1            # 一键全量测试 (Windows)
 │   └── run-all.sh             # 一键全量测试 (Linux/macOS)
 ├── results/                    # 测试结果
-│   ├── history.csv            # 历史记录 (48 列宽格式)
+│   ├── history.csv            # 历史记录 (55 列宽格式)
 │   ├── reports/               # 测试报告 (JSON + TXT)
 │   └── logs/                  # 完整运行日志
 ├── post_intent.lua            # wrk 压测脚本
@@ -97,7 +97,7 @@ benchmark/
 
 所有测试运行的结果**始终**持久化到 `benchmark/results/` 目录：
 
-- **CSV**: `history.csv` — 48 列宽格式，每次运行追加一行
+- **CSV**: `history.csv` — 55 列宽格式，每次运行追加一行
 - **JSON**: `reports/benchmark-*.json` 或 `reports/full-suite-*.json` — 完整结构化数据
 - **TXT**: `reports/benchmark-*.txt` 或 `reports/full-suite-*.txt` — 人类可读摘要
 
@@ -105,7 +105,7 @@ benchmark/
 
 每次运行脚本时，自动删除超过 10 组的旧报告和日志（保留最近 10 组）。每组包含一个 JSON + TXT 文件对。
 
-## CSV Schema (48 列)
+## CSV Schema (55 列)
 
 ### 运行标识 (6 列)
 
@@ -118,12 +118,29 @@ benchmark/
 | `java_version` | RESULT_ENV | JDK 版本 |
 | `os_name` | RESULT_ENV | 操作系统 |
 
-### 测试结果 (2 列)
+### 内部基准 (1 列)
 
 | 列名 | 说明 |
 |------|------|
-| `total_tests` | 总测试数 (仅 run-all 脚本) |
-| `total_failed` | 失败测试数 |
+| `internal_qps` | 内部 WAL/scheduler 吞吐量 (仅 benchmark.ps1) |
+
+### HTTP 投递 (4 列)
+
+| 列名 | 说明 |
+|------|------|
+| `http_peak_qps` | HTTP 峰值 QPS (仅 benchmark.ps1) |
+| `http_best_p99_ms` | HTTP 最佳 P99 延迟 |
+| `http_worst_p99_ms` | HTTP 最差 P99 延迟 |
+| `http_fail_rate` | HTTP 失败率 |
+
+### gRPC 投递 (4 列)
+
+| 列名 | 说明 |
+|------|------|
+| `grpc_peak_qps` | gRPC 峰值 QPS (仅 benchmark.ps1) |
+| `grpc_best_p99_ms` | gRPC 最佳 P99 延迟 |
+| `grpc_worst_p99_ms` | gRPC 最差 P99 延迟 |
+| `grpc_fail_rate` | gRPC 失败率 |
 
 ### Per-Tier 核心指标 (7 列 × 5 层级 = 35 列)
 

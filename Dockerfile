@@ -48,7 +48,6 @@ ENTRYPOINT ["sh", "-c", \
     -Xmx${JVM_XMX} \
     -XX:+Use${JVM_GC} \
     -XX:MaxGCPauseMillis=${JVM_GC_PAUSE} \
-    --enable-preview \
     -Dloomq.server.host=${LOOMQ_SERVER_HOST} \
     -Dloomq.server.port=${LOOMQ_SERVER_PORT} \
     -Dloomq.wal.data_dir=${LOOMQ_WAL_DATA_DIR} \

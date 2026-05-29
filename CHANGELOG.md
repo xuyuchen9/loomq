@@ -49,6 +49,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Raft 生命周期线程饥饿问题（`ScheduledExecutorService` 意外取消）
 - CI 集成测试超时稳定性
+- `benchmark.sh` 变量名 bug（`SCHED_ARGS` vs `local_args` 导致 `--workload` 和 `--quick` 参数丢失）
+- Benchmark CSV schema 不一致（`benchmark-output.ps1` 55 列 vs `run-all.ps1`/`run-all.sh` 48 列）
+- Dockerfile `--enable-preview` 标志移除（JDK 25 虚拟线程已正式发布）
+- `docker-compose.yml` deprecated `version: '3.8'` key 移除
+- CLI 默认端口文档修正（8080 → 7928）
+- Roadmap 版本号重复（`v0.9.2 (next)` → `v0.10.0 (next)`）
+- gRPC 投递从路线图"规划中"移至"已实现"
 
 ## [0.9.1] - 2026-05-15
 

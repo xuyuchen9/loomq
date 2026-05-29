@@ -117,6 +117,11 @@
                                 <include>monitoring/**/*.yaml</include>
                                 <include>scripts/**/*.ps1</include>
                                 <include>scripts/**/*.sh</include>
+                                <include>benchmark/scripts/**/*.ps1</include>
+                                <include>benchmark/scripts/**/*.sh</include>
+                                <include>benchmark/README.md</include>
+                                <include>docs/architecture/**/*.md</include>
+                                <include>docs/operations/**/*.md</include>
                             </includes>
                             <trimTrailingWhitespace/>
                             <endWithNewline/>

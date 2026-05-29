@@ -359,9 +359,12 @@ Remove-OldReports
 $CsvFile = Join-Path $ResultsDir "history.csv"
 $bmData = $Results.phases["benchmark"]
 
-# Unified 48-column schema
+# Unified 57-column schema (matches benchmark-output.ps1)
 $tiers = @("ULTRA","FAST","HIGH","STANDARD","ECONOMY")
-$cols = @("timestamp","commit","branch","mode","java_version","os_name","total_tests","total_failed")
+$cols = @("timestamp","commit","branch","mode","java_version","os_name")
+$cols += "internal_qps"
+$cols += "http_peak_qps","http_best_p99_ms","http_worst_p99_ms","http_fail_rate"
+$cols += "grpc_peak_qps","grpc_best_p99_ms","grpc_worst_p99_ms","grpc_fail_rate"
 foreach ($t in $tiers) {
     $cols += "${t}_qps", "${t}_p95_ms", "${t}_p99_ms",
              "${t}_e2e_p95_ms", "${t}_e2e_p99_ms",
@@ -390,8 +393,11 @@ $envData = if ($bmData) { $bmData["env"] } else { $null }
 $javaVersion = if ($envData -and $envData.Count -gt 0) { $envData["java_version"] } else { "" }
 $osName = if ($envData -and $envData.Count -gt 0) { $envData["os_name"] } else { "" }
 
-# Build row values
-$vals = @($DateIso, $Commit, $Branch, $mode, $javaVersion, $osName, $totalTests, $totalFailed)
+# Build row values (55-column schema matching benchmark-output.ps1)
+$vals = @($DateIso, $Commit, $Branch, $mode, $javaVersion, $osName)
+$vals += ""  # internal_qps (not available in run-all)
+$vals += "", "", "", ""  # http_peak_qps, http_best_p99_ms, http_worst_p99_ms, http_fail_rate
+$vals += "", "", "", ""  # grpc_peak_qps, grpc_best_p99_ms, grpc_worst_p99_ms, grpc_fail_rate
 foreach ($t in $tiers) {
     $lat  = if ($bmData -and $bmData["latency"])     { $bmData["latency"][$t] }     else { $null }
     $e2e  = if ($bmData -and $bmData["e2e_latency"]) { $bmData["e2e_latency"][$t] } else { $null }

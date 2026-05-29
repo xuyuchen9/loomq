@@ -147,12 +147,15 @@ echo "=== Persisting results ===" | tee -a "$ALL_LOG"
 # Rotate old reports before saving new ones
 rotate_reports
 
-# --- CSV (unified 48-column wide format) ---
+# --- CSV (unified 55-column wide format, matches benchmark-output.ps1) ---
 CSV_FILE="$RESULTS_DIR/history.csv"
 MODE_VAL=$([ "$MODE" = "quick" ] && echo "quick" || echo "full")
 
 TIERS="ULTRA FAST HIGH STANDARD ECONOMY"
-COLS="timestamp,commit,branch,mode,java_version,os_name,total_tests,total_failed"
+COLS="timestamp,commit,branch,mode,java_version,os_name"
+COLS="$COLS,internal_qps"
+COLS="$COLS,http_peak_qps,http_best_p99_ms,http_worst_p99_ms,http_fail_rate"
+COLS="$COLS,grpc_peak_qps,grpc_best_p99_ms,grpc_worst_p99_ms,grpc_fail_rate"
 for T in $TIERS; do
     COLS="$COLS,${T}_qps,${T}_p95_ms,${T}_p99_ms,${T}_e2e_p95_ms,${T}_e2e_p99_ms,${T}_util_pct,${T}_backpressure"
 done
@@ -187,8 +190,11 @@ SLOW_T=$(echo "$SLOW" | awk '{print $1}')
 INTEG_T=$(echo "$INTEG" | awk '{print $1}')
 TOTAL=$((CORE_T + SERV_T + SLOW_T + INTEG_T))
 
-# Build CSV row
-VALS="$DATE_ISO,$COMMIT,$BRANCH,$MODE_VAL,$JAVA_VER,$OS_NAME,$TOTAL,0"
+# Build CSV row (55-column schema matching benchmark-output.ps1)
+VALS="$DATE_ISO,$COMMIT,$BRANCH,$MODE_VAL,$JAVA_VER,$OS_NAME"
+VALS="$VALS,"  # internal_qps (not available in run-all)
+VALS="$VALS,,,,"  # http_peak_qps, http_best_p99_ms, http_worst_p99_ms, http_fail_rate
+VALS="$VALS,,,,"  # grpc_peak_qps, grpc_best_p99_ms, grpc_worst_p99_ms, grpc_fail_rate
 for T in $TIERS; do
     ROW=$(grep "RESULT_ROW|tier=$T" "$ALL_LOG" | tail -1)
     LAT=$(grep "RESULT_LATENCY|tier=$T" "$ALL_LOG" | tail -1)

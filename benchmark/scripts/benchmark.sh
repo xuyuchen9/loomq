@@ -286,9 +286,9 @@ fi
 if [ "$SCENARIO" = "all" ] || [ "$SCENARIO" = "scheduler" ]; then
     SCHED_ARGS=("-Dloomq.benchmark.workload=$WORKLOAD")
     if [ "$QUICK_MODE" = true ]; then
-        local_args+=("-Dloomq.benchmark.quick=true")
+        SCHED_ARGS+=("-Dloomq.benchmark.quick=true")
     fi
-    run_scenario "3) Scheduler trigger path" "$BM_CLASS_SCHEDULER" "$SCHEDULER_LOG" "${local_args[@]}"
+    run_scenario "3) Scheduler trigger path" "$BM_CLASS_SCHEDULER" "$SCHEDULER_LOG" "${SCHED_ARGS[@]}"
 fi
 
 # ============================================================
