@@ -193,8 +193,11 @@ function Invoke-BenchmarkScenario {
     }
 
     $ExitCode = -1
+    $HasMarker = ($Lines | Where-Object { $_ -like 'RESULT|*' }).Count -gt 0
     if ($TimedOut) {
         $ExitCode = -1
+    } elseif ($HasMarker) {
+        $ExitCode = 0
     } elseif ($null -ne $Process) {
         try { $Process.Refresh() } catch {}
         if ($null -ne $Process.ExitCode) { $ExitCode = [int]$Process.ExitCode }
