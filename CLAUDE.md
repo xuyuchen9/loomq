@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-LoomQ is a durable time kernel for distributed systems. It schedules, persists, and delivers future events called **Intent**s. Built on Java 25 Virtual Threads. Three modules: `loomq-bom` (version management), `loomq-core` (embeddable, HTTP-free kernel), and `loomq-server` (standalone Netty HTTP server).
+LoomQ is a durable time kernel for distributed systems. It schedules, persists, and delivers future events called **Intent**s. Built on Java 25 Virtual Threads. Core modules: `loomq-bom` (version management), `loomq-core` (embeddable, HTTP-free kernel), `loomq-server` (standalone Netty HTTP server), `loomq-raft` (Raft consensus), `loomq-channel` (pluggable delivery channels: HTTP + gRPC), `loomq-cli` (interactive temporal explorer).
 
 ## Build & Run Commands
 
@@ -65,23 +65,33 @@ Tests are categorized with `@Tag` annotations. Maven Surefire uses `groups`/`exc
 | `loomq-bom` | Bill of Materials — centralized version management |
 | `loomq-core` | Embeddable kernel, zero HTTP/JSON deps |
 | `loomq-server` | Standalone Netty HTTP server (`LoomqServerApplication` entry point) |
+| `loomq-raft` | Raft consensus (leader election, log replication, snapshot catch-up) |
+| `loomq-channel` | Aggregator POM for delivery channels |
+| `loomq-channel-http` | HTTP webhook delivery + batch delivery |
+| `loomq-channel-grpc` | gRPC streaming delivery (AUTO_ACK / MANUAL_ACK) |
+| `loomq-cli` | Interactive temporal explorer shell (10+ commands) |
 
 ## Architecture
 
 ```
-loomq-server (Netty HTTP + Raft/cluster wiring + JSON + webhook delivery)
-    │
-    └── loomq-core (embeddable kernel, zero HTTP/JSON deps)
-            │
-            ├── LoomqEngine           — builder-pattern entry point
-            ├── PrecisionScheduler    — time-wheel buckets, per-tier scan + batch consumers
-            │   ├── CohortManager     — CSA-style batched wakeup (replaces per-intent VT sleep)
-            │   ├── BucketGroupManager — per-tier time-bucket storage
-            │   └── ResizableSemaphore — extends Semaphore, runtime-resizable permits
-            ├── IntentStore           — pluggable storage (ConcurrentIntentStore / RocksDBIntentStore)
-            ├── SimpleWalWriter       — memory-mapped WAL with FFM API (~100ns/record)
-            ├── RecoveryPipeline      — snapshot + WAL replay on restart
-            └── SPI interfaces        — DeliveryHandler, CallbackHandler, RedeliveryDecider
+loomq-server (Netty HTTP + JSON + security)
+    ├── IntentHandler        — REST API routing (RadixTree) + error recovery advisor
+    ├── NettyHttpServer      — epoll + pooled allocator + semaphore backpressure
+    ├── SecurityConfig       — token-based authentication
+    └── loomq-channel        — pluggable delivery channels
+        ├── loomq-channel-http  — HTTP webhook delivery + batch delivery
+        └── loomq-channel-grpc  — gRPC streaming delivery (AUTO_ACK / MANUAL_ACK)
+
+loomq-core (embeddable kernel, zero HTTP/JSON deps)
+    ├── LoomqEngine           — builder-pattern entry point
+    ├── PrecisionScheduler    — time-wheel buckets, per-tier scan + batch consumers
+    │   ├── CohortManager     — CSA-style batched wakeup (replaces per-intent VT sleep)
+    │   ├── BucketGroupManager — per-tier time-bucket storage
+    │   └── ResizableSemaphore — extends Semaphore, runtime-resizable permits
+    ├── IntentStore           — pluggable storage (ConcurrentIntentStore / RocksDBIntentStore)
+    ├── SimpleWalWriter       — memory-mapped WAL with FFM API (~100ns/record)
+    ├── RecoveryPipeline      — snapshot + WAL replay on restart
+    └── SPI interfaces        — DeliveryHandler, CallbackHandler, IntentObserver, WalAccessor, RedeliveryDecider
 ```
 
 **Intent lifecycle:** CREATED → SCHEDULED → DUE → DISPATCHING → DELIVERED → ACKED (branches: CANCELLED, EXPIRED, DEAD_LETTERED)
@@ -92,7 +102,7 @@ loomq-server (Netty HTTP + Raft/cluster wiring + JSON + webhook delivery)
 
 - **"Intent" is the public model** — older docs/code may use legacy terminology; always use "Intent" in new code.
 - **Core has zero HTTP/JSON dependencies** — `loomq-core` depends only on `slf4j-api` at compile scope. All transport, serialization, and config-parsing concerns live in `loomq-server`.
-- **DeliveryHandler SPI** — the scheduler in core delegates delivery through this interface; `loomq-server` provides `HttpDeliveryHandler`. Embedders supply their own.
+- **DeliveryHandler SPI** — the scheduler in core delegates delivery through this interface; `loomq-channel-http` provides `NettyHttpDeliveryHandler` and `BatchedHttpDeliveryHandler`, `loomq-channel-grpc` provides `GrpcStreamDeliveryHandler`. Embedders supply their own.
 - **Virtual threads everywhere** — `Executors.newVirtualThreadPerTaskExecutor()` for batch consumers; no traditional thread pool tuning.
 - **Cohort-based wakeup (CSA-inspired)** — intents with delay > precision window are grouped by cohort key; one daemon thread wakes thousands, replacing per-intent VT sleep.
 - **Arrow cross-tier borrowing** — when a tier's semaphore is full, consumers borrow slots from lower-priority tiers via `tryAcquire(100ms)`. AdapTBF bounds lending to 50% of a tier's slots to prevent starvation.
