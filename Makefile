@@ -53,8 +53,14 @@ test-integration:
 test-benchmark:
 	mvn test -Pfull-tests -Dtest.groups=benchmark
 
-profile:
-	powershell -ExecutionPolicy Bypass -File benchmark/scripts/benchmark.ps1 -Stress -StressOnly grpc -Profile -NoPause
+benchmark:
+	powershell -ExecutionPolicy Bypass -File benchmark/scripts/benchmark.ps1 -NoPause
+
+benchmark-quick:
+	powershell -ExecutionPolicy Bypass -File benchmark/scripts/benchmark.ps1 -Quick -NoPause
+
+benchmark-stress:
+	powershell -ExecutionPolicy Bypass -File benchmark/scripts/benchmark.ps1 -Stress -NoPause
 
 # Clean
 clean:

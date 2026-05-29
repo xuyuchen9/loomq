@@ -31,9 +31,11 @@ mvn test -Dtest=ClassName#methodName  # single test method
 mvn test -pl loomq-core -am
 mvn test -pl loomq-server -am
 
-# Run benchmark tests locally
-mvn test -pl loomq-server -am -Dtest=SchedulerTriggerBenchmarkWithMockServer#testQuickTierComparison -DfailIfNoTests=false
-mvn test -pl loomq-server -am -Dtest=SchedulerTriggerBenchmarkWithMockServer#test100kTierThroughput -DfailIfNoTests=false
+# Run benchmark suite (Excel + MD reports)
+benchmark\benchmark.bat                  # Windows full suite
+benchmark\benchmark.bat --quick          # quick validation
+benchmark\benchmark.bat --stress         # full + stress sweep
+./benchmark/scripts/benchmark.sh         # Linux/macOS
 
 # Pre-push gate (same checks CI runs)
 make check                     # check-format + test

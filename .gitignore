@@ -54,4 +54,4 @@ Thumbs.db
 
 # Claude
 .claude/
-.idea/
+.idea/*.pyc

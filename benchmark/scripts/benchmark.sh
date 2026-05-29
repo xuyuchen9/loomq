@@ -1,94 +1,122 @@
 #!/bin/bash
-# LoomQ 性能基准测试脚本 (Linux/macOS)
+# LoomQ 性能基准测试 (Linux/macOS)
 #
 # 用法:
-#   ./benchmark.sh                           # 全量测试 (internal + HTTP + scheduler)
-#   ./benchmark.sh --quick                   # 快速测试模式
-#   ./benchmark.sh --scenario=scheduler      # 仅运行调度器压测
-#   ./benchmark.sh --compare                 # 查看历史对比
-#   ./benchmark.sh --help                    # 显示帮助
+#   ./benchmark.sh                    # 全量测试
+#   ./benchmark.sh --quick            # 快速测试
+#   ./benchmark.sh --stress           # 全量 + 压力测试
+#   ./benchmark.sh --stress-only=grpc # 仅 gRPC 压力测试
+#   ./benchmark.sh --scenario=internal # 仅内部组件
+#   ./benchmark.sh --compare          # 查看上次报告
 #
-# 所有结果强制落库 (CSV + JSON + TXT)，旧报告自动轮转 (保留最近 10 组)。
+# 输出:
+#   Excel: benchmark/results/reports/benchmark-report-{timestamp}.xlsx
+#   MD:    benchmark/results/reports/benchmark-report-{timestamp}.md
 
 set -euo pipefail
 
 # ============================================================
-#  配置
+#  参数解析
 # ============================================================
 
 QUICK_MODE=false
+STRESS=false
+STRESS_ONLY=""
 SCENARIO="all"
-WORKLOAD="uniform"
+GRPC_TIER=""
 NO_COMPILE=false
-VERBOSE=false
 COMPARE_ONLY=false
+VERBOSE=false
 
 for arg in "$@"; do
     case $arg in
         --quick)           QUICK_MODE=true ;;
-        --full)            QUICK_MODE=false ;;
+        --stress)          STRESS=true ;;
+        --stress-only=*)   STRESS_ONLY="${arg#*=}"; STRESS=true ;;
         --scenario=*)      SCENARIO="${arg#*=}" ;;
-        --workload=*)      WORKLOAD="${arg#*=}" ;;
+        --grpc-tier=*)     GRPC_TIER="${arg#*=}" ;;
         --no-compile)      NO_COMPILE=true ;;
         --compare)         COMPARE_ONLY=true ;;
         --verbose)         VERBOSE=true ;;
         --help|-h)
+            echo "LoomQ 性能基准测试"
             echo ""
-            echo "LoomQ Performance Benchmark v0.9.2"
+            echo "用法: ./benchmark.sh [选项]"
             echo ""
-            echo "Usage: ./benchmark.sh [Options]"
+            echo "选项:"
+            echo "  --quick              快速测试模式"
+            echo "  --stress             包含压力测试"
+            echo "  --stress-only=NAME   仅运行压力测试: http / grpc"
+            echo "  --scenario=NAME      指定场景: internal / create / scheduler / all"
+            echo "  --grpc-tier=TIER     gRPC 精度档位: ULTRA/FAST/HIGH/STANDARD/ECONOMY"
+            echo "  --no-compile         跳过编译"
+            echo "  --compare            查看上次报告对比"
+            echo "  --verbose            显示完整日志"
+            echo "  --help               显示帮助"
             echo ""
-            echo "Options:"
-            echo "  --quick              Quick test mode"
-            echo "  --full               Full test mode (default)"
-            echo "  --scenario=<name>    Scenario: all, internal, http, grpc, scheduler (default: all)"
-            echo "  --workload=<name>    Workload: uniform, prod-typical, burst-ultra, mixed-heavy (default: uniform)"
-            echo "  --no-compile         Skip compilation"
-            echo "  --compare            Show history comparison"
-            echo "  --verbose            Show full scenario output"
-            echo "  --help               Show this help"
-            echo ""
-            echo "Note: All results are always persisted (CSV + JSON + TXT)."
-            echo "      Old reports are automatically rotated (10 most recent kept)."
-            echo ""
+            echo "输出:"
+            echo "  Excel: benchmark/results/reports/benchmark-report-{时间戳}.xlsx"
+            echo "  MD:    benchmark/results/reports/benchmark-report-{时间戳}.md"
             exit 0
             ;;
         *)
-            echo "Unknown option: $arg"
-            echo "Use --help for usage information."
+            echo "未知选项: $arg"
+            echo "使用 --help 查看帮助。"
             exit 1
             ;;
     esac
 done
+
+# ============================================================
+#  环境初始化
+# ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RESULTS_DIR="$PROJECT_ROOT/benchmark/results"
 REPORTS_DIR="$RESULTS_DIR/reports"
 LOGS_DIR="$RESULTS_DIR/logs"
+SERVER_DIR="$PROJECT_ROOT/loomq-server"
 
 mkdir -p "$REPORTS_DIR" "$LOGS_DIR"
 
-TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
-DATE_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+DATE_ISO=$(date +%Y-%m-%dT%H:%M:%S)
 COMMIT=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-MODE=$($QUICK_MODE && echo "quick" || echo "full")
+JAVA_VER=$(java -version 2>&1 | head -1 || echo "unknown")
+OS_NAME=$(uname -srm)
+CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "?")
+
+# Banner
+echo ""
+echo "+============================================================+"
+echo "|          LoomQ 性能基准测试                                 |"
+echo "+============================================================+"
+echo ""
+echo "  Commit:   $COMMIT ($BRANCH)"
+echo "  Java:     $JAVA_VER"
+echo "  OS:       $OS_NAME"
+echo "  CPU:      $CPU_CORES cores"
+echo "  Scenario: $SCENARIO"
+echo "  Mode:     $($QUICK_MODE && echo "quick" || echo "full")"
+if [ "$STRESS" = true ]; then
+    echo "  Stress:   enabled ($STRESS_ONLY)"
+fi
+echo ""
 
 # ============================================================
-#  Helpers
+#  工具函数
 # ============================================================
 
-# Extract field from pipe-delimited marker (macOS compatible)
 extract() { echo "$1" | sed -n "s/.*${2}=\([^|]*\).*/\1/p"; }
 
-# Report rotation: keep only the N most recent reports/logs
 rotate_reports() {
     local keep=10
     local count
-    count=$(ls -1t "$REPORTS_DIR"/*.json "$REPORTS_DIR"/*.txt 2>/dev/null | wc -l)
+    count=$(ls -1t "$REPORTS_DIR"/*.xlsx "$REPORTS_DIR"/*.md 2>/dev/null | wc -l)
     if [ "$count" -gt "$((keep * 2))" ]; then
-        ls -1t "$REPORTS_DIR"/*.json "$REPORTS_DIR"/*.txt 2>/dev/null | tail -n +"$((keep * 2 + 1))" | xargs rm -f --
+        ls -1t "$REPORTS_DIR"/*.xlsx "$REPORTS_DIR"/*.md 2>/dev/null | tail -n +"$((keep * 2 + 1))" | xargs rm -f --
     fi
     count=$(ls -1t "$LOGS_DIR"/*.log 2>/dev/null | wc -l)
     if [ "$count" -gt "$keep" ]; then
@@ -96,453 +124,517 @@ rotate_reports() {
     fi
 }
 
-# ============================================================
-#  Compare mode
-# ============================================================
+# Scenario timeout (seconds)
+get_timeout() {
+    local name=$1
+    local quick=$2
+    case $name in
+        internal)  $quick && echo 120 || echo 240 ;;
+        wal)       $quick && echo 60  || echo 120 ;;
+        storage)   $quick && echo 60  || echo 120 ;;
+        http|grpc) $quick && echo 180 || echo 420 ;;
+        scheduler) $quick && echo 180 || echo 420 ;;
+        *)         echo 300 ;;
+    esac
+}
 
-if [ "$COMPARE_ONLY" = true ]; then
-    CSV_FILE="$RESULTS_DIR/history.csv"
-    if [ -f "$CSV_FILE" ]; then
-        LINE_COUNT=$(wc -l < "$CSV_FILE")
-        echo "═══════════════════════════════════════════════════════════════"
-        echo "                    历史记录对比"
-        echo "═══════════════════════════════════════════════════════════════"
-        echo ""
-        echo "  记录总数: $((LINE_COUNT - 1))"
-        echo ""
-
-        # 最近 5 次运行摘要
-        echo "┌─ 最近运行 ─────────────────────────────────────────────────────────────────┐"
-        printf "│ %-19s %-8s %-10s %-10s %-8s │\n" "时间" "模式" "总QPS" "完成率" "ULTRA_QPS"
-        echo "├──────────────────────────────────────────────────────────────────────────┤"
-
-        HEADER_LINE=$(head -1 "$CSV_FILE")
-        IFS=',' read -ra HEADER_COLS <<< "$HEADER_LINE"
-        declare -A COL_IDX
-        for i in "${!HEADER_COLS[@]}"; do
-            COL_IDX[${HEADER_COLS[$i]}]=$i
-        done
-
-        tail -5 "$CSV_FILE" | while IFS=',' read -ra COLS; do
-            TS="${COLS[${COL_IDX[timestamp]}]:-?}"
-            MODE="${COLS[${COL_IDX[mode]}]:-?}"
-            TQPS="${COLS[${COL_IDX[total_qps]}]:-?}"
-            COMP="${COLS[${COL_IDX[completion_rate]}]:-?}"
-            UQPS="${COLS[${COL_IDX[ULTRA_qps]}]:-?}"
-            printf "│ %-19s %-8s %-10s %-10s %-8s │\n" "$TS" "$MODE" "$TQPS" "$COMP" "$UQPS"
-        done
-        echo "└──────────────────────────────────────────────────────────────────────────┘"
-        echo ""
-
-        # 最近两次回归对比
-        if [ "$LINE_COUNT" -ge 3 ]; then
-            PREV_LINE=$(tail -2 "$CSV_FILE" | head -1)
-            CURR_LINE=$(tail -1 "$CSV_FILE")
-            IFS=',' read -ra PREV_COLS <<< "$PREV_LINE"
-            IFS=',' read -ra CURR_COLS <<< "$CURR_LINE"
-
-            PREV_TS="${PREV_COLS[${COL_IDX[timestamp]}]:-?}"
-            CURR_TS="${CURR_COLS[${COL_IDX[timestamp]}]:-?}"
-
-            echo "┌─ 回归对比 ──────────────────────────────────────────────────────────────────┐"
-            echo "│  上次: $PREV_TS"
-            echo "│  本次: $CURR_TS"
-            echo "├──────────┬──────────────────────────────────────────────────────────────────────┤"
-
-            TIERS="ULTRA FAST HIGH STANDARD ECONOMY"
-            for T in $TIERS; do
-                PQ="${PREV_COLS[${COL_IDX[${T}_qps]}]:-0}"
-                CQ="${CURR_COLS[${COL_IDX[${T}_qps]}]:-0}"
-                PE="${PREV_COLS[${COL_IDX[${T}_e2e_p99_ms]}]:-0}"
-                CE="${CURR_COLS[${COL_IDX[${T}_e2e_p99_ms]}]:-0}"
-                [ "$PQ" = "0" ] && [ "$CQ" = "0" ] && continue
-                if [ "$PQ" != "0" ] && [ "$CQ" != "0" ]; then
-                    QPS_PCT=$(awk "BEGIN{printf \"%.1f\", ($CQ - $PQ) / $PQ * 100}")
-                    printf "│ %-8s │ QPS: %s→%s (%s%%)  E2E-p99: %s→%s ms │\n" \
-                        "$T" "$PQ" "$CQ" "$QPS_PCT" "$PE" "$CE"
-                fi
-            done
-            echo "└──────────┴──────────────────────────────────────────────────────────────────────┘"
-        fi
-    else
-        echo "未找到历史记录。请先运行一次基准测试。"
-    fi
-    exit 0
-fi
-
-# ============================================================
-#  Banner
-# ============================================================
-
-echo ""
-echo "+--------------------------------------------------------------+"
-echo "|          LoomQ 性能基准测试 v0.9.2                            |"
-echo "+--------------------------------------------------------------+"
-echo ""
-echo "Scenario: $SCENARIO"
-echo "Mode:     $MODE"
-echo "Workload: $WORKLOAD"
-echo "Commit:   $COMMIT ($BRANCH)"
-echo ""
-
-# ============================================================
-#  Compile
-# ============================================================
-
-SERVER_DIR="$PROJECT_ROOT/loomq-server"
-
-if [ "$NO_COMPILE" = false ]; then
-    echo ">>> Compiling project..."
-    mvn -f "$PROJECT_ROOT/pom.xml" compile test-compile -q 2>&1 | tail -3
-    if [ ${PIPESTATUS[0]} -ne 0 ]; then
-        echo "[ERROR] Compilation failed"
-        exit 1
-    fi
-    echo "  Compilation OK"
-fi
-
-# Rotate old reports
-rotate_reports
-
-# ============================================================
-#  Run Scenarios
-# ============================================================
-
-BM_CLASS_SCHEDULER="com.loomq.scheduler.SchedulerTriggerBenchmarkWithMockServer"
-BM_CLASS_INTERNAL="com.loomq.benchmark.InternalBenchmark"
-BM_CLASS_HTTP="com.loomq.benchmark.HttpVirtualThreadBenchmark"
-BM_CLASS_GRPC="com.loomq.benchmark.GrpcVirtualThreadBenchmark"
-BM_CLASS_WAL="com.loomq.benchmark.WalThroughputBenchmark"
-BM_CLASS_STORAGE="com.loomq.benchmark.StorageBenchmark"
-BM_CLASS_OBSERVER="com.loomq.benchmark.ObserverOverheadBenchmark"
-
-SCHEDULER_LOG="$LOGS_DIR/benchmark-scheduler-$TIMESTAMP.log"
-INTERNAL_LOG="$LOGS_DIR/benchmark-internal-$TIMESTAMP.log"
-HTTP_LOG="$LOGS_DIR/benchmark-http-$TIMESTAMP.log"
-GRPC_LOG="$LOGS_DIR/benchmark-grpc-$TIMESTAMP.log"
-WAL_LOG="$LOGS_DIR/benchmark-wal-$TIMESTAMP.log"
-STORAGE_LOG="$LOGS_DIR/benchmark-storage-$TIMESTAMP.log"
-OBSERVER_LOG="$LOGS_DIR/benchmark-observer-$TIMESTAMP.log"
-
+# Run a benchmark scenario via mvn exec:java
+# Args: name, main_class, timeout_sec, extra_mvn_args...
 run_scenario() {
     local name="$1"
     local main_class="$2"
-    local log_file="$3"
+    local timeout_sec="$3"
     shift 3
     local extra_args=("$@")
 
     echo ""
     echo "=== $name ==="
 
+    local log_file="$LOGS_DIR/scenario-$(echo "$main_class" | tr '.' '_')-$TIMESTAMP.log"
+
     local mvn_args=(
         exec:java
-        -Dexec.mainClass="$main_class"
+        "-Dexec.mainClass=$main_class"
         -Dexec.classpathScope=test
         -q
     )
+    if [ "$QUICK_MODE" = true ]; then
+        mvn_args+=("-Dloomq.benchmark.quick=true")
+    fi
     for a in "${extra_args[@]}"; do
         mvn_args+=("$a")
     done
 
+    local start_time=$SECONDS
     if [ "$VERBOSE" = true ]; then
-        mvn -f "$SERVER_DIR/pom.xml" "${mvn_args[@]}" 2>&1 | tee "$log_file"
+        mvn -f "$SERVER_DIR/pom.xml" "${mvn_args[@]}" 2>&1 | tee "$log_file" &
     else
-        mvn -f "$SERVER_DIR/pom.xml" "${mvn_args[@]}" > "$log_file" 2>&1
+        mvn -f "$SERVER_DIR/pom.xml" "${mvn_args[@]}" > "$log_file" 2>&1 &
+    fi
+    local mvn_pid=$!
+
+    # Timeout monitoring
+    while kill -0 "$mvn_pid" 2>/dev/null; do
+        local elapsed=$((SECONDS - start_time))
+        if [ $elapsed -ge "$timeout_sec" ]; then
+            echo "  TIMEOUT after ${timeout_sec}s, killing..."
+            kill -- -$mvn_pid 2>/dev/null || kill "$mvn_pid" 2>/dev/null
+            wait "$mvn_pid" 2>/dev/null
+            return 1
+        fi
+        sleep 2
+    done
+    wait "$mvn_pid"
+    local rc=$?
+
+    local elapsed=$((SECONDS - start_time))
+    if [ $rc -ne 0 ]; then
+        echo "  FAILED (exit $rc, ${elapsed}s)"
+        return $rc
     fi
 
-    echo "  Completed (log: $log_file)"
+    # Print RESULT markers
+    grep "^RESULT|" "$log_file" 2>/dev/null | tail -1 | while read -r line; do
+        echo "  $line"
+    done
+
+    echo "  OK (${elapsed}s)"
+    return 0
 }
 
-# Scenario 1: Internal upper bound
-if [ "$SCENARIO" = "all" ] || [ "$SCENARIO" = "internal" ]; then
-    if [ "$QUICK_MODE" = true ]; then
-        run_scenario "1) In-process upper bound" "$BM_CLASS_INTERNAL" "$INTERNAL_LOG" "-Dloomq.benchmark.quick=true"
+# ============================================================
+#  Compare mode
+# ============================================================
+
+if [ "$COMPARE_ONLY" = true ]; then
+    LATEST_MD=$(ls -1t "$REPORTS_DIR"/benchmark-report-*.md 2>/dev/null | head -1)
+    if [ -n "$LATEST_MD" ]; then
+        echo "=== 最新报告: $LATEST_MD ==="
+        echo ""
+        cat "$LATEST_MD"
     else
-        run_scenario "1) In-process upper bound" "$BM_CLASS_INTERNAL" "$INTERNAL_LOG"
+        echo "未找到报告。请先运行一次基准测试。"
     fi
-
-    # ---- 新增组件基准测试 (v0.9.2) ----
-    run_scenario "1b) WAL Write Throughput" "$BM_CLASS_WAL" "$WAL_LOG"
-    run_scenario "1c) Storage Engine Comparison" "$BM_CLASS_STORAGE" "$STORAGE_LOG"
-    run_scenario "1d) Observer Overhead" "$BM_CLASS_OBSERVER" "$OBSERVER_LOG"
-    # ---- 新增结束 ----
-fi
-
-# Scenario 2: HTTP create path (requires running server - skip if not in full mode)
-if [ "$SCENARIO" = "all" ] || [ "$SCENARIO" = "http" ]; then
-    echo ""
-    echo "=== 2) HTTP create path ==="
-    echo "  (Skipped — requires a running LoomQ server. Use run-all.sh for full suite.)"
-fi
-
-# Scenario 2b: gRPC create path (requires running server with gRPC enabled)
-if [ "$SCENARIO" = "all" ] || [ "$SCENARIO" = "grpc" ]; then
-    echo ""
-    echo "=== 2b) gRPC create path ==="
-    echo "  (Skipped — requires a running LoomQ server with gRPC enabled. Use run-all.sh for full suite.)"
-fi
-
-# Scenario 3: Scheduler trigger path
-if [ "$SCENARIO" = "all" ] || [ "$SCENARIO" = "scheduler" ]; then
-    SCHED_ARGS=("-Dloomq.benchmark.workload=$WORKLOAD")
-    if [ "$QUICK_MODE" = true ]; then
-        SCHED_ARGS+=("-Dloomq.benchmark.quick=true")
-    fi
-    run_scenario "3) Scheduler trigger path" "$BM_CLASS_SCHEDULER" "$SCHEDULER_LOG" "${SCHED_ARGS[@]}"
+    exit 0
 fi
 
 # ============================================================
-#  Parse & Persist
+#  Compile
 # ============================================================
 
-echo ""
-echo "=== Persisting results ==="
+M2_REPO="$RESULTS_DIR/m2repo"
+mkdir -p "$M2_REPO"
 
-# Determine which log to parse for scheduler markers
-PARSE_LOG=""
-if [ -f "$SCHEDULER_LOG" ]; then
-    PARSE_LOG="$SCHEDULER_LOG"
-elif [ -f "$INTERNAL_LOG" ]; then
-    PARSE_LOG="$INTERNAL_LOG"
-fi
-
-# --- CSV (unified 55-column wide format) ---
-CSV_FILE="$RESULTS_DIR/history.csv"
-TIERS="ULTRA FAST HIGH STANDARD ECONOMY"
-COLS="timestamp,commit,branch,mode,java_version,os_name"
-COLS="$COLS,internal_qps"
-COLS="$COLS,http_peak_qps,http_best_p99_ms,http_worst_p99_ms,http_fail_rate"
-COLS="$COLS,grpc_peak_qps,grpc_best_p99_ms,grpc_worst_p99_ms,grpc_fail_rate"
-for T in $TIERS; do
-    COLS="$COLS,${T}_qps,${T}_p95_ms,${T}_p99_ms,${T}_e2e_p95_ms,${T}_e2e_p99_ms,${T}_util_pct,${T}_backpressure"
-done
-COLS="$COLS,completion_rate,total_qps,global_p95_total_ms,vt_reduction_pct,cohort_wake_events"
-
-# Header consistency: verify or rebuild
-NEEDS_NEW_HEADER=true
-if [ -f "$CSV_FILE" ]; then
-    FIRST_LINE=$(head -1 "$CSV_FILE")
-    if [ "$FIRST_LINE" = "$COLS" ]; then
-        NEEDS_NEW_HEADER=false
+if [ "$NO_COMPILE" = false ]; then
+    echo ">>> 编译项目..."
+    mvn -f "$PROJECT_ROOT/pom.xml" compile test-compile -Dmaven.repo.local="$M2_REPO" -q 2>&1 | tail -5
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+        echo "[ERROR] 编译失败"
+        exit 1
     fi
-fi
-if [ "$NEEDS_NEW_HEADER" = true ]; then
-    echo "$COLS" > "$CSV_FILE"
+    echo "  编译完成"
 fi
 
-# Extract env info
-ENV_LINE=""
-if [ -n "$PARSE_LOG" ]; then
-    ENV_LINE=$(grep "^RESULT_ENV|" "$PARSE_LOG" | tail -1)
-fi
-JAVA_VER=$(extract "$ENV_LINE" 'java_version')
-OS_NAME=$(extract "$ENV_LINE" 'os_name')
+rotate_reports
 
-# Build CSV row (55-column schema)
-VALS="$DATE_ISO,$COMMIT,$BRANCH,$MODE,$JAVA_VER,$OS_NAME"
-VALS="$VALS,"  # internal_qps (not available in bash)
-VALS="$VALS,,,,"  # http_peak_qps, http_best_p99_ms, http_worst_p99_ms, http_fail_rate
-VALS="$VALS,,,,"  # grpc_peak_qps, grpc_best_p99_ms, grpc_worst_p99_ms, grpc_fail_rate
-for T in $TIERS; do
-    if [ -n "$PARSE_LOG" ]; then
-        ROW=$(grep "RESULT_ROW|tier=$T" "$PARSE_LOG" | tail -1)
-        LAT=$(grep "RESULT_LATENCY|tier=$T" "$PARSE_LOG" | tail -1)
-        E2E=$(grep "RESULT_E2E_LATENCY|tier=$T" "$PARSE_LOG" | tail -1)
-        SEM=$(grep "RESULT_SEMAPHORE|tier=$T" "$PARSE_LOG" | tail -1)
-    else
-        ROW=""; LAT=""; E2E=""; SEM=""
+# ============================================================
+#  场景过滤
+# ============================================================
+
+RUN_INTERNAL=false
+RUN_CREATE=false
+RUN_SCHEDULER=false
+
+if [ -z "$STRESS_ONLY" ]; then
+    case $SCENARIO in
+        all)       RUN_INTERNAL=true; RUN_CREATE=true; RUN_SCHEDULER=true ;;
+        internal)  RUN_INTERNAL=true ;;
+        create)    RUN_CREATE=true ;;
+        scheduler) RUN_SCHEDULER=true ;;
+    esac
+fi
+
+# Stress-only mode: only run stress scenarios
+if [ -n "$STRESS_ONLY" ]; then
+    RUN_CREATE=true
+fi
+
+# ============================================================
+#  Phase 1: Internal (no server)
+# ============================================================
+
+INTERNAL_LOG=""; WAL_LOG=""; STORAGE_LOG=""
+
+if [ "$RUN_INTERNAL" = true ]; then
+    TIMEOUT=$(get_timeout "internal" $QUICK_MODE)
+    INTERNAL_LOG="$LOGS_DIR/scenario-InternalBenchmark-$TIMESTAMP.log"
+    run_scenario "1) IntentStore & Memory" "com.loomq.benchmark.InternalBenchmark" "$TIMEOUT"
+
+    TIMEOUT=$(get_timeout "wal" $QUICK_MODE)
+    WAL_LOG="$LOGS_DIR/scenario-WalThroughputBenchmark-$TIMESTAMP.log"
+    run_scenario "1b) WAL Write Throughput" "com.loomq.benchmark.WalThroughputBenchmark" "$TIMEOUT"
+
+    TIMEOUT=$(get_timeout "storage" $QUICK_MODE)
+    STORAGE_LOG="$LOGS_DIR/scenario-StorageBenchmark-$TIMESTAMP.log"
+    run_scenario "1c) Storage Engine Comparison" "com.loomq.benchmark.StorageBenchmark" "$TIMEOUT"
+fi
+
+# ============================================================
+#  Phase 2: Server-based tests
+# ============================================================
+
+HTTP_LOG=""; GRPC_LOG=""; SCHEDULER_LOG=""
+SERVER_PID=""
+
+cleanup_server() {
+    if [ -n "$SERVER_PID" ]; then
+        echo "  Stopping server (PID: $SERVER_PID)..."
+        kill -- -$SERVER_PID 2>/dev/null || kill "$SERVER_PID" 2>/dev/null
+        wait "$SERVER_PID" 2>/dev/null
+    fi
+}
+trap cleanup_server EXIT
+
+if [ "$RUN_CREATE" = true ] || [ "$RUN_SCHEDULER" = true ] || [ "$STRESS" = true ]; then
+    echo ""
+    echo ">>> 冷却 30s..."
+    sleep 30
+
+    # Find server JAR
+    SERVER_JAR=$(find "$SERVER_DIR/target" -name "loomq-server-*-shaded.jar" -not -name "*-sources.jar" 2>/dev/null | head -1)
+    if [ -z "$SERVER_JAR" ]; then
+        echo "[ERROR] Server JAR not found. Build first: mvn package -DskipTests"
+        exit 1
     fi
 
-    VALS="$VALS,$(extract "$ROW" 'qps')"
-    VALS="$VALS,$(extract "$LAT" 'p95')"
-    VALS="$VALS,$(extract "$LAT" 'p99')"
-    VALS="$VALS,$(extract "$E2E" 'p95')"
-    VALS="$VALS,$(extract "$E2E" 'p99')"
-    VALS="$VALS,$(extract "$SEM" 'utilization_pct')"
-    VALS="$VALS,$(extract "$ROW" 'backpressure')"
-done
+    # Find free port
+    TEMP_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()" 2>/dev/null || echo 8080)
+    GRPC_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()" 2>/dev/null || echo 7929)
+    DATA_DIR="$RESULTS_DIR/runtime/data-$TIMESTAMP"
+    mkdir -p "$DATA_DIR"
 
-# Global aggregates
-if [ -n "$PARSE_LOG" ]; then
-    RESULT_LINE=$(grep "^RESULT|" "$PARSE_LOG" | tail -1)
-    GLOBAL=$(grep "RESULT_GLOBAL_LATENCY" "$PARSE_LOG" | tail -1)
-    OPT=$(grep "RESULT_OPTIMIZATION" "$PARSE_LOG" | tail -1)
-    COHORT=$(grep "RESULT_COHORT" "$PARSE_LOG" | tail -1)
-    SYSQPS=$(grep "RESULT_SYSTEM_QPS" "$PARSE_LOG" | tail -1)
-else
-    RESULT_LINE=""; GLOBAL=""; OPT=""; COHORT=""; SYSQPS=""
-fi
+    echo ">>> Starting server on port $TEMP_PORT (gRPC: $GRPC_PORT)..."
+    java -jar "$SERVER_JAR" \
+        --server.port="$TEMP_PORT" \
+        --grpc.port="$GRPC_PORT" \
+        --data.dir="$DATA_DIR" \
+        > "$LOGS_DIR/server-$TIMESTAMP.log" 2>&1 &
+    SERVER_PID=$!
 
-VALS="$VALS,$(extract "$RESULT_LINE" 'completion_rate')"
-VALS="$VALS,$(extract "$SYSQPS" 'total_qps')"
-VALS="$VALS,$(extract "$GLOBAL" 'p95_total')"
-VALS="$VALS,$(extract "$OPT" 'vt_reduction_pct')"
-VALS="$VALS,$(extract "$COHORT" 'wake_events')"
-
-echo "$VALS" >> "$CSV_FILE"
-echo "  CSV: $CSV_FILE"
-
-# --- JSON ---
-JSON_FILE="$REPORTS_DIR/benchmark-$TIMESTAMP.json"
-{
-    echo "{"
-    echo "  \"timestamp\": \"$DATE_ISO\","
-    echo "  \"commit\": \"$COMMIT\","
-    echo "  \"branch\": \"$BRANCH\","
-    echo "  \"mode\": \"$MODE\","
-    echo "  \"scenario\": \"$SCENARIO\","
-    echo "  \"workload\": \"$WORKLOAD\","
-    echo "  \"tiers\": {"
-    first=true
-    for T in $TIERS; do
-        if [ "$first" = true ]; then first=false; else echo ","; fi
-        if [ -n "$PARSE_LOG" ]; then
-            ROW=$(grep "RESULT_ROW|tier=$T" "$PARSE_LOG" | tail -1)
-            LAT=$(grep "RESULT_LATENCY|tier=$T" "$PARSE_LOG" | tail -1)
-            E2E=$(grep "RESULT_E2E_LATENCY|tier=$T" "$PARSE_LOG" | tail -1)
-        else
-            ROW=""; LAT=""; E2E=""
+    # Wait for server
+    echo "  Waiting for server..."
+    for i in $(seq 1 60); do
+        if curl -s "http://127.0.0.1:$TEMP_PORT/health" > /dev/null 2>&1; then
+            echo "  Server ready"
+            break
         fi
-        printf "    \"%s\": {\"qps\": \"%s\", \"p95\": \"%s\", \"p99\": \"%s\", \"e2e_p95\": \"%s\", \"e2e_p99\": \"%s\"}" \
-            "$T" "$(extract "$ROW" 'qps')" "$(extract "$LAT" 'p95')" "$(extract "$LAT" 'p99')" \
-            "$(extract "$E2E" 'p95')" "$(extract "$E2E" 'p99')"
+        if [ $i -eq 60 ]; then
+            echo "[ERROR] Server failed to start"
+            exit 1
+        fi
+        sleep 2
     done
-    echo ""
-    echo "  }"
-    echo "}"
-} > "$JSON_FILE"
-echo "  JSON: $JSON_FILE"
 
-# --- TXT Summary (中文) ---
-SUMMARY_FILE="$REPORTS_DIR/benchmark-$TIMESTAMP.txt"
-{
-    echo "═══════════════════════════════════════════════════════════════"
-    echo "                    LoomQ 基准测试报告"
-    echo "═══════════════════════════════════════════════════════════════"
-    echo ""
-    echo "  日期: $DATE_ISO"
-    echo "  提交: $COMMIT ($BRANCH)"
-    echo "  模式: $MODE"
-    echo "  场景: $SCENARIO"
-    echo "  单位: 唤醒延迟=微秒(µs) | E2E延迟=毫秒(ms) | QPS=每秒处理量"
-    echo ""
+    BASE_URL="http://127.0.0.1:$TEMP_PORT"
 
-    if [ -n "$PARSE_LOG" ] && grep -q "RESULT_ROW|" "$PARSE_LOG" 2>/dev/null; then
-        echo "┌─ 吞吐量 ──────────────────────────────────────────────────────────────────┐"
-        printf "│ %-8s %8s %10s %10s %8s %8s %6s │\n" \
-            "档位" "接收" "QPS" "理论QPS" "效率" "完成率" "背压"
-        echo "├──────────────────────────────────────────────────────────────────────────┤"
-        TOTAL_RECEIVED=0
-        for T in $TIERS; do
-            ROW=$(grep "RESULT_ROW|tier=$T" "$PARSE_LOG" | tail -1)
-            [ -z "$ROW" ] && continue
-            RCV=$(extract "$ROW" 'received')
-            TOTAL_RECEIVED=$((TOTAL_RECEIVED + RCV))
-            printf "│ %-8s %8s %10s %10s %7s%% %7s%% %6s │\n" \
-                "$T" "$RCV" \
-                "$(extract "$ROW" 'qps')" \
-                "$(extract "$ROW" 'theoretical_qps')" \
-                "$(extract "$ROW" 'efficiency')" \
-                "100.0" \
-                "$(extract "$ROW" 'backpressure')"
-        done
-        echo "└──────────────────────────────────────────────────────────────────────────┘"
-        echo ""
-
-        echo "┌─ 延迟分布 ────────────────────────────────────────────────────────────────┐"
-        printf "│ %-8s │ %-17s │ %-17s │ %-14s │\n" \
-            "档位" "唤醒延迟(µs)" "E2E延迟(ms)" "信号量%"
-        printf "│ %-8s │ %5s %5s %5s │ %5s %5s %5s │ %6s │\n" \
-            "" "p50" "p95" "p99" "p50" "p95" "p99" ""
-        echo "├──────────┼─────────────────┼─────────────────┼────────────────┤"
-        for T in $TIERS; do
-            ROW=$(grep "RESULT_ROW|tier=$T" "$PARSE_LOG" | tail -1)
-            LAT=$(grep "RESULT_LATENCY|tier=$T" "$PARSE_LOG" | tail -1)
-            E2E=$(grep "RESULT_E2E_LATENCY|tier=$T" "$PARSE_LOG" | tail -1)
-            SEM=$(grep "RESULT_SEMAPHORE|tier=$T" "$PARSE_LOG" | tail -1)
-            [ -z "$ROW" ] && continue
-            printf "│ %-8s │ %5s %5s %5s │ %5s %5s %5s │ %6s │\n" \
-                "$T" \
-                "$(extract "$LAT" 'p50')" "$(extract "$LAT" 'p95')" "$(extract "$LAT" 'p99')" \
-                "$(extract "$E2E" 'p50')" "$(extract "$E2E" 'p95')" "$(extract "$E2E" 'p99')" \
-                "$(extract "$SEM" 'utilization_pct')"
-        done
-        echo "└──────────┴─────────────────┴─────────────────┴────────────────┘"
-        echo ""
-    fi
-
-    # SLO 验证
-    if [ -n "$PARSE_LOG" ] && grep -q "RESULT_E2E_LATENCY|" "$PARSE_LOG" 2>/dev/null; then
-        echo "┌─ SLO 验证 ─────────────────────────────────────────────────────────────────┐"
-        printf "│ %-8s │ %-13s │ %-8s │ %-6s │ %-13s │ %-8s │ %-6s │\n" \
-            "档位" "E2E-p95" "阈值" "结果" "E2E-p99" "阈值" "结果"
-        echo "├──────────┼───────────────┼──────────┼────────┼───────────────┼──────────┼────────┤"
-        declare -A SLO_P95=( [ULTRA]=20 [FAST]=70 [HIGH]=150 [STANDARD]=600 [ECONOMY]=1200 )
-        declare -A SLO_P99=( [ULTRA]=35 [FAST]=110 [HIGH]=230 [STANDARD]=900 [ECONOMY]=1700 )
-        for T in $TIERS; do
-            E2E=$(grep "RESULT_E2E_LATENCY|tier=$T" "$PARSE_LOG" | tail -1)
-            [ -z "$E2E" ] && continue
-            P95=$(extract "$E2E" 'p95')
-            P99=$(extract "$E2E" 'p99')
-            LIMIT95=${SLO_P95[$T]:-9999}
-            LIMIT99=${SLO_P99[$T]:-9999}
-            if [ "$P95" -le "$LIMIT95" ] 2>/dev/null; then R95="✅通过"; else R95="❌失败"; fi
-            if [ "$P99" -le "$LIMIT99" ] 2>/dev/null; then R99="✅通过"; else R99="❌失败"; fi
-            printf "│ %-8s │ %9s ms │ ≤%s ms │ %s │ %9s ms │ ≤%s ms │ %s │\n" \
-                "$T" "$P95" "$LIMIT95" "$R95" "$P99" "$LIMIT99" "$R99"
-        done
-        echo "└──────────┴───────────────┴──────────┴────────┴───────────────┴──────────┴────────┘"
-        echo ""
-    fi
-
-    # 回归对比（如果 history.csv 有足够数据）
-    if [ -f "$CSV_FILE" ]; then
-        LINE_COUNT=$(wc -l < "$CSV_FILE")
-        if [ "$LINE_COUNT" -ge 3 ]; then
-            echo "┌─ 回归对比 ──────────────────────────────────────────────────────────────────┐"
-            PREV_LINE=$(tail -2 "$CSV_FILE" | head -1)
-            CURR_LINE=$(tail -1 "$CSV_FILE")
-            HEADER_LINE=$(head -1 "$CSV_FILE")
-
-            # 解析 CSV 列索引
-            IFS=',' read -ra HEADER_COLS <<< "$HEADER_LINE"
-            declare -A COL_IDX
-            for i in "${!HEADER_COLS[@]}"; do
-                COL_IDX[${HEADER_COLS[$i]}]=$i
-            done
-
-            IFS=',' read -ra PREV_COLS <<< "$PREV_LINE"
-            IFS=',' read -ra CURR_COLS <<< "$CURR_LINE"
-
-            PREV_TS="${PREV_COLS[${COL_IDX[timestamp]}]:-?}"
-            CURR_TS="${CURR_COLS[${COL_IDX[timestamp]}]:-?}"
-            echo "│  上次: $PREV_TS"
-            echo "│  本次: $CURR_TS"
-            echo "├──────────┬──────────────────────────────────────────────────────────────────────┤"
-
-            for T in $TIERS; do
-                PQ="${PREV_COLS[${COL_IDX[${T}_qps]}]:-0}"
-                CQ="${CURR_COLS[${COL_IDX[${T}_qps]}]:-0}"
-                PE="${PREV_COLS[${COL_IDX[${T}_e2e_p99_ms]}]:-0}"
-                CE="${CURR_COLS[${COL_IDX[${T}_e2e_p99_ms]}]:-0}"
-                [ "$PQ" = "0" ] && [ "$CQ" = "0" ] && continue
-                if [ "$PQ" != "0" ] && [ "$CQ" != "0" ]; then
-                    QPS_PCT=$(awk "BEGIN{printf \"%.1f\", ($CQ - $PQ) / $PQ * 100}")
-                    printf "│ %-8s │ QPS: %s→%s (%s%%)  E2E-p99: %s→%s ms │\n" \
-                        "$T" "$PQ" "$CQ" "$QPS_PCT" "$PE" "$CE"
-                fi
-            done
-            echo "└──────────┴──────────────────────────────────────────────────────────────────────┘"
-            echo ""
+    try {
+        # HTTP Create Path
+        if [ "$RUN_CREATE" = true ] && [ -z "$STRESS_ONLY" -o "$STRESS_ONLY" = "http" ]; then
+            TIMEOUT=$(get_timeout "http" $QUICK_MODE)
+            run_scenario "2) HTTP Create Path" "com.loomq.benchmark.HttpVirtualThreadBenchmark" "$TIMEOUT" \
+                "-Dloomq.benchmark.baseUrl=$BASE_URL"
         fi
-    fi
 
-    echo "CSV : $CSV_FILE"
-    echo "JSON: $JSON_FILE"
-} > "$SUMMARY_FILE"
-echo "  TXT: $SUMMARY_FILE"
+        # gRPC Create Path
+        if [ "$RUN_CREATE" = true ] && [ -z "$STRESS_ONLY" -o "$STRESS_ONLY" = "grpc" ]; then
+            echo ">>> 冷却 15s..."
+            sleep 15
+            TIMEOUT=$(get_timeout "grpc" $QUICK_MODE)
+            GRPC_ARGS=("-Dloomq.benchmark.grpc.host=127.0.0.1" "-Dloomq.benchmark.grpc.port=$GRPC_PORT")
+            if [ -n "$GRPC_TIER" ]; then
+                GRPC_ARGS+=("-Dloomq.benchmark.grpc.tier=$GRPC_TIER")
+            fi
+            run_scenario "2b) gRPC Create Path" "com.loomq.benchmark.GrpcVirtualThreadBenchmark" "$TIMEOUT" "${GRPC_ARGS[@]}"
+        fi
+
+        # Scheduler Trigger
+        if [ "$RUN_SCHEDULER" = true ]; then
+            echo ">>> 冷却 15s..."
+            sleep 15
+            TIMEOUT=$(get_timeout "scheduler" $QUICK_MODE)
+            run_scenario "3) Scheduler Trigger" "com.loomq.scheduler.SchedulerTriggerBenchmarkWithMockServer" "$TIMEOUT"
+        fi
+
+        # Stress test
+        if [ "$STRESS" = true ]; then
+            echo ""
+            echo "+============================================================+"
+            echo "|  STRESS MODE                                               |"
+            echo "+============================================================+"
+            echo ""
+            echo ">>> 冷却 30s..."
+            sleep 30
+
+            STRESS_ARGS=(
+                "-Dloomq.benchmark.stress=true"
+                "-Dloomq.benchmark.duration_sec=30"
+                "-Dloomq.benchmark.cooldown_ms=5000"
+            )
+            if [ -n "$GRPC_TIER" ]; then
+                STRESS_ARGS+=("-Dloomq.benchmark.grpc.tier=$GRPC_TIER")
+            fi
+
+            if [ -z "$STRESS_ONLY" ] || [ "$STRESS_ONLY" = "http" ]; then
+                run_scenario "2c) HTTP Stress" "com.loomq.benchmark.HttpVirtualThreadBenchmark" 600 \
+                    "-Dloomq.benchmark.baseUrl=$BASE_URL" "${STRESS_ARGS[@]}"
+                echo ">>> 冷却 15s..."
+                sleep 15
+            fi
+
+            if [ -z "$STRESS_ONLY" ] || [ "$STRESS_ONLY" = "grpc" ]; then
+                run_scenario "2d) gRPC Stress" "com.loomq.benchmark.GrpcVirtualThreadBenchmark" 600 \
+                    "-Dloomq.benchmark.grpc.host=127.0.0.1" "-Dloomq.benchmark.grpc.port=$GRPC_PORT" "${STRESS_ARGS[@]}"
+            fi
+        fi
+    }
+fi
+
+# ============================================================
+#  生成报告
+# ============================================================
 
 echo ""
-echo "[OK] Benchmark complete"
+echo "=== 生成报告 ==="
+
+# 构建 JSON 中间文件
+JSON_FILE="$REPORTS_DIR/benchmark-$TIMESTAMP.json"
+
+# 解析所有 RESULT markers
+parse_result() {
+    local log="$1"
+    [ -f "$log" ] && grep "^RESULT|" "$log" | tail -1 || echo ""
+}
+
+INTERNAL_RESULT=$(parse_result "$INTERNAL_LOG")
+WAL_RESULT=$(parse_result "$WAL_LOG")
+STORAGE_RESULT=$(parse_result "$STORAGE_LOG")
+HTTP_RESULT=$(parse_result "$HTTP_LOG")
+GRPC_RESULT=$(parse_result "$GRPC_LOG")
+SCHED_RESULT=$(parse_result "$SCHEDULER_LOG")
+
+# 构建 JSON（Python 辅助）
+python3 - "$TIMESTAMP" "$DATE_ISO" "$COMMIT" "$BRANCH" "$JAVA_VER" "$OS_NAME" "$CPU_CORES" \
+    "$INTERNAL_LOG" "$WAL_LOG" "$STORAGE_LOG" "$HTTP_LOG" "$GRPC_LOG" "$SCHEDULER_LOG" \
+    "$JSON_FILE" << 'PYEOF'
+import json, sys, os, re
+
+timestamp, date_iso, commit, branch, java_ver, os_name, cpu_cores = sys.argv[1:8]
+internal_log, wal_log, storage_log, http_log, grpc_log, sched_log = sys.argv[8:14]
+json_file = sys.argv[14]
+
+def parse_markers(log_path):
+    """Parse all RESULT| and RESULT_ROW| markers from a log file."""
+    results = []
+    rows = []
+    if not os.path.exists(log_path):
+        return results, rows
+    with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("RESULT_ROW|"):
+                d = {}
+                for part in line.split("|")[1:]:
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        try: v = float(v) if "." in v else int(v)
+                        except: pass
+                        d[k] = v
+                rows.append(d)
+            elif line.startswith("RESULT|"):
+                d = {}
+                for part in line.split("|")[1:]:
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        try: v = float(v) if "." in v else int(v)
+                        except: pass
+                        d[k] = v
+                results.append(d)
+    return results, rows
+
+def get_val(results, key, default=None):
+    for r in results:
+        if key in r:
+            return r[key]
+    return default
+
+# Parse all logs
+int_res, int_rows = parse_markers(internal_log)
+wal_res, wal_rows = parse_markers(wal_log)
+sto_res, sto_rows = parse_markers(storage_log)
+http_res, http_rows = parse_markers(http_log)
+grpc_res, grpc_rows = parse_markers(grpc_log)
+sched_res, sched_rows = parse_markers(sched_log)
+
+# Environment
+env_data = {
+    "timestamp": date_iso, "commit": commit, "branch": branch,
+    "java_version": java_ver, "os": os_name, "cpu_cores": cpu_cores,
+    "max_memory": "N/A"
+}
+
+# Create Path rows
+cp_rows = []
+max_len = max(len(http_rows), len(grpc_rows), 1)
+for i in range(max_len):
+    hr = http_rows[i] if i < len(http_rows) else {}
+    gr = grpc_rows[i] if i < len(grpc_rows) else {}
+    cp_rows.append({
+        "threads": hr.get("threads", gr.get("threads")),
+        "http_qps": hr.get("qps"), "http_p50": hr.get("p50"), "http_p90": hr.get("p90"), "http_p99": hr.get("p99"),
+        "grpc_qps": gr.get("qps"), "grpc_p50": gr.get("p50"), "grpc_p90": gr.get("p90"), "grpc_p99": gr.get("p99"),
+    })
+
+# Summary
+http_peak = get_val(http_res, "peak_qps")
+grpc_peak = get_val(grpc_res, "peak_qps")
+summary = {
+    "http_peak_qps": http_peak, "grpc_peak_qps": grpc_peak,
+    "http_inflection_threads": get_val(http_res, "inflection_threads"),
+    "grpc_inflection_threads": get_val(grpc_res, "inflection_threads"),
+    "http_fail_rate": get_val(http_res, "fail_rate"),
+    "grpc_fail_rate": get_val(grpc_res, "fail_rate"),
+    "memory_per_intent": get_val(int_res, "bytes_per_intent"),
+}
+
+# Scheduler tiers
+tier_data = []
+for row in sched_rows:
+    tier_name = row.get("tier")
+    if tier_name:
+        tier_data.append({
+            "tier": tier_name, "concurrency": row.get("concurrency"),
+            "qps": row.get("qps"),
+            "wake_p50": row.get("wake_p50_us"), "wake_p95": row.get("wake_p95_us"), "wake_p99": row.get("wake_p99_us"),
+            "e2e_p50": row.get("e2e_p50_ms"), "e2e_p95": row.get("e2e_p95_ms"), "e2e_p99": row.get("e2e_p99_ms"),
+            "util_pct": row.get("semaphore_util_pct"), "backpressure_pct": row.get("backpressure_pct"),
+            "completion_pct": row.get("completion_rate"),
+        })
+
+# Internal
+internal_items = []
+if int_res:
+    internal_items.append({"benchmark": "IntentStore", "metric": "Write QPS", "value": get_val(int_res, "direct_store_qps")})
+    internal_items.append({"benchmark": "Memory", "metric": "bytes/intent", "value": get_val(int_res, "bytes_per_intent")})
+if wal_res:
+    internal_items.append({"benchmark": "WAL DURABLE", "metric": "ops/s", "value": get_val(wal_res, "durable_ops_per_sec")})
+    internal_items.append({"benchmark": "WAL ASYNC", "metric": "ops/s", "value": get_val(wal_res, "async_ops_per_sec")})
+if sto_res:
+    internal_items.append({"benchmark": "Storage InMem", "metric": "save_ms", "value": get_val(sto_res, "concurrent_save_ms")})
+    internal_items.append({"benchmark": "Storage RocksDB", "metric": "save_ms", "value": get_val(sto_res, "rocksdb_save_ms")})
+
+data = {
+    "timestamp": timestamp, "environment": env_data, "summary": summary,
+    "create_path": {"rows": cp_rows}, "scheduler": {"tiers": tier_data},
+    "internal": {"items": internal_items}, "slo": {"items": []}, "regression": None
+}
+
+with open(json_file, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+print(f"JSON: {json_file}")
+PYEOF
+
+# Generate Excel
+PYTHON_SCRIPT="$SCRIPT_DIR/lib/gen_excel.py"
+EXCEL_FILE="$REPORTS_DIR/benchmark-report-$TIMESTAMP.xlsx"
+if [ -f "$PYTHON_SCRIPT" ]; then
+    python3 "$PYTHON_SCRIPT" "$JSON_FILE" "$EXCEL_FILE" 2>&1 && echo "  Excel: $EXCEL_FILE" || echo "  [WARN] Excel 生成失败"
+else
+    echo "  [WARN] gen_excel.py 不存在，跳过 Excel"
+fi
+
+# Generate MD
+MD_FILE="$REPORTS_DIR/benchmark-report-$TIMESTAMP.md"
+python3 - "$JSON_FILE" "$MD_FILE" << 'PYEOF'
+import json, sys
+json_file, md_file = sys.argv[1], sys.argv[2]
+with open(json_file, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+env = data.get("environment", {})
+s = data.get("summary", {})
+cp = data.get("create_path", {}).get("rows", [])
+tiers = data.get("scheduler", {}).get("tiers", [])
+items = data.get("internal", {}).get("items", [])
+
+lines = []
+a = lines.append
+a("# LoomQ Benchmark 报告\n")
+a(f"**时间**: {env.get('timestamp', 'N/A')}")
+a(f"**Commit**: `{env.get('commit', 'N/A')}` | **分支**: {env.get('branch', 'N/A')}")
+a(f"**Java**: {env.get('java_version', 'N/A')} | **OS**: {env.get('os', 'N/A')} | **CPU**: {env.get('cpu_cores', 'N/A')} cores\n")
+
+a("## 吞吐量对比\n")
+a("| 指标 | HTTP | gRPC |")
+a("|------|------|------|")
+h = s.get("http_peak_qps")
+g = s.get("grpc_peak_qps")
+a(f"| Peak QPS | {h:,} | {g:,} |" if h and g else f"| Peak QPS | {h or 'N/A'} | {g or 'N/A'} |")
+a(f"| 拐点线程数 | {s.get('http_inflection_threads', 'N/A')} | {s.get('grpc_inflection_threads', 'N/A')} |")
+a(f"| 失败率 | {s.get('http_fail_rate', 'N/A')} | {s.get('grpc_fail_rate', 'N/A')} |")
+a(f"| 内存/Intent | {s.get('memory_per_intent', 'N/A')} | {s.get('memory_per_intent', 'N/A')} |\n")
+
+if cp:
+    a("## Create Path 详情\n")
+    a("| 线程数 | HTTP QPS | HTTP P50 | HTTP P90 | HTTP P99 | gRPC QPS | gRPC P50 | gRPC P90 | gRPC P99 |")
+    a("|--------|----------|----------|----------|----------|----------|----------|----------|----------|")
+    for r in cp:
+        def f(v): return f"{v:,}" if isinstance(v, (int, float)) and v is not None else str(v or "-")
+        a(f"| {r.get('threads', '-')} | {f(r.get('http_qps'))} | {f(r.get('http_p50'))} | {f(r.get('http_p90'))} | {f(r.get('http_p99'))} | {f(r.get('grpc_qps'))} | {f(r.get('grpc_p50'))} | {f(r.get('grpc_p90'))} | {f(r.get('grpc_p99'))} |")
+    a("")
+
+if tiers:
+    a("## 调度精度\n")
+    a("| 档位 | 并发 | QPS | Wake P50 | Wake P95 | Wake P99 | E2E P50 | E2E P95 | E2E P99 | 利用率 | 背压 | 完成率 |")
+    a("|------|------|-----|----------|----------|----------|---------|---------|---------|--------|------|--------|")
+    for t in tiers:
+        def f(v): return f"{v:,}" if isinstance(v, (int, float)) and v is not None else str(v or "-")
+        def p(v): return f"{v:.1f}%" if v is not None else "-"
+        a(f"| {t.get('tier', '?')} | {f(t.get('concurrency'))} | {f(t.get('qps'))} | {f(t.get('wake_p50'))} | {f(t.get('wake_p95'))} | {f(t.get('wake_p99'))} | {f(t.get('e2e_p50'))} | {f(t.get('e2e_p95'))} | {f(t.get('e2e_p99'))} | {p(t.get('util_pct'))} | {p(t.get('backpressure_pct'))} | {p(t.get('completion_pct'))} |")
+    a("")
+
+if items:
+    a("## 内部组件\n")
+    a("| 基准测试 | 指标 | 值 |")
+    a("|----------|------|-----|")
+    for item in items:
+        a(f"| {item.get('benchmark', '-')} | {item.get('metric', '-')} | {item.get('value', '-')} |")
+    a("")
+
+with open(md_file, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines))
+print(f"MD: {md_file}")
+PYEOF
+
+echo "  Markdown: $MD_FILE"
+
+# ============================================================
+#  Summary
+# ============================================================
+
 echo ""
-echo "Tip: use --compare to view history"
+echo "=== Summary ==="
+if [ -n "$HTTP_RESULT" ]; then
+    HTTP_PEAK=$(extract "$HTTP_RESULT" "peak_qps")
+    [ -n "$HTTP_PEAK" ] && echo "  HTTP Peak QPS: $HTTP_PEAK"
+fi
+if [ -n "$GRPC_RESULT" ]; then
+    GRPC_PEAK=$(extract "$GRPC_RESULT" "peak_qps")
+    [ -n "$GRPC_PEAK" ] && echo "  gRPC Peak QPS: $GRPC_PEAK"
+fi
+
+echo ""
+echo "报告已生成:"
+echo "  Excel: $EXCEL_FILE"
+echo "  MD:    $MD_FILE"
+echo ""
+echo "使用 --compare 查看上次报告。"
