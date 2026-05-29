@@ -244,7 +244,6 @@ function ConvertTo-ReportData {
     $cpuCores = [System.Environment]::ProcessorCount
     $maxMem = [math]::Round((Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).TotalVisibleMemorySize / 1MB, 0)
 
-    # Environment
     $envData = @{
         timestamp   = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         commit      = $GitCommit
@@ -255,65 +254,68 @@ function ConvertTo-ReportData {
         max_memory  = "${maxMem}GB"
     }
 
-    # Create Path rows
+    # ── Create Path ──
+    # ProtocolBenchmark RESULT_ROW|threads=N|qps=N|avg_ms=N|p50_ms=N|p90_ms=N|p99_ms=N|success=N|fail=N
     $cpRows = @()
-    $httpRowsData = @()
-    $grpcRowsData = @()
+    $httpRowMap = @{}
+    $grpcRowMap = @{}
 
     if ($HttpResult -and $HttpResult.Rows) {
         foreach ($r in $HttpResult.Rows) {
             $d = ConvertFrom-BenchmarkMarker $r
-            $httpRowsData += @{
-                threads = Get-ResultInt $d "threads"
-                qps     = Get-ResultDouble $d "qps"
-                p50     = Get-ResultDouble $d "p50"
-                p90     = Get-ResultDouble $d "p90"
-                p99     = Get-ResultDouble $d "p99"
+            $t = Get-ResultInt $d "threads"
+            $httpRowMap[$t] = @{
+                qps = Get-ResultDouble $d "qps"
+                p50 = Get-ResultDouble $d "p50_ms"
+                p90 = Get-ResultDouble $d "p90_ms"
+                p99 = Get-ResultDouble $d "p99_ms"
             }
         }
     }
     if ($GrpcResult -and $GrpcResult.Rows) {
         foreach ($r in $GrpcResult.Rows) {
             $d = ConvertFrom-BenchmarkMarker $r
-            $grpcRowsData += @{
-                threads = Get-ResultInt $d "threads"
-                qps     = Get-ResultDouble $d "qps"
-                p50     = Get-ResultDouble $d "p50"
-                p90     = Get-ResultDouble $d "p90"
-                p99     = Get-ResultDouble $d "p99"
+            $t = Get-ResultInt $d "threads"
+            $grpcRowMap[$t] = @{
+                qps = Get-ResultDouble $d "qps"
+                p50 = Get-ResultDouble $d "p50_ms"
+                p90 = Get-ResultDouble $d "p90_ms"
+                p99 = Get-ResultDouble $d "p99_ms"
             }
         }
     }
 
-    $maxRows = [Math]::Max($httpRowsData.Count, $grpcRowsData.Count)
-    for ($i = 0; $i -lt $maxRows; $i++) {
-        $hr = if ($i -lt $httpRowsData.Count) { $httpRowsData[$i] } else { @{} }
-        $gr = if ($i -lt $grpcRowsData.Count) { $grpcRowsData[$i] } else { @{} }
+    $allThreads = @($httpRowMap.Keys + $grpcRowMap.Keys) | Sort-Object -Unique
+    foreach ($t in $allThreads) {
+        $hr = $httpRowMap[$t]
+        $gr = $grpcRowMap[$t]
         $cpRows += @{
-            threads  = if ($null -ne $hr.threads) { $hr.threads } else { $gr.threads }
-            http_qps = $hr.qps;  http_p50 = $hr.p50;  http_p90 = $hr.p90;  http_p99 = $hr.p99
-            grpc_qps = $gr.qps;  grpc_p50 = $gr.p50;  grpc_p90 = $gr.p90;  grpc_p99 = $gr.p99
+            threads  = $t
+            http_qps = if ($hr) { $hr.qps } else { $null }
+            http_p50 = if ($hr) { $hr.p50 } else { $null }
+            http_p90 = if ($hr) { $hr.p90 } else { $null }
+            http_p99 = if ($hr) { $hr.p99 } else { $null }
+            grpc_qps = if ($gr) { $gr.qps } else { $null }
+            grpc_p50 = if ($gr) { $gr.p50 } else { $null }
+            grpc_p90 = if ($gr) { $gr.p90 } else { $null }
+            grpc_p99 = if ($gr) { $gr.p99 } else { $null }
         }
     }
 
-    # Summary
+    # ── Summary ──
     $httpPeak = if ($HttpResult) { Get-ResultDouble $HttpResult.Data "peak_qps" } else { $null }
     $grpcPeak = if ($GrpcResult) { Get-ResultDouble $GrpcResult.Data "peak_qps" } else { $null }
-    $httpInflect = if ($HttpStressResult) { Get-ResultInt $HttpStressResult.Data "inflection_threads" } else { $null }
-    $grpcInflect = if ($GrpcStressResult) { Get-ResultInt $GrpcStressResult.Data "inflection_threads" } else { $null }
-    $httpInflectP99 = if ($HttpStressResult) { Get-ResultDouble $HttpStressResult.Data "best_p99_ms" } else { $null }
-    $grpcInflectP99 = if ($GrpcStressResult) { Get-ResultDouble $GrpcStressResult.Data "best_p99_ms" } else { $null }
     $httpFail = if ($HttpResult) { Get-ResultDouble $HttpResult.Data "fail_rate" } else { $null }
     $grpcFail = if ($GrpcResult) { Get-ResultDouble $GrpcResult.Data "fail_rate" } else { $null }
-    $memPerIntent = if ($InternalResult) { Get-ResultDouble $InternalResult.Data "bytes_per_intent" } else { $null }
+    $memPerIntent = if ($InternalResult -and $InternalResult.Data) { Get-ResultDouble $InternalResult.Data "memory_bytes_per_intent" } else { $null }
 
     $summaryData = @{
         http_peak_qps          = $httpPeak
         grpc_peak_qps          = $grpcPeak
-        http_inflection_threads = $httpInflect
-        grpc_inflection_threads = $grpcInflect
-        http_inflection_p99    = $httpInflectP99
-        grpc_inflection_p99    = $grpcInflectP99
+        http_inflection_threads = if ($HttpStressResult) { Get-ResultInt $HttpStressResult.Data "inflection_threads" } else { $null }
+        grpc_inflection_threads = if ($GrpcStressResult) { Get-ResultInt $GrpcStressResult.Data "inflection_threads" } else { $null }
+        http_inflection_p99    = if ($HttpStressResult) { Get-ResultDouble $HttpStressResult.Data "best_p99_ms" } else { $null }
+        grpc_inflection_p99    = if ($GrpcStressResult) { Get-ResultDouble $GrpcStressResult.Data "best_p99_ms" } else { $null }
         http_fail_rate         = $httpFail
         grpc_fail_rate         = $grpcFail
         memory_per_intent      = if ($memPerIntent) { "{0:N0}B" -f $memPerIntent } else { $null }
@@ -321,95 +323,131 @@ function ConvertTo-ReportData {
         slo_pass_grpc          = $null
     }
 
-    # Scheduler tiers
+    # ── Scheduler tiers ──
+    # 从 SchedulerResult.Lines 中直接按 tier 提取 RESULT_ROW + RESULT_LATENCY + RESULT_E2E_LATENCY
     $tierData = @()
-    if ($SchedulerResult) {
-        $ParsedScheduler = ConvertTo-ParsedBenchmark $SchedulerResult
+    if ($SchedulerResult -and $SchedulerResult.Lines) {
         foreach ($tierName in @("ULTRA", "FAST", "HIGH", "STANDARD", "ECONOMY")) {
-            $tierMarker = $ParsedScheduler.Rows | Where-Object {
-                $d = ConvertFrom-BenchmarkMarker $_; (Get-ResultString $d "tier") -eq $tierName
-            } | Select-Object -First 1
-            if ($tierMarker) {
-                $td = ConvertFrom-BenchmarkMarker $tierMarker
-                $tierData += @{
-                    tier             = $tierName
-                    concurrency      = Get-ResultInt $td "concurrency"
-                    qps              = Get-ResultDouble $td "qps"
-                    wake_p50         = Get-ResultDouble $td "wake_p50_us"
-                    wake_p95         = Get-ResultDouble $td "wake_p95_us"
-                    wake_p99         = Get-ResultDouble $td "wake_p99_us"
-                    e2e_p50          = Get-ResultDouble $td "e2e_p50_ms"
-                    e2e_p95          = Get-ResultDouble $td "e2e_p95_ms"
-                    e2e_p99          = Get-ResultDouble $td "e2e_p99_ms"
-                    util_pct         = Get-ResultDouble $td "semaphore_util_pct"
-                    backpressure_pct = Get-ResultDouble $td "backpressure_pct"
-                    completion_pct   = Get-ResultDouble $td "completion_rate"
-                }
+            # RESULT_ROW|tier=ULTRA|concurrency=200|qps=14025|...
+            $rowLine = $SchedulerResult.Lines | Where-Object { $_ -match "^RESULT_ROW\|.*tier=$tierName\|" } | Select-Object -First 1
+            if (-not $rowLine) { continue }
+            $rowD = ConvertFrom-BenchmarkMarker $rowLine
+
+            # RESULT_LATENCY|tier=ULTRA|type=wakeup_us|p50=5000|p95=100000|p99=100000|...
+            $latLine = $SchedulerResult.Lines | Where-Object { $_ -match "^RESULT_LATENCY\|.*tier=$tierName\|" } | Select-Object -First 1
+            $latD = if ($latLine) { ConvertFrom-BenchmarkMarker $latLine } else { @{} }
+
+            # RESULT_E2E_LATENCY|tier=ULTRA|p50=1005|p95=1375|p99=1407|...
+            $e2eLine = $SchedulerResult.Lines | Where-Object { $_ -match "^RESULT_E2E_LATENCY\|.*tier=$tierName\|" } | Select-Object -First 1
+            $e2eD = if ($e2eLine) { ConvertFrom-BenchmarkMarker $e2eLine } else { @{} }
+
+            # RESULT_SEMAPHORE|tier=ULTRA|utilization_pct=0.0
+            $semLine = $SchedulerResult.Lines | Where-Object { $_ -match "^RESULT_SEMAPHORE\|.*tier=$tierName\|" } | Select-Object -First 1
+            $semD = if ($semLine) { ConvertFrom-BenchmarkMarker $semLine } else { @{} }
+
+            # RESULT_LIFECYCLE|tier=ULTRA|total=20000|acked=20000
+            $lcLine = $SchedulerResult.Lines | Where-Object { $_ -match "^RESULT_LIFECYCLE\|.*tier=$tierName\|" } | Select-Object -First 1
+            $lcD = if ($lcLine) { ConvertFrom-BenchmarkMarker $lcLine } else { @{} }
+
+            $total = Get-ResultDouble $lcD "total"
+            $acked = Get-ResultDouble $lcD "acked"
+            $compRate = if ($total -gt 0) { [math]::Round($acked / $total * 100, 1) } else { 0 }
+
+            $tierData += @{
+                tier             = $tierName
+                concurrency      = Get-ResultInt $rowD "concurrency"
+                qps              = Get-ResultDouble $rowD "qps"
+                wake_p50         = Get-ResultDouble $latD "p50"
+                wake_p95         = Get-ResultDouble $latD "p95"
+                wake_p99         = Get-ResultDouble $latD "p99"
+                e2e_p50          = Get-ResultDouble $e2eD "p50"
+                e2e_p95          = Get-ResultDouble $e2eD "p95"
+                e2e_p99          = Get-ResultDouble $e2eD "p99"
+                util_pct         = Get-ResultDouble $semD "utilization_pct"
+                backpressure_pct = Get-ResultDouble $rowD "backpressure"
+                completion_pct   = $compRate
             }
         }
     }
 
-    # Internal
+    # ── Internal ──
     $internalItems = @()
-    if ($InternalResult) {
+    if ($InternalResult -and $InternalResult.Data) {
         $id = $InternalResult.Data
         $internalItems += @{ benchmark = "IntentStore"; metric = "Write QPS"; value = (Get-ResultDouble $id "direct_store_qps") }
-        $internalItems += @{ benchmark = "Memory"; metric = "bytes/intent"; value = (Get-ResultDouble $id "bytes_per_intent") }
-        $internalItems += @{ benchmark = "Cold-Swap"; metric = "Savings%"; value = (Get-ResultDouble $id "cold_swap_savings_pct") }
+        $internalItems += @{ benchmark = "Memory"; metric = "bytes/intent"; value = (Get-ResultDouble $id "memory_bytes_per_intent") }
     }
-    if ($WalResult) {
-        $wd = $WalResult.Data
-        $internalItems += @{ benchmark = "WAL DURABLE"; metric = "ops/s"; value = (Get-ResultDouble $wd "durable_ops_per_sec") }
-        $internalItems += @{ benchmark = "WAL ASYNC"; metric = "ops/s"; value = (Get-ResultDouble $wd "async_ops_per_sec") }
+    # Cold-swap: 从 RESULT_COLD_SWAP marker 解析
+    if ($InternalResult -and $InternalResult.Lines) {
+        $coldLine = $InternalResult.Lines | Where-Object { $_ -match '^RESULT_COLD_SWAP\|' } | Select-Object -First 1
+        if ($coldLine) {
+            $coldD = ConvertFrom-BenchmarkMarker $coldLine
+            $internalItems += @{ benchmark = "Cold-Swap"; metric = "Savings%"; value = (Get-ResultDouble $coldD "saved_pct") }
+        }
     }
-    if ($StorageResult) {
-        $sd = $StorageResult.Data
-        $internalItems += @{ benchmark = "Storage InMem"; metric = "save_ms"; value = (Get-ResultDouble $sd "concurrent_save_ms") }
-        $internalItems += @{ benchmark = "Storage RocksDB"; metric = "save_ms"; value = (Get-ResultDouble $sd "rocksdb_save_ms") }
+    # WAL: RESULT|wal_throughput|mode=DURABLE|throughput=N
+    if ($WalResult -and $WalResult.Lines) {
+        $walLines = $WalResult.Lines | Where-Object { $_ -match '^RESULT\|wal_throughput\|' }
+        foreach ($wl in $walLines) {
+            $wd = ConvertFrom-BenchmarkMarker $wl
+            $mode = Get-ResultString $wd "mode"
+            $tp = Get-ResultDouble $wd "throughput"
+            $internalItems += @{ benchmark = "WAL $mode"; metric = "ops/s"; value = $tp }
+        }
+    }
+    # Storage: RESULT|storage|type=concurrent|save_ms=N
+    if ($StorageResult -and $StorageResult.Lines) {
+        $stoLines = $StorageResult.Lines | Where-Object { $_ -match '^RESULT\|storage\|' }
+        foreach ($sl in $stoLines) {
+            $sd = ConvertFrom-BenchmarkMarker $sl
+            $stype = Get-ResultString $sd "type"
+            $saveMs = Get-ResultDouble $sd "save_ms"
+            $label = if ($stype -eq "concurrent") { "Storage InMem" } else { "Storage RocksDB" }
+            $internalItems += @{ benchmark = $label; metric = "save_ms"; value = $saveMs }
+        }
     }
 
-    # SLO
+    # ── SLO ──
     $sloItems = @()
-    if ($SchedulerResult) {
-        $configPath = Join-Path $ProjectRoot "benchmark\config.json"
-        $sloConfig = @{}
-        if (Test-Path $configPath) {
-            $sloConfig = (Get-Content $configPath -Raw | ConvertFrom-Json).slo
-        }
-        foreach ($tierName in @("ULTRA", "FAST", "HIGH", "STANDARD", "ECONOMY")) {
-            $td = $tierData | Where-Object { $_.tier -eq $tierName } | Select-Object -First 1
-            if (-not $td) { continue }
-            $sloDef = $sloConfig.$tierName
-            $item = @{ tier = $tierName }
-            foreach ($key in @("wake_p95", "wake_p99", "e2e_p95", "e2e_p99")) {
-                $targetKey = "${key}_us"
-                if ($key -like "e2e_*") { $targetKey = "${key}_ms" }
-                $target = if ($sloDef) { $sloDef.$targetKey } else { $null }
-                $actual = $td.$key
+    $configPath = Join-Path $ProjectRoot "benchmark\config.json"
+    $sloConfig = @{}
+    if (Test-Path $configPath) {
+        $sloConfig = (Get-Content $configPath -Raw | ConvertFrom-Json).slo
+    }
+    foreach ($tierEntry in $tierData) {
+        $tierName = $tierEntry.tier
+        $sloDef = $sloConfig.$tierName
+        if (-not $sloDef) { continue }
+        $item = @{ tier = $tierName }
+        foreach ($key in @("wake_p95", "wake_p99", "e2e_p95", "e2e_p99")) {
+            $targetKey = "${key}_us"
+            if ($key -like "e2e_*") { $targetKey = "${key}_ms" }
+            $target = $sloDef.$targetKey
+            $actual = $tierEntry.$key
+            if ($key -like "e2e_*") {
+                $item["${key}_target"] = if ($target) { "{0}ms" -f $target } else { "-" }
+                $item["${key}_actual"] = if ($actual) { "{0}ms" -f ([math]::Round($actual, 1)) } else { "-" }
+            } else {
                 $item["${key}_target"] = if ($target) { "{0}ms" -f ([math]::Round($target / 1000, 1)) } else { "-" }
                 $item["${key}_actual"] = if ($actual) { "{0}ms" -f ([math]::Round($actual / 1000, 1)) } else { "-" }
-                $item["${key}_pass"] = if ($target -and $actual) { $actual -le $target } else { $null }
             }
-            $sloItems += $item
+            $item["${key}_pass"] = if ($target -and $actual) { $actual -le $target } else { $null }
         }
+        $sloItems += $item
     }
 
-    # Regression (read last Excel summary)
+    # ── Regression ──
     $regression = $null
-    $lastExcel = Get-ChildItem -Path (Join-Path $ProjectRoot "benchmark\results\reports") -Filter "benchmark-report-*.xlsx" -ErrorAction SilentlyContinue |
+    $lastJson = Get-ChildItem -Path (Join-Path $ProjectRoot "benchmark\results\reports") -Filter "benchmark-report-*.json" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($lastExcel) {
-        # Read previous summary JSON if exists
-        $lastJson = [System.IO.Path]::ChangeExtension($lastExcel.FullName, ".json")
-        if (Test-Path $lastJson) {
-            $lastData = Get-Content $lastJson -Raw | ConvertFrom-Json
-            $lastHttpPeak = $lastData.summary.http_peak_qps
-            $lastGrpcPeak = $lastData.summary.grpc_peak_qps
-            if ($lastHttpPeak -and $httpPeak) {
-                $regression = @{
-                    http_qps_delta = ($httpPeak - $lastHttpPeak) / $lastHttpPeak
-                    grpc_qps_delta = if ($lastGrpcPeak -and $grpcPeak) { ($grpcPeak - $lastGrpcPeak) / $lastGrpcPeak } else { $null }
-                }
+    if ($lastJson) {
+        $lastData = Get-Content $lastJson.FullName -Raw | ConvertFrom-Json
+        $lastHttpPeak = $lastData.summary.http_peak_qps
+        $lastGrpcPeak = $lastData.summary.grpc_peak_qps
+        if ($lastHttpPeak -and $httpPeak) {
+            $regression = @{
+                http_qps_delta = ($httpPeak - $lastHttpPeak) / $lastHttpPeak
+                grpc_qps_delta = if ($lastGrpcPeak -and $grpcPeak) { ($grpcPeak - $lastGrpcPeak) / $lastGrpcPeak } else { $null }
             }
         }
     }

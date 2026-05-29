@@ -216,6 +216,6 @@ function New-BenchmarkMarkdown {
     }
 
     $content = $sb.ToString()
-    Set-Content -Path $OutputPath -Value $content -Encoding UTF8
+    [System.IO.File]::WriteAllText($OutputPath, $content, [System.Text.UTF8Encoding]::new($false))
     return $OutputPath
 }
