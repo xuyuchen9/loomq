@@ -57,10 +57,10 @@ param(
 #  Load modules
 # ============================================================
 
-. $PSScriptRoot\benchmark-ui.ps1
-. $PSScriptRoot\benchmark-util.ps1
-. $PSScriptRoot\benchmark-server.ps1
-. $PSScriptRoot\benchmark-output.ps1
+. $PSScriptRoot\lib\ui.ps1
+. $PSScriptRoot\lib\util.ps1
+. $PSScriptRoot\lib\server.ps1
+. $PSScriptRoot\lib\output.ps1
 
 # ============================================================
 #  Top-level error handler

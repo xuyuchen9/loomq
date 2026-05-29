@@ -1,4 +1,4 @@
-# benchmark-ui.ps1 — LoomQ Benchmark UI Utilities
+# lib/ui.ps1 — LoomQ Benchmark UI Utilities
 # Colors, symbols, and Write-* helper functions.
 
 # ANSI 转义字符 (PowerShell 5.1 兼容)

@@ -1,4 +1,4 @@
-# benchmark-util.ps1 — LoomQ Benchmark Utility Functions
+# lib/util.ps1 — LoomQ Benchmark Utility Functions
 # Environment detection, marker parsing, result extraction, statistics.
 
 function Test-LaunchedFromExplorer {

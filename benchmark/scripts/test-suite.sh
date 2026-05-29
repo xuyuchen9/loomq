@@ -2,9 +2,9 @@
 # LoomQ 一键全量测试 + 落库脚本 (Linux/macOS)
 #
 # 用法:
-#   ./run-all.sh              # 全量: 快测 + 慢测 + 集成 + 大压测
-#   ./run-all.sh --quick      # 快速: 跳过大压测, 只跑 benchmark smoke
-#   ./run-all.sh --no-bench   # 跳过所有压测
+#   ./test-suite.sh              # 全量: 快测 + 慢测 + 集成 + 大压测
+#   ./test-suite.sh --quick      # 快速: 跳过大压测, 只跑 benchmark smoke
+#   ./test-suite.sh --no-bench   # 跳过所有压测
 #
 # 所有结果强制落库 (CSV + JSON + TXT)，旧报告自动轮转 (保留最近 10 组)。
 
@@ -55,8 +55,8 @@ parse_counts() {
     grep "Tests run:" | tail -1 | sed 's/.*Tests run: \([0-9]*\).*Failures: \([0-9]*\).*Errors: \([0-9]*\).*/\1 \2 \3/'
 }
 
-# Extract field from pipe-delimited marker
-extract() { echo "$1" | grep -oP "${2}=\K[^|]+" || echo ""; }
+# Extract field from pipe-delimited marker (macOS compatible)
+extract() { echo "$1" | sed -n "s/.*${2}=\([^|]*\).*/\1/p"; }
 
 # Report rotation: keep only the N most recent reports/logs
 rotate_reports() {

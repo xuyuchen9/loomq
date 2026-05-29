@@ -1,4 +1,4 @@
-# benchmark-output.ps1 — LoomQ Benchmark Output Formatting
+# lib/output.ps1 — LoomQ Benchmark Output Formatting
 # Summary builder, CSV history writer, JSON report generator.
 
 function Save-BenchmarkSummary {
@@ -462,7 +462,7 @@ function ConvertTo-ChineseReport {
     #>
     param([string[]]$Lines)
 
-    $TranslationFile = Join-Path $PSScriptRoot "..\i18n\report-zh.json"
+    $TranslationFile = Join-Path $PSScriptRoot "i18n\report-zh.json"
     if (-not (Test-Path $TranslationFile)) {
         # No translation file; just strip ANSI codes and return
         $Result = New-Object System.Collections.Generic.List[string]

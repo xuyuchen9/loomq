@@ -79,8 +79,8 @@ MODE=$($QUICK_MODE && echo "quick" || echo "full")
 #  Helpers
 # ============================================================
 
-# Extract field from pipe-delimited marker
-extract() { echo "$1" | grep -oP "${2}=\K[^|]+" || echo ""; }
+# Extract field from pipe-delimited marker (macOS compatible)
+extract() { echo "$1" | sed -n "s/.*${2}=\([^|]*\).*/\1/p"; }
 
 # Report rotation: keep only the N most recent reports/logs
 rotate_reports() {
@@ -306,10 +306,13 @@ elif [ -f "$INTERNAL_LOG" ]; then
     PARSE_LOG="$INTERNAL_LOG"
 fi
 
-# --- CSV (unified 48-column wide format) ---
+# --- CSV (unified 55-column wide format) ---
 CSV_FILE="$RESULTS_DIR/history.csv"
 TIERS="ULTRA FAST HIGH STANDARD ECONOMY"
-COLS="timestamp,commit,branch,mode,java_version,os_name,total_tests,total_failed"
+COLS="timestamp,commit,branch,mode,java_version,os_name"
+COLS="$COLS,internal_qps"
+COLS="$COLS,http_peak_qps,http_best_p99_ms,http_worst_p99_ms,http_fail_rate"
+COLS="$COLS,grpc_peak_qps,grpc_best_p99_ms,grpc_worst_p99_ms,grpc_fail_rate"
 for T in $TIERS; do
     COLS="$COLS,${T}_qps,${T}_p95_ms,${T}_p99_ms,${T}_e2e_p95_ms,${T}_e2e_p99_ms,${T}_util_pct,${T}_backpressure"
 done
@@ -335,8 +338,11 @@ fi
 JAVA_VER=$(extract "$ENV_LINE" 'java_version')
 OS_NAME=$(extract "$ENV_LINE" 'os_name')
 
-# Build CSV row
-VALS="$DATE_ISO,$COMMIT,$BRANCH,$MODE,$JAVA_VER,$OS_NAME,,"
+# Build CSV row (55-column schema)
+VALS="$DATE_ISO,$COMMIT,$BRANCH,$MODE,$JAVA_VER,$OS_NAME"
+VALS="$VALS,"  # internal_qps (not available in bash)
+VALS="$VALS,,,,"  # http_peak_qps, http_best_p99_ms, http_worst_p99_ms, http_fail_rate
+VALS="$VALS,,,,"  # grpc_peak_qps, grpc_best_p99_ms, grpc_worst_p99_ms, grpc_fail_rate
 for T in $TIERS; do
     if [ -n "$PARSE_LOG" ]; then
         ROW=$(grep "RESULT_ROW|tier=$T" "$PARSE_LOG" | tail -1)

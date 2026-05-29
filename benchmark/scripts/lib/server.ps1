@@ -1,4 +1,4 @@
-# benchmark-server.ps1 — LoomQ Benchmark Server Lifecycle
+# lib/server.ps1 — LoomQ Benchmark Server Lifecycle
 # Server start/stop, JAR management, process tree cleanup, orphan detection.
 
 function Get-LatestSummaryFile {
