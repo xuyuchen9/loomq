@@ -103,13 +103,69 @@ rotate_reports() {
 if [ "$COMPARE_ONLY" = true ]; then
     CSV_FILE="$RESULTS_DIR/history.csv"
     if [ -f "$CSV_FILE" ]; then
-        echo "History (most recent runs):"
+        LINE_COUNT=$(wc -l < "$CSV_FILE")
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "                    历史记录对比"
+        echo "═══════════════════════════════════════════════════════════════"
         echo ""
-        # Show header and last 10 rows
-        head -1 "$CSV_FILE"
-        tail -10 "$CSV_FILE"
+        echo "  记录总数: $((LINE_COUNT - 1))"
+        echo ""
+
+        # 最近 5 次运行摘要
+        echo "┌─ 最近运行 ─────────────────────────────────────────────────────────────────┐"
+        printf "│ %-19s %-8s %-10s %-10s %-8s │\n" "时间" "模式" "总QPS" "完成率" "ULTRA_QPS"
+        echo "├──────────────────────────────────────────────────────────────────────────┤"
+
+        HEADER_LINE=$(head -1 "$CSV_FILE")
+        IFS=',' read -ra HEADER_COLS <<< "$HEADER_LINE"
+        declare -A COL_IDX
+        for i in "${!HEADER_COLS[@]}"; do
+            COL_IDX[${HEADER_COLS[$i]}]=$i
+        done
+
+        tail -5 "$CSV_FILE" | while IFS=',' read -ra COLS; do
+            TS="${COLS[${COL_IDX[timestamp]}]:-?}"
+            MODE="${COLS[${COL_IDX[mode]}]:-?}"
+            TQPS="${COLS[${COL_IDX[total_qps]}]:-?}"
+            COMP="${COLS[${COL_IDX[completion_rate]}]:-?}"
+            UQPS="${COLS[${COL_IDX[ULTRA_qps]}]:-?}"
+            printf "│ %-19s %-8s %-10s %-10s %-8s │\n" "$TS" "$MODE" "$TQPS" "$COMP" "$UQPS"
+        done
+        echo "└──────────────────────────────────────────────────────────────────────────┘"
+        echo ""
+
+        # 最近两次回归对比
+        if [ "$LINE_COUNT" -ge 3 ]; then
+            PREV_LINE=$(tail -2 "$CSV_FILE" | head -1)
+            CURR_LINE=$(tail -1 "$CSV_FILE")
+            IFS=',' read -ra PREV_COLS <<< "$PREV_LINE"
+            IFS=',' read -ra CURR_COLS <<< "$CURR_LINE"
+
+            PREV_TS="${PREV_COLS[${COL_IDX[timestamp]}]:-?}"
+            CURR_TS="${CURR_COLS[${COL_IDX[timestamp]}]:-?}"
+
+            echo "┌─ 回归对比 ──────────────────────────────────────────────────────────────────┐"
+            echo "│  上次: $PREV_TS"
+            echo "│  本次: $CURR_TS"
+            echo "├──────────┬──────────────────────────────────────────────────────────────────────┤"
+
+            TIERS="ULTRA FAST HIGH STANDARD ECONOMY"
+            for T in $TIERS; do
+                PQ="${PREV_COLS[${COL_IDX[${T}_qps]}]:-0}"
+                CQ="${CURR_COLS[${COL_IDX[${T}_qps]}]:-0}"
+                PE="${PREV_COLS[${COL_IDX[${T}_e2e_p99_ms]}]:-0}"
+                CE="${CURR_COLS[${COL_IDX[${T}_e2e_p99_ms]}]:-0}"
+                [ "$PQ" = "0" ] && [ "$CQ" = "0" ] && continue
+                if [ "$PQ" != "0" ] && [ "$CQ" != "0" ]; then
+                    QPS_PCT=$(awk "BEGIN{printf \"%.1f\", ($CQ - $PQ) / $PQ * 100}")
+                    printf "│ %-8s │ QPS: %s→%s (%s%%)  E2E-p99: %s→%s ms │\n" \
+                        "$T" "$PQ" "$CQ" "$QPS_PCT" "$PE" "$CE"
+                fi
+            done
+            echo "└──────────┴──────────────────────────────────────────────────────────────────────┘"
+        fi
     else
-        echo "No history.csv found. Run a benchmark first."
+        echo "未找到历史记录。请先运行一次基准测试。"
     fi
     exit 0
 fi
@@ -351,36 +407,128 @@ JSON_FILE="$REPORTS_DIR/benchmark-$TIMESTAMP.json"
 } > "$JSON_FILE"
 echo "  JSON: $JSON_FILE"
 
-# --- TXT Summary ---
+# --- TXT Summary (中文) ---
 SUMMARY_FILE="$REPORTS_DIR/benchmark-$TIMESTAMP.txt"
 {
-    echo "LoomQ Benchmark Summary"
-    echo "======================="
-    echo "Date    : $DATE_ISO"
-    echo "Commit  : $COMMIT ($BRANCH)"
-    echo "Mode    : $MODE"
-    echo "Scenario: $SCENARIO"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "                    LoomQ 基准测试报告"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+    echo "  日期: $DATE_ISO"
+    echo "  提交: $COMMIT ($BRANCH)"
+    echo "  模式: $MODE"
+    echo "  场景: $SCENARIO"
+    echo "  单位: 唤醒延迟=微秒(µs) | E2E延迟=毫秒(ms) | QPS=每秒处理量"
     echo ""
 
     if [ -n "$PARSE_LOG" ] && grep -q "RESULT_ROW|" "$PARSE_LOG" 2>/dev/null; then
-        echo "--- Per-Tier Results ---"
-        printf "%-10s %7s %5s %5s %5s %5s %6s %5s\n" \
-            "Tier" "QPS" "p95" "p99" "e2ep95" "e2ep99" "Util%" "BP"
-        printf "%-10s %7s %5s %5s %5s %5s %6s %5s\n" \
-            "----------" "------" "---" "---" "------" "------" "-----" "--"
+        echo "┌─ 吞吐量 ──────────────────────────────────────────────────────────────────┐"
+        printf "│ %-8s %8s %10s %10s %8s %8s %6s │\n" \
+            "档位" "接收" "QPS" "理论QPS" "效率" "完成率" "背压"
+        echo "├──────────────────────────────────────────────────────────────────────────┤"
+        TOTAL_RECEIVED=0
+        for T in $TIERS; do
+            ROW=$(grep "RESULT_ROW|tier=$T" "$PARSE_LOG" | tail -1)
+            [ -z "$ROW" ] && continue
+            RCV=$(extract "$ROW" 'received')
+            TOTAL_RECEIVED=$((TOTAL_RECEIVED + RCV))
+            printf "│ %-8s %8s %10s %10s %7s%% %7s%% %6s │\n" \
+                "$T" "$RCV" \
+                "$(extract "$ROW" 'qps')" \
+                "$(extract "$ROW" 'theoretical_qps')" \
+                "$(extract "$ROW" 'efficiency')" \
+                "100.0" \
+                "$(extract "$ROW" 'backpressure')"
+        done
+        echo "└──────────────────────────────────────────────────────────────────────────┘"
+        echo ""
+
+        echo "┌─ 延迟分布 ────────────────────────────────────────────────────────────────┐"
+        printf "│ %-8s │ %-17s │ %-17s │ %-14s │\n" \
+            "档位" "唤醒延迟(µs)" "E2E延迟(ms)" "信号量%"
+        printf "│ %-8s │ %5s %5s %5s │ %5s %5s %5s │ %6s │\n" \
+            "" "p50" "p95" "p99" "p50" "p95" "p99" ""
+        echo "├──────────┼─────────────────┼─────────────────┼────────────────┤"
         for T in $TIERS; do
             ROW=$(grep "RESULT_ROW|tier=$T" "$PARSE_LOG" | tail -1)
             LAT=$(grep "RESULT_LATENCY|tier=$T" "$PARSE_LOG" | tail -1)
             E2E=$(grep "RESULT_E2E_LATENCY|tier=$T" "$PARSE_LOG" | tail -1)
             SEM=$(grep "RESULT_SEMAPHORE|tier=$T" "$PARSE_LOG" | tail -1)
             [ -z "$ROW" ] && continue
-            printf "%-10s %7s %5s %5s %5s %5s %6s %5s\n" \
-                "$T" "$(extract "$ROW" 'qps')" \
-                "$(extract "$LAT" 'p95')" "$(extract "$LAT" 'p99')" \
-                "$(extract "$E2E" 'p95')" "$(extract "$E2E" 'p99')" \
-                "$(extract "$SEM" 'utilization_pct')" "$(extract "$ROW" 'backpressure')"
+            printf "│ %-8s │ %5s %5s %5s │ %5s %5s %5s │ %6s │\n" \
+                "$T" \
+                "$(extract "$LAT" 'p50')" "$(extract "$LAT" 'p95')" "$(extract "$LAT" 'p99')" \
+                "$(extract "$E2E" 'p50')" "$(extract "$E2E" 'p95')" "$(extract "$E2E" 'p99')" \
+                "$(extract "$SEM" 'utilization_pct')"
         done
+        echo "└──────────┴─────────────────┴─────────────────┴────────────────┘"
         echo ""
+    fi
+
+    # SLO 验证
+    if [ -n "$PARSE_LOG" ] && grep -q "RESULT_E2E_LATENCY|" "$PARSE_LOG" 2>/dev/null; then
+        echo "┌─ SLO 验证 ─────────────────────────────────────────────────────────────────┐"
+        printf "│ %-8s │ %-13s │ %-8s │ %-6s │ %-13s │ %-8s │ %-6s │\n" \
+            "档位" "E2E-p95" "阈值" "结果" "E2E-p99" "阈值" "结果"
+        echo "├──────────┼───────────────┼──────────┼────────┼───────────────┼──────────┼────────┤"
+        declare -A SLO_P95=( [ULTRA]=20 [FAST]=70 [HIGH]=150 [STANDARD]=600 [ECONOMY]=1200 )
+        declare -A SLO_P99=( [ULTRA]=35 [FAST]=110 [HIGH]=230 [STANDARD]=900 [ECONOMY]=1700 )
+        for T in $TIERS; do
+            E2E=$(grep "RESULT_E2E_LATENCY|tier=$T" "$PARSE_LOG" | tail -1)
+            [ -z "$E2E" ] && continue
+            P95=$(extract "$E2E" 'p95')
+            P99=$(extract "$E2E" 'p99')
+            LIMIT95=${SLO_P95[$T]:-9999}
+            LIMIT99=${SLO_P99[$T]:-9999}
+            if [ "$P95" -le "$LIMIT95" ] 2>/dev/null; then R95="✅通过"; else R95="❌失败"; fi
+            if [ "$P99" -le "$LIMIT99" ] 2>/dev/null; then R99="✅通过"; else R99="❌失败"; fi
+            printf "│ %-8s │ %9s ms │ ≤%s ms │ %s │ %9s ms │ ≤%s ms │ %s │\n" \
+                "$T" "$P95" "$LIMIT95" "$R95" "$P99" "$LIMIT99" "$R99"
+        done
+        echo "└──────────┴───────────────┴──────────┴────────┴───────────────┴──────────┴────────┘"
+        echo ""
+    fi
+
+    # 回归对比（如果 history.csv 有足够数据）
+    if [ -f "$CSV_FILE" ]; then
+        LINE_COUNT=$(wc -l < "$CSV_FILE")
+        if [ "$LINE_COUNT" -ge 3 ]; then
+            echo "┌─ 回归对比 ──────────────────────────────────────────────────────────────────┐"
+            PREV_LINE=$(tail -2 "$CSV_FILE" | head -1)
+            CURR_LINE=$(tail -1 "$CSV_FILE")
+            HEADER_LINE=$(head -1 "$CSV_FILE")
+
+            # 解析 CSV 列索引
+            IFS=',' read -ra HEADER_COLS <<< "$HEADER_LINE"
+            declare -A COL_IDX
+            for i in "${!HEADER_COLS[@]}"; do
+                COL_IDX[${HEADER_COLS[$i]}]=$i
+            done
+
+            IFS=',' read -ra PREV_COLS <<< "$PREV_LINE"
+            IFS=',' read -ra CURR_COLS <<< "$CURR_LINE"
+
+            PREV_TS="${PREV_COLS[${COL_IDX[timestamp]}]:-?}"
+            CURR_TS="${CURR_COLS[${COL_IDX[timestamp]}]:-?}"
+            echo "│  上次: $PREV_TS"
+            echo "│  本次: $CURR_TS"
+            echo "├──────────┬──────────────────────────────────────────────────────────────────────┤"
+
+            for T in $TIERS; do
+                PQ="${PREV_COLS[${COL_IDX[${T}_qps]}]:-0}"
+                CQ="${CURR_COLS[${COL_IDX[${T}_qps]}]:-0}"
+                PE="${PREV_COLS[${COL_IDX[${T}_e2e_p99_ms]}]:-0}"
+                CE="${CURR_COLS[${COL_IDX[${T}_e2e_p99_ms]}]:-0}"
+                [ "$PQ" = "0" ] && [ "$CQ" = "0" ] && continue
+                if [ "$PQ" != "0" ] && [ "$CQ" != "0" ]; then
+                    QPS_PCT=$(awk "BEGIN{printf \"%.1f\", ($CQ - $PQ) / $PQ * 100}")
+                    printf "│ %-8s │ QPS: %s→%s (%s%%)  E2E-p99: %s→%s ms │\n" \
+                        "$T" "$PQ" "$CQ" "$QPS_PCT" "$PE" "$CE"
+                fi
+            done
+            echo "└──────────┴──────────────────────────────────────────────────────────────────────┘"
+            echo ""
+        fi
     fi
 
     echo "CSV : $CSV_FILE"

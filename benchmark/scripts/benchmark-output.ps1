@@ -222,7 +222,7 @@ function Build-BenchmarkSummary {
     )
 
     $Lines = New-Object System.Collections.Generic.List[string]
-    $Lines.Add("LoomQ Benchmark Summary")
+    $Lines.Add("LoomQ Benchmark Report")
     $Lines.Add("Project root: $ProjectRoot")
     $Lines.Add("Git: $GitCommit ($GitVersion)")
     $Lines.Add("Java: $JavaHome")
@@ -250,11 +250,11 @@ function Build-BenchmarkSummary {
         $MemDelta = Get-ResultInt $InternalResult.Data "memory_delta_bytes"
         $BytesPerIntent = Get-ResultDouble $InternalResult.Data "memory_bytes_per_intent"
 
-        $Lines.Add("1) In-process upper bound")
+        $Lines.Add("1) Process upper bound (direct store)")
         $Lines.Add(("   direct store: {0:n0} intents/s @ {1} threads for {2}s" -f $InternalQps, $Threads, $Duration))
         $Lines.Add(("   retained memory: {0:n2} MB, {1:n0} bytes/intent" -f ($MemDelta / 1MB), $BytesPerIntent))
         $Lines.Add(("   scenario runtime: {0:n1} s" -f $InternalResult.DurationSec))
-        $Lines.Add("   shortboard: this is the storage-side ceiling; HTTP and scheduler overhead are excluded.")
+        $Lines.Add("   NOTE: storage-side ceiling only; HTTP/scheduler overhead excluded.")
         $Lines.Add("")
     }
 
@@ -436,5 +436,170 @@ function Build-BenchmarkSummary {
         $Lines.Add("   - Completion rate did not reach 100%; real trigger path still has drop or timeout risk.")
     }
 
-    return $Lines.ToArray()
+    # Append regression comparison (if history data available)
+    try {
+        $Regression = Build-RegressionComparison -ProjectRoot $ProjectRoot
+        if ($Regression -and $Regression.Count -gt 0) {
+            $Lines.Add("")
+            $Lines.AddRange($Regression)
+        }
+    } catch {
+        # regression comparison failure should not break main report
+    }
+
+    # Translate English output to Chinese for the saved report file
+    $Translated = ConvertTo-ChineseReport $Lines.ToArray()
+
+    return $Translated
+}
+
+function ConvertTo-ChineseReport {
+    <#
+    .SYNOPSIS
+        Translate key English terms in benchmark report lines to Chinese.
+        Reads translations from benchmark/i18n/report-zh.json to avoid PS1 encoding issues.
+        Falls back to original English if translation file not found.
+    #>
+    param([string[]]$Lines)
+
+    $TranslationFile = Join-Path $PSScriptRoot "..\i18n\report-zh.json"
+    if (-not (Test-Path $TranslationFile)) {
+        # No translation file; just strip ANSI codes and return
+        $Result = New-Object System.Collections.Generic.List[string]
+        foreach ($Line in $Lines) {
+            $Result.Add(($Line -replace '\x1b\[[0-9;]*m', ''))
+        }
+        return $Result.ToArray()
+    }
+
+    $Map = Get-Content $TranslationFile -Encoding UTF8 -Raw | ConvertFrom-Json
+
+    $Output = New-Object System.Collections.Generic.List[string]
+    foreach ($Line in $Lines) {
+        $Translated = $Line
+        foreach ($Prop in $Map.PSObject.Properties) {
+            $Translated = $Translated.Replace($Prop.Name, $Prop.Value)
+        }
+        # Strip ANSI escape codes for file output
+        $Translated = $Translated -replace '\x1b\[[0-9;]*m', ''
+        $Output.Add($Translated)
+    }
+    return $Output.ToArray()
+}
+
+function Build-RegressionComparison {
+    <#
+    .SYNOPSIS
+        Read history.csv last 2 runs, generate regression comparison table.
+    .OUTPUTS
+        string[] comparison report lines
+    #>
+    param([string]$ProjectRoot)
+
+    $HistoryFile = Join-Path $ProjectRoot "benchmark\results\history.csv"
+    if (-not (Test-Path $HistoryFile)) {
+        return @("History file not found: $HistoryFile", "Run a benchmark first.")
+    }
+
+    $Lines = Get-Content $HistoryFile -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    if ($Lines.Count -lt 3) {
+        return @("Not enough history (need >= 2 runs), current: $($Lines.Count - 1) records.")
+    }
+
+    $Header = $Lines[0].Split(",")
+    $Current = $Lines[-1].Split(",")
+    $Previous = $Lines[-2].Split(",")
+
+    $ColIndex = @{}
+    for ($i = 0; $i -lt $Header.Count; $i++) {
+        $ColIndex[$Header[$i]] = $i
+    }
+
+    function Get-ColValue {
+        param($Row, $ColName, $Default = 0.0)
+        if ($ColIndex.ContainsKey($ColName) -and $ColIndex[$ColName] -lt $Row.Count) {
+            $v = $Row[$ColIndex[$ColName]]
+            if ([string]::IsNullOrWhiteSpace($v)) { return $Default }
+            try { return [double]$v } catch { return $Default }
+        }
+        return $Default
+    }
+
+    function Format-Delta {
+        param($Old, $New, $Unit, [switch]$LowerIsBetter)
+        if ($Old -eq 0 -and $New -eq 0) { return "   -" }
+        if ($Old -eq 0) { return "$New $Unit (new)" }
+        $Pct = ($New - $Old) / $Old * 100
+        $Arrow = if ($Pct -gt 0) { "+" } else { "" }
+        $Symbol = if ($LowerIsBetter) {
+            if ($Pct -gt 10) { "[!!]" } elseif ($Pct -lt -10) { "[OK]" } else { "[-]" }
+        } else {
+            if ($Pct -gt 10) { "[OK]" } elseif ($Pct -lt -10) { "[!!]" } else { "[-]" }
+        }
+        return "$Old->$New $Unit ($Arrow$([math]::Round($Pct,1))%) $Symbol"
+    }
+
+    $PrevMode = Get-ColValue $Previous "mode"
+    $CurrMode = Get-ColValue $Current "mode"
+    $PrevTs = if ($ColIndex.ContainsKey("timestamp")) { $Previous[$ColIndex["timestamp"]] } else { "?" }
+    $CurrTs = if ($ColIndex.ContainsKey("timestamp")) { $Current[$ColIndex["timestamp"]] } else { "?" }
+
+    $Sep = "+----------+---------------------------------------------------------------------------+"
+    $Output = New-Object System.Collections.Generic.List[string]
+    $Output.Add("")
+    $Output.Add("=== Regression Comparison ===")
+    $Output.Add("  Prev: $PrevTs ($PrevMode)")
+    $Output.Add("  Curr: $CurrTs ($CurrMode)")
+    $Output.Add($Sep)
+    $Output.Add(("| {0,-8} | {1,-73} |" -f "Metric", "Delta"))
+    $Output.Add($Sep)
+
+    $PrevTotal = Get-ColValue $Previous "total_qps"
+    $CurrTotal = Get-ColValue $Current "total_qps"
+    if ($PrevTotal -gt 0 -or $CurrTotal -gt 0) {
+        $Output.Add(("| {0,-8} | {1,-73} |" -f "TotalQPS", (Format-Delta $PrevTotal $CurrTotal "QPS")))
+    }
+
+    $PrevComp = Get-ColValue $Previous "completion_rate"
+    $CurrComp = Get-ColValue $Current "completion_rate"
+    if ($PrevComp -gt 0 -or $CurrComp -gt 0) {
+        $Output.Add(("| {0,-8} | {1,-73} |" -f "ComplRate", (Format-Delta $PrevComp $CurrComp "%")))
+    }
+
+    $Tiers = @("ULTRA","FAST","HIGH","STANDARD","ECONOMY")
+    $HasRegression = $false
+    $RegressionTiers = @()
+
+    foreach ($t in $Tiers) {
+        $PrevQps = Get-ColValue $Previous "${t}_qps"
+        $CurrQps = Get-ColValue $Current "${t}_qps"
+        $PrevP99 = Get-ColValue $Previous "${t}_p99_ms"
+        $CurrP99 = Get-ColValue $Current "${t}_p99_ms"
+        $PrevE2E = Get-ColValue $Previous "${t}_e2e_p99_ms"
+        $CurrE2E = Get-ColValue $Current "${t}_e2e_p99_ms"
+
+        if ($PrevQps -eq 0 -and $CurrQps -eq 0) { continue }
+
+        $QpsDelta = if ($PrevQps -gt 0) { ($CurrQps - $PrevQps) / $PrevQps * 100 } else { 0 }
+        $E2EDelta = if ($PrevE2E -gt 0) { ($CurrE2E - $PrevE2E) / $PrevE2E * 100 } else { 0 }
+
+        if ($QpsDelta -lt -10 -or $E2EDelta -gt 20) {
+            $HasRegression = $true
+            $RegressionTiers += $t
+        }
+
+        $Output.Add(("| {0,-8} | QPS: {1,-40} |" -f $t, (Format-Delta $PrevQps $CurrQps "QPS")))
+        $Output.Add(("| {0,-8} | p99:   {1,-40} |" -f "", (Format-Delta $PrevP99 $CurrP99 "ms" -LowerIsBetter)))
+        $Output.Add(("| {0,-8} | e2e99: {1,-40} |" -f "", (Format-Delta $PrevE2E $CurrE2E "ms" -LowerIsBetter)))
+    }
+
+    $Output.Add($Sep)
+
+    if ($HasRegression) {
+        $Output.Add("  [!!] REGRESSION: $($RegressionTiers -join ', ') -- QPS dropped >10% or E2E-p99 grew >20%")
+    } else {
+        $Output.Add("  [OK] All tiers stable, no significant regression.")
+    }
+
+    return $Output.ToArray()
 }

@@ -351,6 +351,15 @@ if ($Compare) {
     } else {
         Write-Warning "No benchmark summary found yet."
     }
+
+    # Regression comparison
+    Write-Host ""
+    Write-Header "Regression Comparison"
+    $Regression = Build-RegressionComparison -ProjectRoot $ProjectRoot
+    foreach ($Line in $Regression) {
+        Write-Host $Line
+    }
+
     Exit-BenchmarkScript -ExitCode 0
 }
 

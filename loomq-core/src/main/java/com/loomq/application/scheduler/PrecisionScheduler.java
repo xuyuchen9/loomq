@@ -31,6 +31,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
@@ -74,6 +75,9 @@ public class PrecisionScheduler {
     // 按精度档位的扫描调度器
     private final Map<PrecisionTier, ScheduledExecutorService> scanSchedulers;
     private final Map<PrecisionTier, ScheduledFuture<?>> scanFutures;
+
+    // scanTrigger 去重：同一 tier 同时最多一个待执行的 triggered scan
+    private final Map<PrecisionTier, AtomicBoolean> pendingScanTrigger = new ConcurrentHashMap<>();
 
     // due→dispatch lag 追踪（key=intentId, value=enqueueTimeNanos）
     private final ConcurrentHashMap<String, Long> enqueueTimeNanos = new ConcurrentHashMap<>();
@@ -201,9 +205,15 @@ public class PrecisionScheduler {
                 tiers.add(intent.getPrecisionTier());
             }
             for (PrecisionTier tier : tiers) {
-                ScheduledExecutorService scanScheduler = scanSchedulers.get(tier);
-                if (scanScheduler != null) {
-                    scanScheduler.submit(() -> scanAndDispatch(tier));
+                AtomicBoolean pending = pendingScanTrigger.computeIfAbsent(tier, k -> new AtomicBoolean(false));
+                if (pending.compareAndSet(false, true)) {
+                    ScheduledExecutorService scanScheduler = scanSchedulers.get(tier);
+                    if (scanScheduler != null) {
+                        scanScheduler.submit(() -> {
+                            pending.set(false);
+                            scanAndDispatch(tier);
+                        });
+                    }
                 }
             }
         });
