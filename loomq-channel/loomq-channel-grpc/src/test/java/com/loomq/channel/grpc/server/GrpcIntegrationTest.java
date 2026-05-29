@@ -60,7 +60,7 @@ class GrpcIntegrationTest {
         globalObserver = new GlobalIntentObserver();
         engine.registerObserver(globalObserver);
 
-        GrpcConfig config = new GrpcConfig(true, "127.0.0.1", 0, 4 * 1024 * 1024, 1, 0);
+        GrpcConfig config = new GrpcConfig(true, "127.0.0.1", 0, 4 * 1024 * 1024, 1, 0, true, 1024, 1024 * 1024, 60);
         grpcServer = new LoomqGrpcServer(config, engine, null, null, globalObserver);
         grpcServer.start();
 

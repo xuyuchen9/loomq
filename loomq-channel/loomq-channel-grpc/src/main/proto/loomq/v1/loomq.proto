@@ -152,6 +152,56 @@ message IntentEvent {
 }
 
 // ──────────────────────────────────────────────
+// Delivery stream messages
+// ──────────────────────────────────────────────
+
+// ACK 模式
+enum DeliveryAckMode {
+  DELIVERY_ACK_MODE_UNSPECIFIED = 0;
+  AUTO_ACK = 1;    // 推送到流即视为投递成功
+  MANUAL_ACK = 2;  // 需要显式调用 AckDelivery
+}
+
+// ACK 结果
+enum DeliveryAckResult {
+  DELIVERY_ACK_RESULT_UNSPECIFIED = 0;
+  DELIVERED = 1;  // 成功投递
+  FAILED = 2;     // 投递失败
+  REJECTED = 3;   // 拒绝投递
+}
+
+// 订阅投递流请求
+message WatchDeliveriesRequest {
+  // 过滤特定档位，空 = 全部档位
+  repeated string precision_tiers = 1;
+  // ACK 模式（默认 AUTO_ACK）
+  DeliveryAckMode ack_mode = 2;
+}
+
+// 投递事件（LoomQ → Gateway）
+message DeliveryEvent {
+  string delivery_id = 1;       // 唯一投递标识
+  string intent_id = 2;         // Intent ID
+  string precision_tier = 3;    // 档位
+  int32 attempt = 4;            // 第几次尝试
+  CallbackMessage callback = 5; // 回调配置
+  google.protobuf.Timestamp execute_at = 6;
+  google.protobuf.Timestamp scheduled_at = 7;
+}
+
+// Gateway 显式 ACK（MANUAL_ACK 模式）
+message DeliveryAck {
+  string delivery_id = 1;
+  DeliveryAckResult result = 2;
+  string error_message = 3;
+}
+
+// ACK 响应
+message AckDeliveryResponse {
+  bool accepted = 1;
+}
+
+// ──────────────────────────────────────────────
 // Service definition
 // ──────────────────────────────────────────────
 
@@ -165,4 +215,6 @@ service LoomQService {
   rpc ReviveIntent(ReviveIntentRequest) returns (IntentMessage);
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
   rpc WatchIntent(WatchIntentRequest) returns (stream IntentEvent);
+  rpc WatchDeliveries(WatchDeliveriesRequest) returns (stream DeliveryEvent);
+  rpc AckDelivery(DeliveryAck) returns (AckDeliveryResponse);
 }

@@ -11,6 +11,8 @@ import com.loomq.domain.intent.RedeliveryPolicy;
 import com.loomq.domain.intent.WalMode;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Converts between Protobuf messages and LoomQ domain objects.
@@ -21,6 +23,21 @@ import java.util.HashMap;
 public final class ProtoConverter {
 
     private ProtoConverter() {}
+
+    // ── Enum caches (avoid String.toUpperCase() allocation per request) ──
+
+    private static final Map<String, PrecisionTier> TIER_CACHE = buildEnumCache(PrecisionTier.class);
+    private static final Map<String, AckMode> ACK_CACHE = buildEnumCache(AckMode.class);
+    private static final Map<String, WalMode> WAL_CACHE = buildEnumCache(WalMode.class);
+    private static final Map<String, ExpiredAction> ACTION_CACHE = buildEnumCache(ExpiredAction.class);
+
+    private static <E extends Enum<E>> Map<String, E> buildEnumCache(Class<E> cls) {
+        Map<String, E> map = new ConcurrentHashMap<>();
+        for (E e : cls.getEnumConstants()) {
+            map.put(e.name(), e);
+        }
+        return map;
+    }
 
     // ── Timestamp ↔ Instant ──
 
@@ -89,26 +106,22 @@ public final class ProtoConverter {
 
     public static PrecisionTier parsePrecisionTier(String s) {
         if (s == null || s.isBlank()) return null;
-        try { return PrecisionTier.valueOf(s.toUpperCase()); }
-        catch (IllegalArgumentException e) { return null; }
+        return TIER_CACHE.get(s.toUpperCase());
     }
 
     public static AckMode parseAckMode(String s) {
         if (s == null || s.isBlank()) return null;
-        try { return AckMode.valueOf(s.toUpperCase()); }
-        catch (IllegalArgumentException e) { return null; }
+        return ACK_CACHE.get(s.toUpperCase());
     }
 
     public static WalMode parseWalMode(String s) {
         if (s == null || s.isBlank()) return null;
-        try { return WalMode.valueOf(s.toUpperCase()); }
-        catch (IllegalArgumentException e) { return null; }
+        return WAL_CACHE.get(s.toUpperCase());
     }
 
     public static ExpiredAction parseExpiredAction(String s) {
         if (s == null || s.isBlank()) return null;
-        try { return ExpiredAction.valueOf(s.toUpperCase()); }
-        catch (IllegalArgumentException e) { return null; }
+        return ACTION_CACHE.get(s.toUpperCase());
     }
 
     // ── Intent → IntentMessage ──
@@ -175,5 +188,27 @@ public final class ProtoConverter {
         if (!proto.getIdempotencyKey().isEmpty()) intent.setIdempotencyKey(proto.getIdempotencyKey());
         if (!proto.getTagsMap().isEmpty()) intent.setTags(new HashMap<>(proto.getTagsMap()));
         return intent;
+    }
+
+    // ── DeliveryEvent ──
+
+    /**
+     * 将 Intent 转换为 DeliveryEvent（用于 gRPC 流投递）。
+     */
+    public static com.loomq.grpc.gen.DeliveryEvent toDeliveryEvent(Intent intent) {
+        var builder = com.loomq.grpc.gen.DeliveryEvent.newBuilder()
+            .setDeliveryId("delivery_" + intent.getIntentId() + "_" + intent.getAttempts())
+            .setIntentId(intent.getIntentId())
+            .setPrecisionTier(intent.getPrecisionTier().name())
+            .setAttempt(intent.getAttempts() + 1);
+
+        if (intent.getCallback() != null) {
+            builder.setCallback(toProto(intent.getCallback()));
+        }
+        if (intent.getExecuteAt() != null) {
+            builder.setExecuteAt(toProto(intent.getExecuteAt()));
+        }
+
+        return builder.build();
     }
 }

@@ -336,7 +336,7 @@ public final class LoomqCli {
         System.out.println("  ███████╗╚██████╔╝╚██████╔╝██║ ╚═╝ ██║╚██████╔╝");
         System.out.println("  ╚══════╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝ ╚══▀▀═╝ ");
         System.out.println(ANSI_RESET);
-        System.out.println("  Interactive Temporal Explorer  v0.9.1");
+        System.out.println("  Interactive Temporal Explorer  v0.9.2");
         System.out.println();
     }
 }

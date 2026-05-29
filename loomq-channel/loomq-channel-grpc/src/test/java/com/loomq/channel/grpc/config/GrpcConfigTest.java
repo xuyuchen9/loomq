@@ -63,54 +63,54 @@ class GrpcConfigTest {
     @Test
     void rejectsBlankHost() {
         assertThrows(IllegalArgumentException.class,
-            () -> new GrpcConfig(true, "", 8080, 1024, 1, 0));
+            () -> new GrpcConfig(true, "", 8080, 1024, 1, 0, true, 1024, 1024 * 1024, 60));
         assertThrows(IllegalArgumentException.class,
-            () -> new GrpcConfig(true, "  ", 8080, 1024, 1, 0));
+            () -> new GrpcConfig(true, "  ", 8080, 1024, 1, 0, true, 1024, 1024 * 1024, 60));
     }
 
     @Test
     void rejectsNullHost() {
         assertThrows(IllegalArgumentException.class,
-            () -> new GrpcConfig(true, null, 8080, 1024, 1, 0));
+            () -> new GrpcConfig(true, null, 8080, 1024, 1, 0, true, 1024, 1024 * 1024, 60));
     }
 
     @Test
     void rejectsInvalidPort() {
         assertThrows(IllegalArgumentException.class,
-            () -> new GrpcConfig(true, "localhost", -1, 1024, 1, 0));
+            () -> new GrpcConfig(true, "localhost", -1, 1024, 1, 0, true, 1024, 1024 * 1024, 60));
         assertThrows(IllegalArgumentException.class,
-            () -> new GrpcConfig(true, "localhost", 70000, 1024, 1, 0));
+            () -> new GrpcConfig(true, "localhost", 70000, 1024, 1, 0, true, 1024, 1024 * 1024, 60));
     }
 
     @Test
     void rejectsNonPositiveMaxInboundMessageSize() {
         assertThrows(IllegalArgumentException.class,
-            () -> new GrpcConfig(true, "localhost", 8080, 0, 1, 0));
+            () -> new GrpcConfig(true, "localhost", 8080, 0, 1, 0, true, 1024, 1024 * 1024, 60));
         assertThrows(IllegalArgumentException.class,
-            () -> new GrpcConfig(true, "localhost", 8080, -1, 1, 0));
+            () -> new GrpcConfig(true, "localhost", 8080, -1, 1, 0, true, 1024, 1024 * 1024, 60));
     }
 
     @Test
     void rejectsNonPositiveBossThreads() {
         assertThrows(IllegalArgumentException.class,
-            () -> new GrpcConfig(true, "localhost", 8080, 1024, 0, 0));
+            () -> new GrpcConfig(true, "localhost", 8080, 1024, 0, 0, true, 1024, 1024 * 1024, 60));
     }
 
     @Test
     void rejectsNegativeWorkerThreads() {
         assertThrows(IllegalArgumentException.class,
-            () -> new GrpcConfig(true, "localhost", 8080, 1024, 1, -1));
+            () -> new GrpcConfig(true, "localhost", 8080, 1024, 1, -1, true, 1024, 1024 * 1024, 60));
     }
 
     @Test
     void allowsZeroWorkerThreads() {
-        GrpcConfig config = new GrpcConfig(true, "localhost", 8080, 1024, 1, 0);
+        GrpcConfig config = new GrpcConfig(true, "localhost", 8080, 1024, 1, 0, true, 1024, 1024 * 1024, 60);
         assertEquals(0, config.workerThreads());
     }
 
     @Test
     void allowsPortZero() {
-        GrpcConfig config = new GrpcConfig(true, "localhost", 0, 1024, 1, 0);
+        GrpcConfig config = new GrpcConfig(true, "localhost", 0, 1024, 1, 0, true, 1024, 1024 * 1024, 60);
         assertEquals(0, config.port());
     }
 }

@@ -15,7 +15,11 @@ public record GrpcConfig(
     int port,
     int maxInboundMessageSize,
     int bossThreads,
-    int workerThreads
+    int workerThreads,
+    boolean tcpNoDelay,
+    int soBacklog,
+    int flowControlWindow,
+    long permitKeepAliveTimeSeconds
 ) {
 
     public GrpcConfig {
@@ -34,6 +38,15 @@ public record GrpcConfig(
         if (workerThreads < 0) {
             throw new IllegalArgumentException("grpc workerThreads must be non-negative");
         }
+        if (soBacklog <= 0) {
+            throw new IllegalArgumentException("grpc soBacklog must be positive");
+        }
+        if (flowControlWindow <= 0) {
+            throw new IllegalArgumentException("grpc flowControlWindow must be positive");
+        }
+        if (permitKeepAliveTimeSeconds <= 0) {
+            throw new IllegalArgumentException("grpc permitKeepAliveTimeSeconds must be positive");
+        }
     }
 
     public static GrpcConfig defaultConfig() {
@@ -48,7 +61,11 @@ public record GrpcConfig(
             ConfigSupport.intValue(source, 7929, "grpc.port", "grpcPort"),
             ConfigSupport.intValue(source, 4 * 1024 * 1024, "grpc.max_inbound_message_size", "grpc.maxInboundMessageSize", "grpcMaxInboundMessageSize"),
             ConfigSupport.intValue(source, 1, "grpc.boss_threads", "grpc.bossThreads", "grpcBossThreads"),
-            ConfigSupport.intValue(source, 0, "grpc.worker_threads", "grpc.workerThreads", "grpcWorkerThreads")
+            ConfigSupport.intValue(source, 0, "grpc.worker_threads", "grpc.workerThreads", "grpcWorkerThreads"),
+            ConfigSupport.booleanValue(source, true, "grpc.tcp_no_delay", "grpc.tcpNoDelay", "grpcTcpNoDelay"),
+            ConfigSupport.intValue(source, 1024, "grpc.so_backlog", "grpc.soBacklog", "grpcSoBacklog"),
+            ConfigSupport.intValue(source, 1024 * 1024, "grpc.flow_control_window", "grpc.flowControlWindow", "grpcFlowControlWindow"),
+            ConfigSupport.longValue(source, 60, "grpc.permit_keep_alive_time", "grpc.permitKeepAliveTime", "grpcPermitKeepAliveTime")
         );
     }
 }

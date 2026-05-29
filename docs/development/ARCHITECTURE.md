@@ -1,6 +1,6 @@
 # LoomQ Architecture
 
-This document describes the current codebase structure as of v0.9.1.
+This document describes the current codebase structure as of v0.9.2.
 
 ## High-Level Layers
 

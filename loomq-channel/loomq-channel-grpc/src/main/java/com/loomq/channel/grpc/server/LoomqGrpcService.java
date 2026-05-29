@@ -33,6 +33,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.LongAdder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,22 +49,45 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
     private static final Logger logger = LoggerFactory.getLogger(LoomqGrpcService.class);
     private static final PrecisionTier DEFAULT_TIER = PrecisionTierCatalog.defaultCatalog().defaultTier();
 
+    // ── CPU timing instrumentation (sampled, zero-contention) ──
+    private static final int SAMPLE_INTERVAL = 2000; // measure every 2000th request
+    private static final AtomicInteger sampleCounter = new AtomicInteger(0);
+    private static final LongAdder totalValidateNs = new LongAdder();
+    private static final LongAdder totalConvertNs = new LongAdder();
+    private static final LongAdder totalEngineNs = new LongAdder();
+    private static final LongAdder totalResponseNs = new LongAdder();
+    private static final LongAdder totalSamples = new LongAdder();
+    private static volatile long lastLogTimeNs = System.nanoTime();
+
     private final LoomqEngine engine;
     private final RaftStatusProvider raftStatus;
     private final WriteCoordinator writeCoordinator;
     private final GlobalIntentObserver globalObserver;
+    private final GrpcStreamDeliveryHandler deliveryHandler;
 
     public LoomqGrpcService(LoomqEngine engine, RaftStatusProvider raftStatus,
                             WriteCoordinator writeCoordinator,
                             GlobalIntentObserver globalObserver) {
+        this(engine, raftStatus, writeCoordinator, globalObserver, null);
+    }
+
+    public LoomqGrpcService(LoomqEngine engine, RaftStatusProvider raftStatus,
+                            WriteCoordinator writeCoordinator,
+                            GlobalIntentObserver globalObserver,
+                            GrpcStreamDeliveryHandler deliveryHandler) {
         this.engine = engine;
         this.raftStatus = raftStatus;
         this.writeCoordinator = writeCoordinator;
         this.globalObserver = globalObserver;
+        this.deliveryHandler = deliveryHandler;
     }
 
     @Override
     public void createIntent(CreateIntentRequest request, StreamObserver<com.loomq.grpc.gen.IntentMessage> response) {
+        final boolean shouldSample = sampleCounter.incrementAndGet() % SAMPLE_INTERVAL == 0;
+        final long startNs = shouldSample ? System.nanoTime() : 0;
+        long phaseNs = startNs;
+
         try {
             if (isRaftWriteBlocked()) {
                 throw GrpcStatusAdapter.unavailable("50302", "Write must be served by the Raft leader");
@@ -97,6 +122,7 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
             }
 
             // Build intent
+            long afterValidateNs = shouldSample ? System.nanoTime() : 0;
             String intentId = request.getIntentId();
             if (intentId == null || intentId.isBlank()) {
                 intentId = UUID.randomUUID().toString();
@@ -122,6 +148,8 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
                 intent.setPrecisionTier(DEFAULT_TIER);
             }
 
+            long afterConvertNs = shouldSample ? System.nanoTime() : 0;
+
             // Create (Raft or direct)
             if (writeCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
                 Intent snapshot = intent.copy();
@@ -133,8 +161,19 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
                 final Intent finalIntent = intent;
                 engine.createIntent(finalIntent, finalIntent.getAckMode())
                     .thenAccept(seq -> {
+                        long afterEngineNs = shouldSample ? System.nanoTime() : 0;
                         response.onNext(ProtoConverter.toProto(finalIntent));
                         response.onCompleted();
+
+                        if (shouldSample) {
+                            long endNs = System.nanoTime();
+                            totalValidateNs.add(afterValidateNs - startNs);
+                            totalConvertNs.add(afterConvertNs - afterValidateNs);
+                            totalEngineNs.add(afterEngineNs - afterConvertNs);
+                            totalResponseNs.add(endNs - afterEngineNs);
+                            totalSamples.increment();
+                            maybeLogTimings();
+                        }
                     })
                     .exceptionally(ex -> {
                         handleCompletionException(toCompletionException(ex), response);
@@ -150,6 +189,26 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
             logger.error("Error in createIntent", e);
             response.onError(GrpcStatusAdapter.fromException(
                 e instanceof Exception ex ? ex : new RuntimeException(e)));
+        }
+    }
+
+    private static void maybeLogTimings() {
+        long count = totalSamples.sum();
+        if (count > 0 && count % 10 == 0) {
+            long nowNs = System.nanoTime();
+            long elapsedNs = nowNs - lastLogTimeNs;
+            if (elapsedNs > 30_000_000_000L) { // log every ~30 seconds
+                lastLogTimeNs = nowNs;
+                double n = count;
+                logger.info("CPU timing breakdown ({} samples): validate={}µs convert={}µs engine={}µs response={}µs total={}µs",
+                    count,
+                    String.format("%.1f", totalValidateNs.sum() / n / 1000),
+                    String.format("%.1f", totalConvertNs.sum() / n / 1000),
+                    String.format("%.1f", totalEngineNs.sum() / n / 1000),
+                    String.format("%.1f", totalResponseNs.sum() / n / 1000),
+                    String.format("%.1f", (totalValidateNs.sum() + totalConvertNs.sum() + totalEngineNs.sum() + totalResponseNs.sum()) / n / 1000)
+                );
+            }
         }
     }
 
@@ -429,6 +488,43 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
         serverObserver.setOnReadyHandler(entry::drainQueue);
         serverObserver.setOnCancelHandler(() -> globalObserver.unregister(entry));
         serverObserver.setOnCloseHandler(() -> globalObserver.unregister(entry));
+    }
+
+    @Override
+    public void watchDeliveries(com.loomq.grpc.gen.WatchDeliveriesRequest request,
+                                StreamObserver<com.loomq.grpc.gen.DeliveryEvent> response) {
+        if (deliveryHandler == null) {
+            response.onError(GrpcStatusAdapter.unavailable("50303",
+                "gRPC stream delivery is not enabled"));
+            return;
+        }
+
+        var serverObserver = (ServerCallStreamObserver<com.loomq.grpc.gen.DeliveryEvent>) response;
+        var entry = deliveryHandler.getRegistry().register(request, serverObserver);
+
+        serverObserver.setOnReadyHandler(entry::drainQueue);
+        serverObserver.setOnCancelHandler(() -> deliveryHandler.getRegistry().unregister(entry));
+        serverObserver.setOnCloseHandler(() -> deliveryHandler.getRegistry().unregister(entry));
+    }
+
+    @Override
+    public void ackDelivery(com.loomq.grpc.gen.DeliveryAck request,
+                            StreamObserver<com.loomq.grpc.gen.AckDeliveryResponse> response) {
+        if (deliveryHandler == null) {
+            response.onError(GrpcStatusAdapter.unavailable("50303",
+                "gRPC stream delivery is not enabled"));
+            return;
+        }
+
+        try {
+            deliveryHandler.getRegistry().completePending(request.getDeliveryId(), request.getResult());
+            response.onNext(com.loomq.grpc.gen.AckDeliveryResponse.newBuilder()
+                .setAccepted(true)
+                .build());
+            response.onCompleted();
+        } catch (Exception e) {
+            response.onError(GrpcStatusAdapter.internal("Failed to process ACK: " + e.getMessage()));
+        }
     }
 
     // ── Private helpers ──

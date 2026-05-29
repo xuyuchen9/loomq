@@ -1,11 +1,11 @@
 # =====================================================
-# LoomQ Configuration v0.9.1
+# LoomQ Configuration v0.9.2
 # High-Performance Delayed Intent Queue
 # =====================================================
 
 # -----------------------------------------------------
 # Server Configuration
-# v0.9.1: Netty 原生 HTTP 服务器，目标 300K+ QPS
+# v0.9.2: Netty 原生 HTTP 服务器，目标 300K+ QPS
 # -----------------------------------------------------
 server:
   host: "${LOOMQ_SERVER_HOST:0.0.0.0}"
@@ -15,7 +15,7 @@ server:
   max_request_size: ${LOOMQ_MAX_REQUEST_SIZE:10485760}
   thread_pool_size: ${LOOMQ_THREAD_POOL_SIZE:200}
 
-# Netty HTTP 服务器配置 (v0.9.1)
+# Netty HTTP 服务器配置 (v0.9.2)
 netty:
   port: ${LOOMQ_NETTY_PORT:7928}
   host: "${LOOMQ_NETTY_HOST:0.0.0.0}"

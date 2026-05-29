@@ -4,7 +4,7 @@
 FROM eclipse-temurin:25-jdk-alpine
 
 LABEL maintainer="loomq"
-LABEL version="0.9.1"
+LABEL version="0.9.2"
 LABEL description="LoomQ Delayed Intent Queue Engine"
 
 # Install necessary tools
@@ -17,7 +17,7 @@ WORKDIR /app
 RUN mkdir -p /app/data/wal
 
 # Copy the shaded JAR
-COPY loomq-server/target/loomq-server-0.9.1.jar app.jar
+COPY loomq-server/target/loomq-server-0.9.2.jar app.jar
 
 # Copy default configuration
 COPY loomq-server/src/main/resources/application.yml config/application.yml

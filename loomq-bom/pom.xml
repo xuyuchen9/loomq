@@ -6,7 +6,7 @@
 
     <groupId>com.loomq</groupId>
     <artifactId>loomq-bom</artifactId>
-    <version>0.9.1</version>
+    <version>0.9.2</version>
     <packaging>pom</packaging>
 
     <name>LoomQ BOM</name>
@@ -14,7 +14,7 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <loomq.version>0.9.1</loomq.version>
+        <loomq.version>0.9.2</loomq.version>
         <spotless.version>3.0.0</spotless.version>
     </properties>
 

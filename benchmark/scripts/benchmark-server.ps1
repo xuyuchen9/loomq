@@ -168,10 +168,10 @@ function Ensure-BenchmarkRepo {
 
     New-Item -ItemType Directory -Force -Path $RepoPath | Out-Null
 
-    $ParentPom = Join-Path $RepoPath "com\loomq\loomq-parent\0.9.1\loomq-parent-0.9.1.pom"
-    $BomPom = Join-Path $RepoPath "com\loomq\loomq-bom\0.9.1\loomq-bom-0.9.1.pom"
-    $CoreJar = Join-Path $RepoPath "com\loomq\loomq-core\0.9.1\loomq-core-0.9.1.jar"
-    $ServerJar = Join-Path $RepoPath "com\loomq\loomq-server\0.9.1\loomq-server-0.9.1.jar"
+    $ParentPom = Join-Path $RepoPath "com\loomq\loomq-parent\0.9.2\loomq-parent-0.9.2.pom"
+    $BomPom = Join-Path $RepoPath "com\loomq\loomq-bom\0.9.2\loomq-bom-0.9.2.pom"
+    $CoreJar = Join-Path $RepoPath "com\loomq\loomq-core\0.9.2\loomq-core-0.9.2.jar"
+    $ServerJar = Join-Path $RepoPath "com\loomq\loomq-server\0.9.2\loomq-server-0.9.2.jar"
 
     $RepoReady = (Test-Path $ParentPom) -and (Test-Path $BomPom) -and (Test-Path $CoreJar) -and (Test-Path $ServerJar)
     if (-not $ForceRefresh -and $RepoReady) {
@@ -209,7 +209,8 @@ function Start-BenchmarkServer {
         [int]$Port,
         [int]$GrpcPort,
         [string]$DataDir,
-        [string]$NodeId
+        [string]$NodeId,
+        [string[]]$ExtraJvmArgs = @()
     )
 
     $LogDir = Join-Path $ProjectRoot "benchmark\results\logs"
@@ -222,10 +223,14 @@ function Start-BenchmarkServer {
         "-Dgrpc.enabled=true",
         "-Dgrpc.port=$GrpcPort",
         "-Dloomq.data.dir=$DataDir",
-        "-Dloomq.node.id=$NodeId",
-        "-jar",
-        $ServerJarPath
+        "-Dloomq.node.id=$NodeId"
     )
+    foreach ($arg in $ExtraJvmArgs) {
+        if (-not [string]::IsNullOrWhiteSpace($arg)) {
+            $Args += $arg
+        }
+    }
+    $Args += @("-jar", $ServerJarPath)
 
     $Process = Start-Process -FilePath "$JavaHome\bin\java.exe" -ArgumentList $Args -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput $StdOutLog -RedirectStandardError $StdErrLog
 

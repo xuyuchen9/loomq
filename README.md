@@ -46,7 +46,7 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 <dependency>
     <groupId>com.loomq</groupId>
     <artifactId>loomq-core</artifactId>
-    <version>0.9.1</version>
+    <version>0.9.2</version>
 </dependency>
 ```
 
@@ -61,7 +61,7 @@ mvn clean package -DskipTests
 ### Start Server
 
 ```bash
-java -jar loomq-server/target/loomq-server-0.9.1.jar
+java -jar loomq-server/target/loomq-server-0.9.2.jar
 ```
 
 Server listens on `http://localhost:7928` by default.
@@ -105,10 +105,10 @@ When `LOOMQ_RAFT_ENABLED=true`, the standalone server switches to Raft mode:
 mvn package -pl loomq-cli -am -DskipTests
 
 # Run (defaults to http://localhost:8080, override with LOOMQ_URL env var)
-java -jar loomq-cli/target/loomq-cli-0.9.1.jar
+java -jar loomq-cli/target/loomq-cli-0.9.2.jar
 
 # Or set a custom server URL
-$env:LOOMQ_URL="http://localhost:7928"; java -jar loomq-cli/target/loomq-cli-0.9.1.jar
+$env:LOOMQ_URL="http://localhost:7928"; java -jar loomq-cli/target/loomq-cli-0.9.2.jar
 ```
 
 Interactive commands: `schedule`, `get`, `list`, `chronoscope`, `timeline`, `dead-letters`, `revive`, `health`, `follow`, `help`, `exit`.
@@ -444,7 +444,7 @@ make docker-build   # Build Docker image
 
 ## Roadmap
 
-### v0.9.1 (current)
+### v0.9.2 (current)
 - [x] Cohort-based batched wakeup (CSA-inspired)
 - [x] Arrow cross-tier slot borrowing + AdapTBF constraints
 - [x] ResizableSemaphore (runtime concurrency adjustment)

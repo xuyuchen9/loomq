@@ -1,6 +1,7 @@
 package com.loomq.benchmark.framework;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -36,14 +37,54 @@ public abstract class ProtocolBenchmark {
 
     protected final void run(String[] args) throws Exception {
         boolean quick = Boolean.getBoolean("loomq.benchmark.quick");
+        boolean stress = Boolean.getBoolean("loomq.benchmark.stress");
 
         System.out.println("╔══════════════════════════════════════════════════════════════╗");
         System.out.printf("║     LoomQ %s Virtual Thread 性能测试              %n", protocolName);
         System.out.printf("║     关注 %s 的真实观察值                              %n", protocolName);
         System.out.println("╚══════════════════════════════════════════════════════════════╝");
         System.out.println();
-        System.out.println("模式: " + (quick ? "QUICK" : "FULL"));
+        System.out.println("模式: " + (quick ? "QUICK" : stress ? "STRESS" : "FULL"));
         System.out.println("目标: " + targetAddress);
+        System.out.printf("CPU cores: %d%n", Runtime.getRuntime().availableProcessors());
+        System.out.printf("Max memory: %d MB%n", Runtime.getRuntime().maxMemory() / 1024 / 1024);
+        System.out.println();
+
+        int[] threadCounts;
+        String customThreads = System.getProperty("loomq.benchmark.threads");
+        if (customThreads != null && !customThreads.isBlank()) {
+            threadCounts = Arrays.stream(customThreads.split(","))
+                .map(String::trim)
+                .mapToInt(Integer::parseInt)
+                .toArray();
+        } else if (stress) {
+            threadCounts = new int[] {500, 1000, 2000, 3000};
+        } else {
+            threadCounts = quick ? new int[] {16, 32, 64} : new int[] {50, 100, 200, 500, 1000};
+        }
+
+        int durationSec;
+        String customDuration = System.getProperty("loomq.benchmark.duration_sec");
+        if (customDuration != null && !customDuration.isBlank()) {
+            durationSec = Integer.parseInt(customDuration);
+        } else if (stress) {
+            durationSec = 30;
+        } else {
+            durationSec = quick ? 4 : 20;
+        }
+
+        int cooldownMs;
+        String customCooldown = System.getProperty("loomq.benchmark.cooldown_ms");
+        if (customCooldown != null && !customCooldown.isBlank()) {
+            cooldownMs = Integer.parseInt(customCooldown);
+        } else if (stress) {
+            cooldownMs = 5000;
+        } else {
+            cooldownMs = quick ? 1000 : 2000;
+        }
+
+        System.out.printf("Thread counts: %s%n", Arrays.toString(threadCounts));
+        System.out.printf("Duration per tier: %ds, Cooldown: %dms%n", durationSec, cooldownMs);
         System.out.println();
 
         int warmupCount = quick ? 20 : 100;
@@ -52,10 +93,6 @@ public abstract class ProtocolBenchmark {
         Thread.sleep(1000);
         System.out.println("[预热] 完成");
         System.out.println();
-
-        int[] threadCounts = quick ? new int[] {16, 32, 64} : new int[] {50, 100, 200, 500, 1000};
-        int durationSec = quick ? 4 : 20;
-        int cooldownMs = quick ? 1000 : 2000;
 
         List<BenchmarkResult> results = new ArrayList<>();
 
@@ -159,12 +196,28 @@ public abstract class ProtocolBenchmark {
         System.out.printf("                    性能汇总表格 (%s)                       %n", protocolName);
         System.out.println("══════════════════════════════════════════════════════════════");
         System.out.println();
-        System.out.printf("%-10s %12s %10s %10s %10s%n", "Threads", "QPS", "Avg(ms)", "P99(ms)", "Success");
-        System.out.println("-".repeat(56));
+        System.out.printf("%-10s %12s %10s %10s %10s %10s%n", "Threads", "QPS", "Avg(ms)", "P99(ms)", "Success", "Growth%");
+        System.out.println("-".repeat(66));
 
-        for (BenchmarkResult r : results) {
-            System.out.printf("%-10d %,12.0f %10.2f %10d %,10d%n",
-                r.threads(), r.qps(), r.avgLatency(), r.p99(), r.success());
+        double prevQps = 0;
+        int consecutiveLowGrowth = 0;
+        int inflectionIdx = -1;
+
+        for (int i = 0; i < results.size(); i++) {
+            BenchmarkResult r = results.get(i);
+            double growthPct = prevQps > 0 ? (r.qps() - prevQps) / prevQps * 100 : 0;
+            System.out.printf("%-10d %,12.0f %10.2f %10d %,10d %9.1f%%%n",
+                r.threads(), r.qps(), r.avgLatency(), r.p99(), r.success(), growthPct);
+
+            if (i > 0 && growthPct < 5) {
+                consecutiveLowGrowth++;
+                if (consecutiveLowGrowth >= 2 && inflectionIdx < 0) {
+                    inflectionIdx = i - 2;
+                }
+            } else {
+                consecutiveLowGrowth = 0;
+            }
+            prevQps = r.qps();
         }
 
         BenchmarkResult peak = results.stream()
@@ -187,10 +240,21 @@ public abstract class ProtocolBenchmark {
             System.out.printf("最差 P99:   %d ms @ %d 线程%n", worstP99.p99(), worstP99.threads());
             System.out.printf("失败率:     %.2f%%%n", failRate);
             System.out.printf("解释: 这组结果反映的是 %s 的真实开销。%n", protocolName);
+
+            if (inflectionIdx >= 0) {
+                BenchmarkResult inflection = results.get(inflectionIdx);
+                System.out.printf("拐点:       %d 线程 (%,.0f QPS, P99=%dms)%n",
+                    inflection.threads(), inflection.qps(), inflection.p99());
+            } else if (worstP99.p99() > 500) {
+                System.out.printf("⚠ 系统进入雪崩区域 (P99 > 500ms @ %d 线程)%n", worstP99.threads());
+            }
+
             System.out.printf(Locale.ROOT,
-                "RESULT|peak_qps=%.0f|best_threads=%d|best_p99_ms=%d|best_avg_ms=%.2f|worst_p99_ms=%d|worst_threads=%d|fail_rate=%.2f%n",
+                "RESULT|peak_qps=%.0f|best_threads=%d|best_p99_ms=%d|best_avg_ms=%.2f|worst_p99_ms=%d|worst_threads=%d|fail_rate=%.2f|cores=%d|inflection_threads=%d|inflection_qps=%.0f%n",
                 peak.qps(), peak.threads(), bestP99.p99(), bestP99.avgLatency(),
-                worstP99.p99(), worstP99.threads(), failRate);
+                worstP99.p99(), worstP99.threads(), failRate, Runtime.getRuntime().availableProcessors(),
+                inflectionIdx >= 0 ? results.get(inflectionIdx).threads() : -1,
+                inflectionIdx >= 0 ? results.get(inflectionIdx).qps() : 0);
         }
     }
 

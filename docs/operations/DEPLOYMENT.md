@@ -1,6 +1,6 @@
 # LoomQ Deployment Guide
 
-Version: `0.9.1`
+Version: `0.9.2`
 
 This guide matches the current standalone server, scheduler, persistence, and Raft deployment layout.
 
@@ -23,7 +23,7 @@ mvn clean package -DskipTests
 ### Run
 
 ```bash
-java -jar loomq-server/target/loomq-server-0.9.1.jar
+java -jar loomq-server/target/loomq-server-0.9.2.jar
 ```
 
 The server listens on `http://localhost:7928` by default.
@@ -102,7 +102,7 @@ WantedBy=multi-user.target
 ### JVM Settings
 
 ```bash
-java -Xms2g -Xmx2g -XX:+UseZGC -jar loomq-server/target/loomq-server-0.9.1.jar
+java -Xms2g -Xmx2g -XX:+UseZGC -jar loomq-server/target/loomq-server-0.9.2.jar
 ```
 
 Tune heap size according to your pending-intent target and WAL retention window.
@@ -152,7 +152,7 @@ export LOOMQ_RAFT_PORT=7930
 ### Docker
 
 ```bash
-docker build -t loomq:0.9.1 .
+docker build -t loomq:0.9.2 .
 docker run -d \
   --name loomq \
   -p 7928:7928 \
@@ -163,7 +163,7 @@ docker run -d \
   -e LOOMQ_SECURITY_ENABLED=true \
   -e LOOMQ_API_TOKEN=replace-with-secret \
   -e LOOMQ_SCHEDULER_MAX_PENDING_INTENTS=1000000 \
-  loomq:0.9.1
+  loomq:0.9.2
 ```
 
 ### Docker Compose
@@ -212,7 +212,7 @@ spec:
     spec:
       containers:
         - name: loomq
-          image: loomq:0.9.1
+          image: loomq:0.9.2
           ports:
             - containerPort: 7928
             - containerPort: 7930
@@ -298,6 +298,6 @@ Before publishing a GitHub release:
 
 1. Run the formatting gate (`make check-format` or `mvn -B -ntp com.diffplug.spotless:spotless-maven-plugin:3.0.0:check`).
 2. Run the full Maven test suite.
-3. Verify the packaged jar name matches `loomq-server-0.9.1.jar`.
+3. Verify the packaged jar name matches `loomq-server-0.9.2.jar`.
 4. Confirm the README, changelog, deployment guide, and scripts all point at the same version.
 5. Validate at least one single-node and one Raft-style startup path.

@@ -39,7 +39,7 @@ mvn test -pl loomq-server -am -Dtest=SchedulerTriggerBenchmarkWithMockServer#tes
 make check                     # check-format + test
 
 # Run
-java -jar loomq-server/target/loomq-server-0.9.1.jar
+java -jar loomq-server/target/loomq-server-0.9.2.jar
 make run-jar                   # Makefile shortcut
 
 # Docker

@@ -33,6 +33,7 @@ public class GrpcVirtualThreadBenchmark extends ProtocolBenchmark {
     private static final String GRPC_HOST = System.getProperty("loomq.benchmark.grpc.host", "localhost");
     private static final int GRPC_PORT = Integer.getInteger("loomq.benchmark.grpc.port", 7929);
     private static final String STUB_TYPE = System.getProperty("loomq.benchmark.grpc.stub", "blocking");
+    private static final String PRECISION_TIER = System.getProperty("loomq.benchmark.grpc.tier", "STANDARD");
 
     private static final ManagedChannel channel = NettyChannelBuilder
         .forAddress(GRPC_HOST, GRPC_PORT)
@@ -48,7 +49,7 @@ public class GrpcVirtualThreadBenchmark extends ProtocolBenchmark {
         LoomQServiceGrpc.newStub(channel);
 
     public GrpcVirtualThreadBenchmark() {
-        super("gRPC / Protobuf (" + STUB_TYPE + ")", GRPC_HOST + ":" + GRPC_PORT);
+        super("gRPC / Protobuf (" + STUB_TYPE + ", " + PRECISION_TIER + ")", GRPC_HOST + ":" + GRPC_PORT);
     }
 
     @Override
@@ -83,7 +84,7 @@ public class GrpcVirtualThreadBenchmark extends ProtocolBenchmark {
             .setIntentId(id)
             .setExecuteAt(ProtoConverter.toProto(executeAt))
             .setDeadline(ProtoConverter.toProto(deadline))
-            .setPrecisionTier("STANDARD")
+            .setPrecisionTier(PRECISION_TIER)
             .setShardKey(shardKey)
             .setCallback(CallbackMessage.newBuilder()
                 .setUrl("http://localhost:9999/webhook")

@@ -81,14 +81,24 @@ public class IntentBinaryCodec {
     private static final byte FIELD_TRACE_ID = 0x13;
     private static final byte FIELD_REVISION = 0x14;
 
-    // 预分配缓冲区大小（估算平均 Intent 大小）
-    private static final int DEFAULT_BUFFER_SIZE = 512;
+    // 预分配缓冲区大小（估算平均 Intent 大小，留足余量避免溢出）
+    private static final int DEFAULT_BUFFER_SIZE = 1024;
+
+    // ThreadLocal buffer to avoid per-call allocation
+    private static final ThreadLocal<ByteBuffer> BUFFER_CACHE =
+        ThreadLocal.withInitial(() -> ByteBuffer.allocate(DEFAULT_BUFFER_SIZE));
 
     /**
      * 编码 Intent 为字节数组
      */
     public static byte[] encode(Intent intent) {
-        ByteBuffer buffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE);
+        ByteBuffer buffer = BUFFER_CACHE.get();
+        buffer.clear();
+        // Ensure buffer is large enough (grow if needed, cache the larger buffer)
+        if (buffer.capacity() < DEFAULT_BUFFER_SIZE) {
+            buffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE);
+            BUFFER_CACHE.set(buffer);
+        }
 
         // 预留字段数量位置
         int fieldCountPos = buffer.position();
