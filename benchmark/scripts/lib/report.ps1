@@ -26,33 +26,39 @@ function New-BenchmarkExcel {
         [string]$OutputPath
     )
 
+    $ts = Get-SafeValue $Data.Timestamp (Get-Date -Format "yyyyMMdd-HHmmss")
     if (-not $OutputPath) {
-        $ts = Get-SafeValue $Data.Timestamp (Get-Date -Format "yyyyMMdd-HHmmss")
         if (-not (Test-Path $Script:ReportDir)) {
             New-Item -ItemType Directory -Path $Script:ReportDir -Force | Out-Null
         }
         $OutputPath = Join-Path $Script:ReportDir "benchmark-report-$ts.xlsx"
     }
 
-    $jsonPath = [System.IO.Path]::ChangeExtension($OutputPath, ".json")
+    # JSON 写到临时目录，不污染 reports
+    $tmpDir = Join-Path $env:TEMP "loomq-bench"
+    if (-not (Test-Path $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
+    $jsonPath = Join-Path $tmpDir "benchmark-$ts.json"
     $Data | ConvertTo-Json -Depth 10 | Set-Content -Path $jsonPath -Encoding UTF8
 
     $pyScript = $Script:PythonScript
     if (-not (Test-Path $pyScript)) {
-        Write-Warning "Excel 生成脚本不存在: $pyScript"
+        Write-Warning "Excel script not found: $pyScript"
+        Remove-Item -Path $jsonPath -ErrorAction SilentlyContinue
         return $null
     }
 
     try {
         $result = & python $pyScript $jsonPath $OutputPath 2>&1
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Excel 生成失败: $result"
+            Write-Warning "Excel generation failed: $result"
+            Remove-Item -Path $jsonPath -ErrorAction SilentlyContinue
             return $null
         }
         Remove-Item -Path $jsonPath -ErrorAction SilentlyContinue
         return $OutputPath
     } catch {
-        Write-Warning "Excel 生成异常: $_"
+        Write-Warning "Excel generation error: $_"
+        Remove-Item -Path $jsonPath -ErrorAction SilentlyContinue
         return $null
     }
 }

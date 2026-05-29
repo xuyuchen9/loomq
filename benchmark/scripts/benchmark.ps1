@@ -767,13 +767,10 @@ try {
         -HttpStressResult $HttpStressResult -GrpcStressResult $GrpcStressResult `
         -GitCommit $GitCommit -GitVersion $GitVersion -JavaVersion $JavaVersion
 
-    # Save JSON for regression comparison
     $ReportDir = Join-Path $ProjectRoot "benchmark\results\reports"
     New-Item -ItemType Directory -Force -Path $ReportDir | Out-Null
-    $JsonPath = Join-Path $ReportDir "benchmark-report-$($ReportData.timestamp).json"
-    $ReportData | ConvertTo-Json -Depth 10 | Set-Content -Path $JsonPath -Encoding UTF8
 
-    # Generate Excel
+    # Generate Excel (JSON 中间文件写到临时目录)
     $ExcelPath = New-BenchmarkExcel -Data $ReportData
     if ($ExcelPath) {
         Write-Success "Excel: $ExcelPath"
@@ -786,6 +783,11 @@ try {
     if ($MdPath) {
         Write-Success "Markdown: $MdPath"
     }
+
+    # Save JSON for regression comparison (在 reports 目录)
+    $JsonPath = Join-Path $ReportDir "benchmark-report-$($ReportData.timestamp).json"
+    $ReportData | ConvertTo-Json -Depth 10 | Set-Content -Path $JsonPath -Encoding UTF8
+    Write-Info "JSON (regression): $JsonPath"
 
     # Print summary
     Write-Host ""
