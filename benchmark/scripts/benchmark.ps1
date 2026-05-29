@@ -287,7 +287,7 @@ function ConvertTo-ReportData {
         $hr = if ($i -lt $httpRowsData.Count) { $httpRowsData[$i] } else { @{} }
         $gr = if ($i -lt $grpcRowsData.Count) { $grpcRowsData[$i] } else { @{} }
         $cpRows += @{
-            threads  = $hr.threads ?? $gr.threads
+            threads  = if ($null -ne $hr.threads) { $hr.threads } else { $gr.threads }
             http_qps = $hr.qps;  http_p50 = $hr.p50;  http_p90 = $hr.p90;  http_p99 = $hr.p99
             grpc_qps = $gr.qps;  grpc_p50 = $gr.p50;  grpc_p90 = $gr.p90;  grpc_p99 = $gr.p99
         }
