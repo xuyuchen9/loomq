@@ -740,15 +740,12 @@ public class PrecisionScheduler {
                          .add(intent.getIntentId());
     }
 
-    /** 从过期索引移除 intent */
+    /** 从过期索引移除 intent（原子操作，避免并发添加时误删 bucket） */
     private void unindexIntent(String intentId, long executeAtMs) {
-        Set<String> ids = intentExpiryIndex.get(executeAtMs);
-        if (ids != null) {
+        intentExpiryIndex.computeIfPresent(executeAtMs, (key, ids) -> {
             ids.remove(intentId);
-            if (ids.isEmpty()) {
-                intentExpiryIndex.remove(executeAtMs);
-            }
-        }
+            return ids.isEmpty() ? null : ids;
+        });
     }
 
     private static long executeAtMs(Intent intent) {
@@ -831,60 +828,64 @@ public class PrecisionScheduler {
     private void finalizeIntent(Intent intent, PrecisionTier tier, DeliveryResult result) {
         long startTime = System.nanoTime();
         try {
-            // 内存中状态转换（不持久化 — 终态才做一次 upsert）
-            intent.transitionTo(IntentStatus.DUE);
-            intent.transitionTo(IntentStatus.DISPATCHING);
-            intent.incrementAttempts();
+            synchronized (intent) {
+                // 内存中状态转换（不持久化 — 终态才做一次 upsert）
+                intent.transitionTo(IntentStatus.DUE);
+                intent.transitionTo(IntentStatus.DISPATCHING);
+                intent.incrementAttempts();
 
-            // Trace: record delivered
-            IntentTraceStore.getInstance().recordDelivered(intent.getIntentId());
+                // Trace: record delivered
+                IntentTraceStore.getInstance().recordDelivered(intent.getIntentId());
 
-            final DeliveryResult finalResult = result != null ? result : DeliveryResult.RETRY;
-            if (result == null) {
-                logger.warn("Delivery handler returned null for intent {}, treating as RETRY", intent.getIntentId());
-            }
-
-            switch (finalResult) {
-                case SUCCESS:
-                    intent.transitionTo(IntentStatus.DELIVERED);
-                    intent.transitionTo(IntentStatus.ACKED);
-                    intentStore.update(intent);
-                    notifyObservers(o -> o.onDelivered(intent, finalResult));
-                    unindexIntent(intent.getIntentId(), executeAtMs(intent));
-                    // Trace: record acked
-                    IntentTraceStore.getInstance().recordAcked(intent.getIntentId());
-                    IntentTraceStore.getInstance().updateStatus(intent.getIntentId(), IntentStatus.ACKED);
-                    logger.debug("Intent {} delivered successfully", intent.getIntentId());
-                    break;
-
-                case RETRY: {
-                    long delayMs = intent.getRedelivery() != null
-                        ? intent.getRedelivery().calculateDelay(intent.getAttempts())
-                        : 5000;
-                    logger.info("Scheduling redelivery for intent={}, attempt={}, delay={}ms",
-                        intent.getIntentId(), intent.getAttempts(), delayMs);
-                    intent.setExecuteAt(Instant.now().plusMillis(delayMs));
-                    intent.transitionTo(IntentStatus.SCHEDULED);
-                    intentStore.update(intent);
-                    schedule(intent);
-                    break;
+                final DeliveryResult finalResult = result != null ? result : DeliveryResult.RETRY;
+                if (result == null) {
+                    logger.warn("Delivery handler returned null for intent {}, treating as RETRY", intent.getIntentId());
                 }
 
-                case DEAD_LETTER:
-                    intent.transitionTo(IntentStatus.DEAD_LETTERED);
-                    intentStore.update(intent);
-                    notifyObservers(o -> o.onDeadLettered(intent));
-                    unindexIntent(intent.getIntentId(), executeAtMs(intent));
-                    logger.warn("Intent {} dead-lettered", intent.getIntentId());
-                    break;
+                switch (finalResult) {
+                    case SUCCESS:
+                        intent.transitionTo(IntentStatus.DELIVERED);
+                        intent.transitionTo(IntentStatus.ACKED);
+                        intentStore.update(intent);
+                        notifyObservers(o -> o.onDelivered(intent, finalResult));
+                        unindexIntent(intent.getIntentId(), executeAtMs(intent));
+                        // Trace: record acked
+                        IntentTraceStore.getInstance().recordAcked(intent.getIntentId());
+                        IntentTraceStore.getInstance().updateStatus(intent.getIntentId(), IntentStatus.ACKED);
+                        logger.debug("Intent {} delivered successfully", intent.getIntentId());
+                        break;
 
-                case EXPIRED:
-                    intent.transitionTo(IntentStatus.EXPIRED);
-                    intentStore.update(intent);
-                    notifyObservers(o -> o.onExpired(intent));
-                    unindexIntent(intent.getIntentId(), executeAtMs(intent));
-                    logger.info("Intent {} expired", intent.getIntentId());
-                    break;
+                    case RETRY: {
+                        long oldExecuteAtMs = executeAtMs(intent);
+                        long delayMs = intent.getRedelivery() != null
+                            ? intent.getRedelivery().calculateDelay(intent.getAttempts())
+                            : 5000;
+                        logger.info("Scheduling redelivery for intent={}, attempt={}, delay={}ms",
+                            intent.getIntentId(), intent.getAttempts(), delayMs);
+                        intent.setExecuteAt(Instant.now().plusMillis(delayMs));
+                        intent.transitionTo(IntentStatus.SCHEDULED);
+                        intentStore.update(intent);
+                        unindexIntent(intent.getIntentId(), oldExecuteAtMs);
+                        schedule(intent);
+                        break;
+                    }
+
+                    case DEAD_LETTER:
+                        intent.transitionTo(IntentStatus.DEAD_LETTERED);
+                        intentStore.update(intent);
+                        notifyObservers(o -> o.onDeadLettered(intent));
+                        unindexIntent(intent.getIntentId(), executeAtMs(intent));
+                        logger.warn("Intent {} dead-lettered", intent.getIntentId());
+                        break;
+
+                    case EXPIRED:
+                        intent.transitionTo(IntentStatus.EXPIRED);
+                        intentStore.update(intent);
+                        notifyObservers(o -> o.onExpired(intent));
+                        unindexIntent(intent.getIntentId(), executeAtMs(intent));
+                        logger.info("Intent {} expired", intent.getIntentId());
+                        break;
+                }
             }
         } finally {
             long durationMs = (System.nanoTime() - startTime) / 1_000_000;
@@ -897,27 +898,32 @@ public class PrecisionScheduler {
      * 处理投递失败
      */
     private void handleDeliveryFailure(Intent intent) {
-        int maxAttempts = intent.getRedelivery() != null
-            ? intent.getRedelivery().getMaxAttempts()
-            : 5;
+        synchronized (intent) {
+            int maxAttempts = intent.getRedelivery() != null
+                ? intent.getRedelivery().getMaxAttempts()
+                : 5;
 
-        intent.transitionTo(IntentStatus.DUE);
-        intent.transitionTo(IntentStatus.DISPATCHING);
+            intent.transitionTo(IntentStatus.DUE);
+            intent.transitionTo(IntentStatus.DISPATCHING);
+            intent.incrementAttempts();
 
-        if (intent.getAttempts() >= maxAttempts) {
-            intent.transitionTo(IntentStatus.DEAD_LETTERED);
-            intentStore.update(intent);
-            logger.warn("Intent dead-lettered after max attempts: id={}", intent.getIntentId());
-        } else {
-            long delayMs = intent.getRedelivery() != null
-                ? intent.getRedelivery().calculateDelay(intent.getAttempts())
-                : 5000;
-            logger.info("Scheduling redelivery for intent={} after failure, attempt={}, delay={}ms",
-                intent.getIntentId(), intent.getAttempts(), delayMs);
-            intent.setExecuteAt(Instant.now().plusMillis(delayMs));
-            intent.transitionTo(IntentStatus.SCHEDULED);
-            intentStore.update(intent);
-            schedule(intent);
+            if (intent.getAttempts() >= maxAttempts) {
+                intent.transitionTo(IntentStatus.DEAD_LETTERED);
+                intentStore.update(intent);
+                logger.warn("Intent dead-lettered after max attempts: id={}", intent.getIntentId());
+            } else {
+                long oldExecuteAtMs = executeAtMs(intent);
+                long delayMs = intent.getRedelivery() != null
+                    ? intent.getRedelivery().calculateDelay(intent.getAttempts())
+                    : 5000;
+                logger.info("Scheduling redelivery for intent={} after failure, attempt={}, delay={}ms",
+                    intent.getIntentId(), intent.getAttempts(), delayMs);
+                intent.setExecuteAt(Instant.now().plusMillis(delayMs));
+                intent.transitionTo(IntentStatus.SCHEDULED);
+                intentStore.update(intent);
+                unindexIntent(intent.getIntentId(), oldExecuteAtMs);
+                schedule(intent);
+            }
         }
     }
 

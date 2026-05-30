@@ -369,7 +369,10 @@ components:
           type: string
           enum: [ASYNC, DURABLE, REPLICATED]
           default: DURABLE
-          description: ACK 级别
+          description: |
+            持久性级别。DURABLE（默认）= WAL fsync 后返回，保证崩溃不丢失。
+            ASYNC = 写入内存后立即返回，**进程崩溃可能丢失已返回成功的 Intent**。
+            仅在明确接受 at-most-once 语义时使用 ASYNC。
         callback:
           $ref: '#/components/schemas/Callback'
         redelivery:
