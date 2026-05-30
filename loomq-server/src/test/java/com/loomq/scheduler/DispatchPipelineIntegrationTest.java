@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.loomq.LoomqEngine;
-import com.loomq.callback.NettyHttpDeliveryHandler;
+import com.loomq.channel.http.NettyHttpDeliveryHandler;
 import com.loomq.domain.intent.AckMode;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;

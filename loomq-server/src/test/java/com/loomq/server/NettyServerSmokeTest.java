@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.loomq.LoomqEngine;
-import com.loomq.callback.NettyHttpDeliveryHandler;
+import com.loomq.channel.http.NettyHttpDeliveryHandler;
 import com.loomq.config.ServerConfig;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;

@@ -4,6 +4,59 @@ All notable changes to LoomQ are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.2] - 2026-05-30
+
+### Added
+
+- **gRPC Channel 模块** (`loomq-channel-grpc`)
+  - 独立模块，protobuf 定义、ProtoConverter、GrpcConfig
+  - `GlobalIntentObserver`：gRPC Server Streaming 推送 Intent 状态变更
+  - `DeliveryStreamRegistry` + `GrpcStreamDeliveryHandler`：gRPC 流投递，支持 AUTO_ACK / MANUAL_ACK
+  - Netty 配置增强：TCP_NODELAY、SO_BACKLOG、flowControlWindow、permitKeepAliveTime 可配置
+
+- **Batch HTTP Delivery** (`loomq-channel-http`)
+  - `BatchedHttpDeliveryHandler`：批量 webhook 投递，支持可配置批次大小和超时
+  - `BatchWebhookServer`：独立批量投递 HTTP 服务器
+  - `BatchDeliveryConfig`：批次投递配置
+
+- **CLI 模块** (`loomq-cli`)
+  - 独立命令行工具 `LoomqCli`，支持 Intent 创建、查询、取消操作
+
+- **Stress Test 框架**
+  - 集成到 benchmark 脚本，支持 `-Stress` / `-StressOnly` 参数
+  - 拐点检测：连续两个线程梯度 <5% 增长即判定为拐点
+  - 中文报告输出、回归对比功能
+  - `stress-test.ps1` / `stress-test.bat` 一键入口
+
+- **CPU Timing 埋点**
+  - 采样率 1/2000，分阶段计时（validate / convert / engine / response）
+  - LongAdder 累加器，每 ~30 秒输出日志
+
+- **投递模式架构文档** — `docs/architecture/delivery-modes.md`
+
+- **Demo Gateway** — `demo/gateway/` 参考实现，展示 gRPC streaming 投递 + WebSocket 推送
+
+### Changed
+
+- **ProtoConverter 枚举缓存** — ConcurrentHashMap 预构建，消除 `valueOf()` + `toUpperCase()` GC 压力，convert 阶段 -35.8%
+- **CRC32 ThreadLocal 复用** — WAL 写入路径 CRC32 对象复用，engine 阶段 -7.4%
+- **ByteBuffer ThreadLocal 复用** — IntentBinaryCodec 编码缓冲区复用，减少 per-call 分配
+- **Benchmark 脚本重构** — 分离 UI / 输出 / 工具函数到独立模块，支持回归对比和中文报告
+- **CI 构建矩阵扩展** — Spotless 格式化门禁集成，per-module 测试矩阵
+- **Channel 模块重组** — HTTP 回调功能迁移到 `loomq-channel-http`，gRPC 独立为 `loomq-channel-grpc`
+
+### Fixed
+
+- Raft 生命周期线程饥饿问题（`ScheduledExecutorService` 意外取消）
+- CI 集成测试超时稳定性
+- `benchmark.sh` 变量名 bug（`SCHED_ARGS` vs `local_args` 导致 `--workload` 和 `--quick` 参数丢失）
+- Benchmark CSV schema 不一致（`benchmark-output.ps1` 55 列 vs `run-all.ps1`/`run-all.sh` 48 列）
+- Dockerfile `--enable-preview` 标志移除（JDK 25 虚拟线程已正式发布）
+- `docker-compose.yml` deprecated `version: '3.8'` key 移除
+- CLI 默认端口文档修正（8080 → 7928）
+- Roadmap 版本号重复（`v0.9.2 (next)` → `v0.10.0 (next)`）
+- gRPC 投递从路线图"规划中"移至"已实现"
+
 ## [0.9.1] - 2026-05-15
 
 ### Added

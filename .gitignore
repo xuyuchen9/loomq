@@ -43,6 +43,10 @@ benchmark/results/*.csv
 benchmark/results/reports/
 benchmark/results/runtime/
 benchmark/results/m2repo/
+benchmark/results/logs/
+
+# JFR profiling files
+*.jfr
 
 # OS generated files
 .DS_Store
@@ -50,4 +54,6 @@ Thumbs.db
 
 # Claude
 .claude/
+.idea/*.pyc
 .idea/
+__pycache__/

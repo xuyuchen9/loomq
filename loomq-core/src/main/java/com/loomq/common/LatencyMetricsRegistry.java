@@ -24,12 +24,20 @@ final class LatencyMetricsRegistry {
     private final ConcurrentHashMap<Integer, AtomicLong> totalLatencyBuckets = new ConcurrentHashMap<>();
     private final AtomicLong totalLatencySampleCount = new AtomicLong(0);
 
+    // Cohort flush 耗时 histogram（微秒）
+    private static final int[] COHORT_FLUSH_BOUNDS = {0, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000};
+    private final ConcurrentHashMap<Integer, AtomicLong> cohortFlushBuckets = new ConcurrentHashMap<>();
+    private final AtomicLong cohortFlushSampleCount = new AtomicLong(0);
+
     LatencyMetricsRegistry() {
         for (int i = 0; i < LATENCY_BOUNDS.length; i++) {
             triggerLatencyBuckets.put(i, new AtomicLong(0));
             wakeLatencyBuckets.put(i, new AtomicLong(0));
             webhookLatencyBuckets.put(i, new AtomicLong(0));
             totalLatencyBuckets.put(i, new AtomicLong(0));
+        }
+        for (int i = 0; i < COHORT_FLUSH_BOUNDS.length; i++) {
+            cohortFlushBuckets.put(i, new AtomicLong(0));
         }
     }
 
@@ -53,6 +61,11 @@ final class LatencyMetricsRegistry {
         totalLatencyBuckets.get(findBucket(latencyMs)).incrementAndGet();
     }
 
+    void recordCohortFlushDuration(long durationUs) {
+        cohortFlushSampleCount.incrementAndGet();
+        cohortFlushBuckets.get(findCohortFlushBucket(durationUs)).incrementAndGet();
+    }
+
     long calculateP95Latency() {
         return calculateP95(triggerLatencyBuckets, triggerLatencySampleCount.get());
     }
@@ -67,6 +80,10 @@ final class LatencyMetricsRegistry {
 
     long calculateP95TotalLatency() {
         return calculateP95(totalLatencyBuckets, totalLatencySampleCount.get());
+    }
+
+    long calculateP95CohortFlushDuration() {
+        return calculatePercentile(cohortFlushBuckets, cohortFlushSampleCount.get(), 0.95, COHORT_FLUSH_BOUNDS);
     }
 
     void appendPrometheusMetrics(StringBuilder sb) {
@@ -109,6 +126,16 @@ final class LatencyMetricsRegistry {
         sb.append("# TYPE loomq_total_latency_samples counter\n");
         sb.append(formatMetric("loomq_total_latency_samples", totalLatencySampleCount.get()));
         sb.append("\n");
+
+        sb.append("# HELP loomq_cohort_flush_duration_us_p95 P95 cohort flush duration in microseconds\n");
+        sb.append("# TYPE loomq_cohort_flush_duration_us_p95 gauge\n");
+        sb.append(formatMetric("loomq_cohort_flush_duration_us_p95", calculateP95CohortFlushDuration()));
+        sb.append("\n");
+
+        sb.append("# HELP loomq_cohort_flush_samples Total cohort flush samples\n");
+        sb.append("# TYPE loomq_cohort_flush_samples counter\n");
+        sb.append(formatMetric("loomq_cohort_flush_samples", cohortFlushSampleCount.get()));
+        sb.append("\n");
     }
 
     private String formatMetric(String name, long value) {
@@ -124,6 +151,15 @@ final class LatencyMetricsRegistry {
         return 0;
     }
 
+    private int findCohortFlushBucket(long durationUs) {
+        for (int i = COHORT_FLUSH_BOUNDS.length - 1; i >= 0; i--) {
+            if (durationUs >= COHORT_FLUSH_BOUNDS[i]) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
     private long calculateP95(ConcurrentHashMap<Integer, AtomicLong> buckets, long totalSamples) {
         return calculatePercentile(buckets, totalSamples, 0.95);
     }
@@ -131,6 +167,13 @@ final class LatencyMetricsRegistry {
     private long calculatePercentile(ConcurrentHashMap<Integer, AtomicLong> buckets,
                                      long totalSamples,
                                      double percentile) {
+        return calculatePercentile(buckets, totalSamples, percentile, LATENCY_BOUNDS);
+    }
+
+    private long calculatePercentile(ConcurrentHashMap<Integer, AtomicLong> buckets,
+                                     long totalSamples,
+                                     double percentile,
+                                     int[] bounds) {
         if (totalSamples == 0) {
             return 0;
         }
@@ -138,13 +181,13 @@ final class LatencyMetricsRegistry {
         long target = (long) Math.ceil(totalSamples * percentile);
         long cumulative = 0;
 
-        for (int i = 0; i < LATENCY_BOUNDS.length; i++) {
+        for (int i = 0; i < bounds.length; i++) {
             cumulative += buckets.get(i).get();
             if (cumulative >= target) {
-                return LATENCY_BOUNDS[i];
+                return bounds[i];
             }
         }
 
-        return LATENCY_BOUNDS[LATENCY_BOUNDS.length - 1];
+        return bounds[bounds.length - 1];
     }
 }

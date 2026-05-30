@@ -2,9 +2,15 @@ package com.loomq.server;
 
 import com.loomq.LoomqEngine;
 import com.loomq.api.ErrorResponse;
-import com.loomq.callback.HttpCallbackHandler;
-import com.loomq.callback.NettyHttpDeliveryHandler;
+import com.loomq.channel.grpc.config.GrpcConfig;
+import com.loomq.channel.grpc.server.GlobalIntentObserver;
+import com.loomq.channel.grpc.server.LoomqGrpcServer;
+import com.loomq.channel.http.HttpCallbackHandler;
+import com.loomq.channel.http.NettyHttpDeliveryHandler;
+import com.loomq.channel.http.batch.BatchDeliveryConfig;
+import com.loomq.channel.http.batch.BatchedHttpDeliveryHandler;
 import com.loomq.common.MetricsCollector;
+import com.loomq.common.RaftStatusSnapshot;
 import com.loomq.config.LoomqConfig;
 import com.loomq.config.ServerConfig;
 import com.loomq.config.WalConfig;
@@ -16,9 +22,8 @@ import com.loomq.http.netty.NettyHttpServer;
 import com.loomq.http.netty.RadixRouter;
 import com.loomq.metrics.LoomQMetrics;
 import com.loomq.raft.RaftRuntimeListener;
-import com.loomq.raft.RaftStatusProvider;
-import com.loomq.raft.RaftStatusSnapshot;
 import com.loomq.raft.RaftWriteCoordinator;
+import com.loomq.spi.RaftStatusProvider;
 import io.netty.handler.codec.http.HttpMethod;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -58,15 +63,24 @@ public class LoomqServerApplication {
         validateSupportedStartupModes();
 
         HttpCallbackHandler callbackHandler = new HttpCallbackHandler();
+        var deliveryHandler = createDeliveryHandler();
+
         LoomqEngine engine = LoomqEngine.builder()
             .nodeId(nodeId)
             .walDir(Path.of(dataDir))
             .walConfig(walConfig)
             .callbackHandler(callbackHandler)
-            .deliveryHandler(new NettyHttpDeliveryHandler())
+            .deliveryHandler(deliveryHandler)
             .build();
 
-        // ---- Raft 共识模式（v0.9.1）----
+        // ---- Global observer for gRPC streaming (registered only when gRPC is enabled) ----
+        GrpcConfig grpcConfig = config.getGrpcConfig();
+        GlobalIntentObserver globalObserver = grpcConfig.enabled() ? new GlobalIntentObserver() : null;
+        if (globalObserver != null) {
+            engine.registerObserver(globalObserver);
+        }
+
+        // ---- Raft 共识模式（v0.9.2）----
         final com.loomq.raft.RaftNode raftNode;
         final RaftRuntimeListener raftRuntimeListener;
         final RaftWriteCoordinator raftWriteCoordinator;
@@ -118,12 +132,55 @@ public class LoomqServerApplication {
 
         NettyHttpServer server = new NettyHttpServer(serverConfig, router, config.getSecurityConfig());
 
+        // ---- Optional gRPC server ----
+        final LoomqGrpcServer grpcServer;
+        if (grpcConfig.enabled()) {
+            // 如果使用 gRPC 流投递，传递给 gRPC 服务器
+            com.loomq.channel.grpc.server.GrpcStreamDeliveryHandler grpcDeliveryHandler =
+                deliveryHandler instanceof com.loomq.channel.grpc.server.GrpcStreamDeliveryHandler gdh
+                    ? gdh : null;
+
+            grpcServer = new LoomqGrpcServer(grpcConfig, engine, raftStatus, raftWriteCoordinator,
+                globalObserver, grpcDeliveryHandler);
+            logger.info("gRPC server will be started on {}:{}", grpcConfig.host(), grpcConfig.port());
+        } else {
+            grpcServer = null;
+        }
+
+        // 批量投递处理器的关闭钩子
+        if (deliveryHandler instanceof BatchedHttpDeliveryHandler batchedHandler) {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                logger.info("Shutting down BatchedHttpDeliveryHandler...");
+                batchedHandler.shutdown();
+            }, "loomq-batch-delivery-shutdown"));
+        }
+
+        // gRPC 流投递处理器的关闭钩子
+        if (deliveryHandler instanceof com.loomq.channel.grpc.server.GrpcStreamDeliveryHandler grpcHandler) {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                logger.info("Shutting down GrpcStreamDeliveryHandler...");
+                grpcHandler.close();
+            }, "loomq-grpc-delivery-shutdown"));
+        }
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            logger.info("Shutdown signal received, stopping Netty server and engine...");
+            logger.info("Shutdown signal received, stopping servers and engine...");
             try {
                 server.stop();
             } catch (Exception e) {
                 logger.warn("Error while stopping Netty server", e);
+            }
+
+            if (grpcServer != null) {
+                try {
+                    grpcServer.stop();
+                } catch (Exception e) {
+                    logger.warn("Error while stopping gRPC server", e);
+                }
+            }
+
+            if (globalObserver != null) {
+                globalObserver.close();
             }
 
             try {
@@ -149,6 +206,10 @@ public class LoomqServerApplication {
                 raftNode.start();
             }
             server.start();
+            if (grpcServer != null) {
+                grpcServer.start();
+                logger.info("LoomQ gRPC server started on {}:{}", grpcConfig.host(), grpcServer.getPort());
+            }
 
             logger.info("LoomQ Netty server started on http://{}:{}", serverConfig.host(), server.getPort());
 
@@ -164,6 +225,13 @@ public class LoomqServerApplication {
                 server.stop();
             } catch (Exception stopError) {
                 logger.warn("Error while stopping Netty server after startup failure", stopError);
+            }
+            if (grpcServer != null) {
+                try {
+                    grpcServer.stop();
+                } catch (Exception stopError) {
+                    logger.warn("Error while stopping gRPC server after startup failure", stopError);
+                }
             }
             try {
                 callbackHandler.close();
@@ -224,6 +292,58 @@ public class LoomqServerApplication {
         }
 
         return fallback;
+    }
+
+    /**
+     * 根据配置创建投递处理器。
+     *
+     * <p>配置方式：
+     * <ul>
+     *   <li>环境变量：LOOMQ_DELIVERY_HANDLER=single|batched</li>
+     *   <li>系统属性：-Dloomq.delivery.handler=single|batched</li>
+     *   <li>默认：single（单请求模式）</li>
+     * </ul>
+     *
+     * <p>批量模式可选配置：
+     * <ul>
+     *   <li>LOOMQ_DELIVERY_BATCH_SIZE / -Dloomq.delivery.batch.size=200</li>
+     *   <li>LOOMQ_DELIVERY_FLUSH_INTERVAL_MS / -Dloomq.delivery.flush.interval.ms=10</li>
+     *   <li>LOOMQ_DELIVERY_MAX_CONNECTIONS / -Dloomq.delivery.max.connections=500</li>
+     * </ul>
+     */
+    private static com.loomq.spi.DeliveryHandler createDeliveryHandler() {
+        String handlerType = resolveSetting("LOOMQ_DELIVERY_HANDLER", "loomq.delivery.handler", "single");
+
+        if ("batched".equalsIgnoreCase(handlerType)) {
+            int batchSize = Integer.parseInt(
+                resolveSetting("LOOMQ_DELIVERY_BATCH_SIZE", "loomq.delivery.batch.size", "200"));
+            long flushIntervalMs = Long.parseLong(
+                resolveSetting("LOOMQ_DELIVERY_FLUSH_INTERVAL_MS", "loomq.delivery.flush.interval.ms", "10"));
+            int maxConnections = Integer.parseInt(
+                resolveSetting("LOOMQ_DELIVERY_MAX_CONNECTIONS", "loomq.delivery.max.connections", "500"));
+
+            BatchDeliveryConfig config = new BatchDeliveryConfig(
+                batchSize, flushIntervalMs, maxConnections, true, 30000);
+
+            logger.info("Using BatchedHttpDeliveryHandler: batchSize={}, flushIntervalMs={}, maxConnections={}",
+                batchSize, flushIntervalMs, maxConnections);
+
+            return new BatchedHttpDeliveryHandler(config);
+        }
+
+        if ("grpc-stream".equalsIgnoreCase(handlerType)) {
+            // gRPC 流投递模式
+            String ackModeStr = resolveSetting("LOOMQ_DELIVERY_ACK_MODE", "loomq.delivery.ack.mode", "auto");
+            com.loomq.grpc.gen.DeliveryAckMode ackMode = "manual".equalsIgnoreCase(ackModeStr)
+                ? com.loomq.grpc.gen.DeliveryAckMode.MANUAL_ACK
+                : com.loomq.grpc.gen.DeliveryAckMode.AUTO_ACK;
+
+            logger.info("Using GrpcStreamDeliveryHandler: ackMode={}", ackMode);
+            return new com.loomq.channel.grpc.server.GrpcStreamDeliveryHandler(ackMode);
+        }
+
+        logger.info("Using NettyHttpDeliveryHandler (single-request mode)");
+        return new NettyHttpDeliveryHandler();
     }
 
     static void validateSupportedStartupModes() {
@@ -404,7 +524,7 @@ public class LoomqServerApplication {
         logger.info("╚══════╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝ ╚══▀▀═╝ ");
         logger.info("");
         logger.info(" Event Infrastructure for Delayed Execution");
-        logger.info("              Version 0.9.1");
+        logger.info("              Version 0.9.2");
         logger.info("              Mode: Server (Netty)");
         logger.info("");
     }
@@ -664,8 +784,8 @@ public class LoomqServerApplication {
         }
 
         @Override
-        public void onRoleChanged(com.loomq.raft.RaftRole role, long term) {
-            if (role == com.loomq.raft.RaftRole.LEADER) {
+        public void onRoleChanged(com.loomq.common.RaftRole role, long term) {
+            if (role == com.loomq.common.RaftRole.LEADER) {
                 engine.getScheduler().rebuildFromCommittedState(engine.getIntentStore().getAllIntents().values());
                 engine.getScheduler().resume();
             } else {

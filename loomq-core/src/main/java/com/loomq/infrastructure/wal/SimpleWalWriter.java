@@ -97,6 +97,7 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
     private final long flushIntervalNs;
     private volatile boolean flushRequested = false;
 
+
     // ========== 统计 ==========
     private final Stats stats = new Stats();
 
@@ -442,8 +443,11 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         }
     }
 
+    private static final ThreadLocal<CRC32> CRC_CACHE = ThreadLocal.withInitial(CRC32::new);
+
     private int calculateCrc(byte[] data) {
-        CRC32 crc32 = new CRC32();
+        CRC32 crc32 = CRC_CACHE.get();
+        crc32.reset();
         crc32.update(data);
         return (int) crc32.getValue();
     }

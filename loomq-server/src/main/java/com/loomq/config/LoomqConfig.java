@@ -1,5 +1,6 @@
 package com.loomq.config;
 
+import com.loomq.channel.grpc.config.GrpcConfig;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -26,6 +27,7 @@ public final class LoomqConfig {
     private final RetryConfig retryConfig;
     private final RecoveryConfig recoveryConfig;
     private final SecurityConfig securityConfig;
+    private final GrpcConfig grpcConfig;
 
     private LoomqConfig(Properties properties) {
         Properties source = properties == null ? new Properties() : properties;
@@ -36,6 +38,7 @@ public final class LoomqConfig {
         this.retryConfig = RetryConfig.fromProperties(source);
         this.recoveryConfig = RecoveryConfig.fromProperties(source);
         this.securityConfig = SecurityConfig.fromProperties(source);
+        this.grpcConfig = GrpcConfig.fromProperties(source);
     }
 
     public static LoomqConfig getInstance() {
@@ -123,5 +126,9 @@ public final class LoomqConfig {
 
     public SecurityConfig getSecurityConfig() {
         return securityConfig;
+    }
+
+    public GrpcConfig getGrpcConfig() {
+        return grpcConfig;
     }
 }
