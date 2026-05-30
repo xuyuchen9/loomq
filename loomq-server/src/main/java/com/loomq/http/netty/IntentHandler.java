@@ -2,11 +2,16 @@ package com.loomq.http.netty;
 
 import com.loomq.LoomqEngine;
 import com.loomq.api.CreateIntentRequest;
+import com.loomq.api.DeathReport;
+import com.loomq.api.ErrorRecoveryAdvisor;
 import com.loomq.api.ErrorResponse;
 import com.loomq.api.IntentActionResponse;
+import com.loomq.api.IntentListResponse;
 import com.loomq.api.IntentResponse;
 import com.loomq.api.IntentValidator;
 import com.loomq.api.PatchIntentRequest;
+import com.loomq.api.RecoveryHint;
+import com.loomq.api.ReviveIntentRequest;
 import com.loomq.api.ValidationResult;
 import com.loomq.common.exception.BackPressureException;
 import com.loomq.domain.intent.AckMode;
@@ -27,8 +32,10 @@ import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -76,11 +83,13 @@ public class IntentHandler {
      */
     public void register(RadixRouter router) {
         router.add(HttpMethod.POST, "/v1/intents", this::createIntent);
+        router.add(HttpMethod.GET, "/v1/intents", this::listIntents);
         router.add(HttpMethod.GET, "/v1/intents/{intentId}", this::getIntent);
         router.add(HttpMethod.GET, "/v1/intents/{intentId}/trace", this::getTrace);
         router.add(HttpMethod.PATCH, "/v1/intents/{intentId}", this::patchIntent);
         router.add(HttpMethod.POST, "/v1/intents/{intentId}/cancel", this::cancelIntent);
         router.add(HttpMethod.POST, "/v1/intents/{intentId}/fire-now", this::fireNow);
+        router.add(HttpMethod.POST, "/v1/intents/{intentId}/revive", this::reviveIntent);
     }
 
     /**
@@ -161,10 +170,13 @@ public class IntentHandler {
             return raftBackPressureResponse("create", null, e.retryAfterMs(), e.getMessage());
         } catch (CompletionException e) {
             if (e.getCause() instanceof BackPressureException bpe) {
+                Map<String, Object> ctx = Map.of("retryAfterMs", (Object) bpe.getRetryAfterMs());
+                RecoveryHint recovery = ErrorRecoveryAdvisor.advise("42900", ctx);
                 return new HttpErrorResponse(429, ErrorResponse.of(
                     "42900",
                     "Backpressure: " + bpe.getMessage(),
-                    Map.of("retryAfterMs", (Object) bpe.getRetryAfterMs())
+                    Map.of("retryAfterMs", (Object) bpe.getRetryAfterMs()),
+                    recovery
                 ));
             }
             throw e;
@@ -218,7 +230,9 @@ public class IntentHandler {
         }
 
         if (!current.get().getStatus().isModifiable()) {
-            return errorResponse(422, "42205", "Intent cannot be modified in state: " + current.get().getStatus());
+            return errorResponse(422, "42205", "Intent cannot be modified in state: " + current.get().getStatus(),
+                Map.of("currentState", current.get().getStatus().name(),
+                       "precisionTier", current.get().getPrecisionTier()));
         }
 
         if (request.executeAt() != null) {
@@ -316,7 +330,9 @@ public class IntentHandler {
 
         Intent intent = current.get();
         if (!intent.getStatus().isCancellable()) {
-            return errorResponse(422, "42204", "Intent cannot be cancelled in state: " + intent.getStatus());
+            return errorResponse(422, "42204", "Intent cannot be cancelled in state: " + intent.getStatus(),
+                Map.of("currentState", intent.getStatus().name(),
+                       "precisionTier", intent.getPrecisionTier()));
         }
 
         try {
@@ -424,6 +440,174 @@ public class IntentHandler {
         return trace.toJson();
     }
 
+    /**
+     * GET /v1/intents?status=DEAD_LETTERED&limit=50&offset=0
+     */
+    public Object listIntents(HttpMethod method, String uri, byte[] body,
+                              Map<String, String> headers,
+                              Map<String, String> pathParams) {
+        if (isRaftFollowerReadBlocked()) {
+            return leaderHintResponse(null);
+        }
+
+        Map<String, String> queryParams = parseQueryString(uri);
+        String statusParam = queryParams.get("status");
+        int limit = parseIntParam(queryParams, "limit", 50, 1, 500);
+        int offset = parseIntParam(queryParams, "offset", 0, 0, Integer.MAX_VALUE);
+
+        if (statusParam == null || statusParam.isBlank()) {
+            return errorResponse(400, "40002", "Query parameter 'status' is required");
+        }
+
+        IntentStatus status;
+        try {
+            status = IntentStatus.valueOf(statusParam.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return errorResponse(400, "40003", "Invalid status value: " + statusParam);
+        }
+
+        List<Intent> intents = engine.getIntentStore().findByStatus(status, offset, limit);
+        long total = engine.getIntentStore().countByStatus(status);
+
+        List<IntentListResponse.IntentSummary> summaries = intents.stream()
+            .map(intent -> {
+                DeathReport deathReport = null;
+                if (intent.getStatus() == IntentStatus.DEAD_LETTERED) {
+                    deathReport = buildDeathReport(intent);
+                }
+                return IntentListResponse.IntentSummary.from(intent, deathReport);
+            })
+            .toList();
+
+        return IntentListResponse.of(summaries, total, offset, limit);
+    }
+
+    /**
+     * POST /v1/intents/{intentId}/revive
+     */
+    public Object reviveIntent(HttpMethod method, String uri, byte[] body,
+                               Map<String, String> headers,
+                               Map<String, String> pathParams) throws Exception {
+        String intentId = pathParams.get("intentId");
+        if (isRaftWriteBlocked()) {
+            return leaderHintWriteResponse("revive", intentId);
+        }
+
+        Optional<Intent> current = engine.getIntent(intentId);
+        if (current.isEmpty()) {
+            return errorResponse(404, "40401", "Intent not found: " + intentId);
+        }
+
+        Intent intent = current.get();
+        if (intent.getStatus() != IntentStatus.DEAD_LETTERED) {
+            return errorResponse(422, "42207", "Intent can only be revived from DEAD_LETTERED state, current state: " + intent.getStatus(),
+                Map.of("currentState", intent.getStatus().name()));
+        }
+
+        ReviveIntentRequest request = null;
+        if (body != null && body.length > 0) {
+            request = jsonCodec.read(body, ReviveIntentRequest.class);
+        }
+
+        if (request != null) {
+            if (request.executeAt() != null) {
+                intent.setExecuteAt(request.executeAt());
+            }
+            if (request.deadline() != null) {
+                intent.setDeadline(request.deadline());
+            }
+            if (request.callback() != null) {
+                intent.setCallback(request.callback());
+            }
+            if (request.redelivery() != null) {
+                intent.setRedelivery(request.redelivery());
+            }
+        }
+
+        intent.setAttempts(0);
+
+        Instant requestedExecuteAt = intent.getExecuteAt();
+        if (requestedExecuteAt == null || requestedExecuteAt.isBefore(Instant.now())) {
+            if (requestedExecuteAt != null && requestedExecuteAt.isBefore(Instant.now())) {
+                logger.warn("Revive for {} has executeAt in the past ({}), resetting to now + precisionWindow",
+                    intentId, requestedExecuteAt);
+            }
+            intent.setExecuteAt(Instant.now().plusMillis(intent.getPrecisionTier().getPrecisionWindowMs()));
+        }
+
+        try {
+            engine.createIntent(intent, intent.getAckMode()).join();
+        } catch (CompletionException e) {
+            if (e.getCause() instanceof BackPressureException bpe) {
+                return new HttpErrorResponse(429, ErrorResponse.of(
+                    "42900",
+                    "Backpressure during revive: " + bpe.getMessage(),
+                    Map.of("retryAfterMs", (Object) bpe.getRetryAfterMs()),
+                    ErrorRecoveryAdvisor.advise("42900", Map.of("retryAfterMs", bpe.getRetryAfterMs()))
+                ));
+            }
+            throw e;
+        }
+
+        // engine.createIntent → scheduler.schedule → recordCreated resets trace to CREATED.
+        // Update to SCHEDULED so the trace reflects the revived intent's actual state.
+        IntentTraceStore.getInstance().updateStatus(intentId, IntentStatus.SCHEDULED);
+
+        logger.info("Intent revived: id={}, newExecuteAt={}, tier={}",
+            intent.getIntentId(), intent.getExecuteAt(), intent.getPrecisionTier());
+        return IntentResponse.from(intent);
+    }
+
+    private DeathReport buildDeathReport(Intent intent) {
+        IntentTrace trace = IntentTraceStore.getInstance().get(intent.getIntentId());
+        int maxAttempts = intent.getRedelivery() != null ? intent.getRedelivery().getMaxAttempts() : 5;
+        long lifetimeMs = 0;
+        if (trace != null && trace.createdAtMs() > 0) {
+            lifetimeMs = System.currentTimeMillis() - trace.createdAtMs();
+        }
+        return new DeathReport(
+            intent.getAttempts(),
+            maxAttempts,
+            intent.getUpdatedAt() != null ? intent.getUpdatedAt().toString() : null,
+            trace != null ? trace.failureReason() : null,
+            trace != null ? trace.failureHttpStatus() : null,
+            intent.getCallback() != null ? intent.getCallback().getUrl() : null,
+            intent.getPrecisionTier() != null ? intent.getPrecisionTier().name() : null,
+            lifetimeMs
+        );
+    }
+
+    private Map<String, String> parseQueryString(String uri) {
+        Map<String, String> params = new LinkedHashMap<>();
+        int queryStart = uri.indexOf('?');
+        if (queryStart < 0 || queryStart >= uri.length() - 1) {
+            return params;
+        }
+        String query = uri.substring(queryStart + 1);
+        for (String pair : query.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq > 0) {
+                String key = pair.substring(0, eq);
+                String value = pair.substring(eq + 1);
+                params.put(key, value);
+            }
+        }
+        return params;
+    }
+
+    private int parseIntParam(Map<String, String> params, String key, int defaultValue, int min, int max) {
+        String value = params.get(key);
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            int parsed = Integer.parseInt(value);
+            return Math.max(min, Math.min(max, parsed));
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
     private String callbackUrl(CreateIntentRequest request) {
         if (request.callback() == null) {
             return null;
@@ -432,7 +616,13 @@ public class IntentHandler {
     }
 
     private Object errorResponse(int status, String code, String message) {
-        return new HttpErrorResponse(status, ErrorResponse.of(code, message));
+        RecoveryHint recovery = ErrorRecoveryAdvisor.advise(code, null);
+        return new HttpErrorResponse(status, ErrorResponse.of(code, message, null, recovery));
+    }
+
+    private Object errorResponse(int status, String code, String message, Map<String, Object> context) {
+        RecoveryHint recovery = ErrorRecoveryAdvisor.advise(code, context);
+        return new HttpErrorResponse(status, ErrorResponse.of(code, message, null, recovery));
     }
 
     private Intent buildCreateIntentDraft(CreateIntentRequest request, String intentId) {
@@ -440,10 +630,17 @@ public class IntentHandler {
         intent.setExecuteAt(request.executeAt());
         intent.setDeadline(request.deadline());
         intent.setExpiredAction(request.expiredAction());
-        intent.setPrecisionTier(request.precisionTier() != null ? request.precisionTier() : DEFAULT_PRECISION_TIER);
+        if (request.slo() != null) {
+            var rec = com.loomq.application.scheduler.TierAdvisor.recommend(
+                request.slo().maxTardinessMs(), request.slo().reliability());
+            intent.setPrecisionTier(rec.tier());
+            intent.setAckMode(request.slo().reliability().toAckMode());
+        } else {
+            intent.setPrecisionTier(request.precisionTier() != null ? request.precisionTier() : DEFAULT_PRECISION_TIER);
+            intent.setAckMode(request.ackLevel() != null ? request.ackLevel() : AckMode.DURABLE);
+        }
         intent.setWalMode(request.walMode());
         intent.setShardKey(request.shardKey());
-        intent.setAckMode(request.ackLevel() != null ? request.ackLevel() : AckMode.DURABLE);
         intent.setCallback(request.callback());
         intent.setRedelivery(request.redelivery());
         intent.setIdempotencyKey(request.idempotencyKey());
@@ -473,12 +670,14 @@ public class IntentHandler {
             details.put("leaderId", leaderId);
         }
 
+        RecoveryHint recovery = ErrorRecoveryAdvisor.advise("50301", details);
         return new HttpErrorResponse(
             HttpResponseStatus.SERVICE_UNAVAILABLE.code(),
             ErrorResponse.of(
                 "50301",
                 "Read must be served by the Raft leader",
-                details
+                details,
+                recovery
             )
         );
     }
@@ -500,12 +699,14 @@ public class IntentHandler {
             details.put("leaderId", leaderId);
         }
 
+        RecoveryHint recovery = ErrorRecoveryAdvisor.advise("50302", details);
         return new HttpErrorResponse(
             HttpResponseStatus.SERVICE_UNAVAILABLE.code(),
             ErrorResponse.of(
                 "50302",
                 reason,
-                details
+                details,
+                recovery
             )
         );
     }
@@ -524,12 +725,14 @@ public class IntentHandler {
             details.put("leaderId", leaderId);
         }
 
+        RecoveryHint recovery = ErrorRecoveryAdvisor.advise("50303", details);
         return new HttpErrorResponse(
             HttpResponseStatus.SERVICE_UNAVAILABLE.code(),
             ErrorResponse.of(
                 "50303",
                 reason,
-                details
+                details,
+                recovery
             )
         );
     }
@@ -547,12 +750,14 @@ public class IntentHandler {
             details.put("leaderId", leaderId);
         }
 
+        RecoveryHint recovery = ErrorRecoveryAdvisor.advise("40902", details);
         return new HttpErrorResponse(
             409,
             ErrorResponse.of(
                 "40902",
                 reason,
-                details
+                details,
+                recovery
             )
         );
     }
@@ -620,10 +825,13 @@ public class IntentHandler {
     }
 
     private Object conflictResponse(String intentId) {
+        Map<String, Object> ctx = Map.of("intentId", intentId);
+        RecoveryHint recovery = ErrorRecoveryAdvisor.advise("40901", ctx);
         return new HttpErrorResponse(409, ErrorResponse.of(
             "40901",
             "Idempotency key conflict",
-            Map.of("intentId", intentId)
+            Map.of("intentId", intentId),
+            recovery
         ));
     }
 

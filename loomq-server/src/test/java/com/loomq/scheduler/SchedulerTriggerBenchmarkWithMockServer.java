@@ -512,28 +512,25 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         logger.info("\n【档位设计验证】");
 
         // 理论分析：
-        // - 档位延迟越高，理论 QPS 越低（因为每个请求耗时更长）
-        // - 但 ECONOMY 批量更大，可以部分抵消延迟影响
+        // - ULTRA (10ms delay, 200 maxConcurrency): theoretical max ~20k QPS
+        // - ECONOMY (1000ms delay, 50 maxConcurrency): theoretical max ~50 QPS
+        // - 跨 tier QPS 比较无意义：ECONOMY 设计就是高延迟、低 QPS、低成本
+        // - 改为验证每个 tier 的 QPS 不低于自身理论最大值的 5%（留足余量）
 
-        double ultraQps = webhookReceivedByTier.get(PrecisionTier.ULTRA).get() /
-            (double) (tierCompleteTimes.getOrDefault(PrecisionTier.ULTRA, totalWaitMs)) * 1000;
-        double economyQps = webhookReceivedByTier.get(PrecisionTier.ECONOMY).get() /
-            (double) (tierCompleteTimes.getOrDefault(PrecisionTier.ECONOMY, totalWaitMs)) * 1000;
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            int delayMs = getDelayForTier(tier);
+            int concurrency = tier.getMaxConcurrency();
+            double theoreticalMaxQps = delayMs > 0 ? (double) concurrency / delayMs * 1000 : 0;
+            double actualQps = webhookReceivedByTier.get(tier).get() /
+                (double) (tierCompleteTimes.getOrDefault(tier, totalWaitMs)) * 1000;
+            double pctOfMax = theoreticalMaxQps > 0 ? actualQps / theoreticalMaxQps * 100 : 0;
 
-        logger.info("ULTRA QPS (延迟{}ms, 并发{}): {:.1f}",
-            ULTRA_DELAY_MS, PrecisionTier.ULTRA.getMaxConcurrency(), ultraQps);
-        logger.info("ECONOMY QPS (延迟{}ms, 并发{}): {:.1f}",
-            ECONOMY_DELAY_MS, PrecisionTier.ECONOMY.getMaxConcurrency(), economyQps);
+            logger.info("{}: QPS={:.1f} (理论最大={:.1f}, {:.0f}%)",
+                tier.name(), actualQps, theoreticalMaxQps, pctOfMax);
 
-        // 验证：ECONOMY 不应该比 ULTRA 慢太多（不应低于 50%）
-        if (ultraQps > 0) {
-            double ratio = economyQps / ultraQps;
-            logger.info("ECONOMY/ULTRA QPS 比率: {:.2f}x", ratio);
-
-            // 即使延迟 10 倍，批量优势应该让 ECONOMY 保持在 ULTRA 的 30% 以上
-            assertTrue(ratio >= 0.3,
-                String.format("ECONOMY 档位 QPS 不应低于 ULTRA 的 30%%，实际 %.1f%% (%.2fx)",
-                    ratio * 100, ratio));
+            assertTrue(pctOfMax >= 5.0,
+                String.format("%s QPS (%.1f) should be at least 5%% of theoretical max (%.1f), got %.1f%%",
+                    tier.name(), actualQps, theoreticalMaxQps, pctOfMax));
         }
 
         // 验证所有 Intent 都完成

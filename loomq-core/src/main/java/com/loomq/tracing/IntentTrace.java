@@ -33,7 +33,9 @@ public record IntentTrace(
     long enqueueLagMs,
     long dispatchLagMs,
     long deliveryLagMs,
-    long totalLagMs
+    long totalLagMs,
+    String failureReason,
+    Integer failureHttpStatus
 ) {
     /**
      * Create with updated enqueued timestamp.
@@ -41,7 +43,8 @@ public record IntentTrace(
     public IntentTrace withEnqueuedAt(long enqueuedAtMs) {
         long enqueueLag = createdAtMs > 0 && enqueuedAtMs > createdAtMs ? enqueuedAtMs - createdAtMs : 0;
         return new IntentTrace(intentId, traceId, tier, status, createdAtMs, enqueuedAtMs,
-            dequeuedAtMs, deliveredAtMs, ackedAtMs, enqueueLag, dispatchLagMs, deliveryLagMs, totalLagMs);
+            dequeuedAtMs, deliveredAtMs, ackedAtMs, enqueueLag, dispatchLagMs, deliveryLagMs, totalLagMs,
+            failureReason, failureHttpStatus);
     }
 
     /**
@@ -51,7 +54,8 @@ public record IntentTrace(
         long dispatchLag = enqueuedAtMs > 0 && dequeuedAtMs > enqueuedAtMs ? dequeuedAtMs - enqueuedAtMs : 0;
         long totalLag = createdAtMs > 0 && dequeuedAtMs > createdAtMs ? dequeuedAtMs - createdAtMs : 0;
         return new IntentTrace(intentId, traceId, tier, status, createdAtMs, enqueuedAtMs,
-            dequeuedAtMs, deliveredAtMs, ackedAtMs, enqueueLagMs, dispatchLag, deliveryLagMs, totalLag);
+            dequeuedAtMs, deliveredAtMs, ackedAtMs, enqueueLagMs, dispatchLag, deliveryLagMs, totalLag,
+            failureReason, failureHttpStatus);
     }
 
     /**
@@ -61,7 +65,8 @@ public record IntentTrace(
         long deliveryLag = dequeuedAtMs > 0 && deliveredAtMs > dequeuedAtMs ? deliveredAtMs - dequeuedAtMs : 0;
         long totalLag = createdAtMs > 0 && deliveredAtMs > createdAtMs ? deliveredAtMs - createdAtMs : 0;
         return new IntentTrace(intentId, traceId, tier, status, createdAtMs, enqueuedAtMs,
-            dequeuedAtMs, deliveredAtMs, ackedAtMs, enqueueLagMs, dispatchLagMs, deliveryLag, totalLag);
+            dequeuedAtMs, deliveredAtMs, ackedAtMs, enqueueLagMs, dispatchLagMs, deliveryLag, totalLag,
+            failureReason, failureHttpStatus);
     }
 
     /**
@@ -69,7 +74,8 @@ public record IntentTrace(
      */
     public IntentTrace withAckedAt(long ackedAtMs) {
         return new IntentTrace(intentId, traceId, tier, status, createdAtMs, enqueuedAtMs,
-            dequeuedAtMs, deliveredAtMs, ackedAtMs, enqueueLagMs, dispatchLagMs, deliveryLagMs, totalLagMs);
+            dequeuedAtMs, deliveredAtMs, ackedAtMs, enqueueLagMs, dispatchLagMs, deliveryLagMs, totalLagMs,
+            failureReason, failureHttpStatus);
     }
 
     /**
@@ -77,7 +83,17 @@ public record IntentTrace(
      */
     public IntentTrace withStatus(IntentStatus status) {
         return new IntentTrace(intentId, traceId, tier, status, createdAtMs, enqueuedAtMs,
-            dequeuedAtMs, deliveredAtMs, ackedAtMs, enqueueLagMs, dispatchLagMs, deliveryLagMs, totalLagMs);
+            dequeuedAtMs, deliveredAtMs, ackedAtMs, enqueueLagMs, dispatchLagMs, deliveryLagMs, totalLagMs,
+            failureReason, failureHttpStatus);
+    }
+
+    /**
+     * Create with failure information.
+     */
+    public IntentTrace withFailure(String reason, Integer httpStatus) {
+        return new IntentTrace(intentId, traceId, tier, status, createdAtMs, enqueuedAtMs,
+            dequeuedAtMs, deliveredAtMs, ackedAtMs, enqueueLagMs, dispatchLagMs, deliveryLagMs, totalLagMs,
+            reason, httpStatus);
     }
 
     /**
@@ -98,7 +114,20 @@ public record IntentTrace(
         sb.append(",\"dispatchLagMs\":").append(dispatchLagMs);
         sb.append(",\"deliveryLagMs\":").append(deliveryLagMs);
         sb.append(",\"totalLagMs\":").append(totalLagMs);
+        if (failureReason != null) {
+            sb.append(",\"failureReason\":\"").append(escapeJson(failureReason)).append("\"");
+        }
+        if (failureHttpStatus != null) {
+            sb.append(",\"failureHttpStatus\":").append(failureHttpStatus);
+        }
         sb.append("}");
         return sb.toString();
+    }
+
+    private static String escapeJson(String value) {
+        if (value == null) return null;
+        return value.replace("\\", "\\\\").replace("\"", "\\\"")
+            .replace("\n", "\\n").replace("\r", "\\r")
+            .replace("\t", "\\t").replace("\b", "\\b").replace("\f", "\\f");
     }
 }

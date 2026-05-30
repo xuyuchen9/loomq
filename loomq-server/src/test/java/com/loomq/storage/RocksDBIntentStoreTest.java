@@ -12,9 +12,12 @@ import com.loomq.store.IdempotencyResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 class RocksDBIntentStoreTest {
@@ -170,5 +173,77 @@ class RocksDBIntentStoreTest {
 
         IdempotencyResult newResult = store.checkIdempotency("idem-new");
         assertTrue(newResult.isActive(), "new idempotency key should be registered after update");
+    }
+
+    @Nested
+    @DisplayName("findByStatus 分页查询")
+    class FindByStatus {
+
+        @Test
+        @DisplayName("按状态过滤返回正确结果")
+        void filtersByStatus() {
+            Intent a = new Intent("fs-a"); a.transitionTo(IntentStatus.SCHEDULED); store.save(a);
+            Intent b = new Intent("fs-b"); b.transitionTo(IntentStatus.SCHEDULED); b.transitionTo(IntentStatus.DUE); store.save(b);
+            Intent c = new Intent("fs-c"); c.transitionTo(IntentStatus.SCHEDULED); store.save(c);
+
+            List<Intent> scheduled = store.findByStatus(IntentStatus.SCHEDULED, 0, 10);
+            assertEquals(2, scheduled.size());
+            for (Intent i : scheduled) {
+                assertEquals(IntentStatus.SCHEDULED, i.getStatus());
+            }
+        }
+
+        @Test
+        @DisplayName("offset/limit 分页正确")
+        void offsetAndLimit() {
+            for (int i = 0; i < 10; i++) {
+                Intent intent = new Intent("page-" + i);
+                intent.transitionTo(IntentStatus.SCHEDULED);
+                store.save(intent);
+            }
+
+            List<Intent> page1 = store.findByStatus(IntentStatus.SCHEDULED, 0, 5);
+            assertEquals(5, page1.size());
+
+            List<Intent> page2 = store.findByStatus(IntentStatus.SCHEDULED, 5, 5);
+            assertEquals(5, page2.size());
+
+            List<Intent> edge = store.findByStatus(IntentStatus.SCHEDULED, 8, 5);
+            assertEquals(2, edge.size());
+        }
+
+        @Test
+        @DisplayName("空状态返回空列表")
+        void emptyStatus() {
+            List<Intent> result = store.findByStatus(IntentStatus.DEAD_LETTERED, 0, 10);
+            assertTrue(result.isEmpty());
+        }
+
+        @Test
+        @DisplayName("offset 超出总数返回空")
+        void offsetBeyondTotal() {
+            Intent a = new Intent("offset-a"); a.transitionTo(IntentStatus.SCHEDULED); store.save(a);
+
+            List<Intent> result = store.findByStatus(IntentStatus.SCHEDULED, 10, 5);
+            assertTrue(result.isEmpty());
+        }
+
+        @Test
+        @DisplayName("只返回匹配状态的 intent，排除其他状态")
+        void excludesOtherStatuses() {
+            Intent a = new Intent("mixed-a"); a.transitionTo(IntentStatus.SCHEDULED); store.save(a);
+            Intent b = new Intent("mixed-b"); b.transitionTo(IntentStatus.SCHEDULED); b.transitionTo(IntentStatus.DUE); store.save(b);
+            Intent c = new Intent("mixed-c"); c.transitionTo(IntentStatus.SCHEDULED); c.transitionTo(IntentStatus.DEAD_LETTERED); store.save(c);
+            Intent d = new Intent("mixed-d"); store.save(d);
+
+            List<Intent> scheduled = store.findByStatus(IntentStatus.SCHEDULED, 0, 10);
+            for (Intent i : scheduled) {
+                assertEquals(IntentStatus.SCHEDULED, i.getStatus());
+            }
+
+            List<Intent> due = store.findByStatus(IntentStatus.DUE, 0, 10);
+            assertEquals(1, due.size());
+            assertEquals("mixed-b", due.getFirst().getIntentId());
+        }
     }
 }

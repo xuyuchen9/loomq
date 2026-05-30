@@ -40,7 +40,8 @@ public final class IntentTraceStore {
         IntentTrace trace = new IntentTrace(
             intentId, traceId, tier, IntentStatus.CREATED,
             nowMs, 0, 0, 0, 0,
-            0, 0, 0, 0
+            0, 0, 0, 0,
+            null, null
         );
         put(intentId, trace);
     }
@@ -85,6 +86,13 @@ public final class IntentTraceStore {
     }
 
     /**
+     * Record delivery failure details.
+     */
+    public void recordFailure(String intentId, String reason, Integer httpStatus) {
+        traces.computeIfPresent(intentId, (id, t) -> t.withFailure(reason, httpStatus));
+    }
+
+    /**
      * Get trace by intent ID.
      */
     public IntentTrace get(String intentId) {
@@ -96,6 +104,13 @@ public final class IntentTraceStore {
      */
     public boolean contains(String intentId) {
         return traces.containsKey(intentId);
+    }
+
+    /**
+     * Remove trace by intent ID (for test cleanup).
+     */
+    public void remove(String intentId) {
+        traces.remove(intentId);
     }
 
     /**

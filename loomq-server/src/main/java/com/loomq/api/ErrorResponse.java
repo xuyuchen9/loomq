@@ -11,15 +11,21 @@ import java.util.Map;
 public record ErrorResponse(
     String code,
     String message,
-    Map<String, Object> details
+    Map<String, Object> details,
+    RecoveryHint recovery
 ) {
 
     public static ErrorResponse of(String code, String message) {
-        return new ErrorResponse(code, message, null);
+        return new ErrorResponse(code, message, null, null);
     }
 
     public static ErrorResponse of(String code, String message, Map<String, Object> details) {
-        return new ErrorResponse(code, message, details);
+        return new ErrorResponse(code, message, details, null);
+    }
+
+    public static ErrorResponse of(String code, String message, Map<String, Object> details,
+                                   RecoveryHint recovery) {
+        return new ErrorResponse(code, message, details, recovery);
     }
 
 }
