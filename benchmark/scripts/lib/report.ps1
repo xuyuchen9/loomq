@@ -57,7 +57,9 @@ function New-BenchmarkExcel {
         Remove-Item -Path $jsonPath -ErrorAction SilentlyContinue
         return $OutputPath
     } catch {
-        Write-Warning "Excel generation error: $_"
+        $errMsg = $_.Exception.Message
+        Write-Warning "Excel generation error: $errMsg"
+        Write-Warning "Ensure Python 3 + xlsxwriter are installed: pip install xlsxwriter"
         Remove-Item -Path $jsonPath -ErrorAction SilentlyContinue
         return $null
     }
@@ -204,24 +206,24 @@ function New-BenchmarkMarkdown {
     $regression = $Data.Regression
     if ($regression) {
         $regTitle = [char]0x23 + [char]0x23 + [char]0x20 + '回归对比' + [char]0xFF08 + 'vs 上次运行' + [char]0xFF09
-        AppendLine $sb $regTitle
-        AppendLine $sb ""
+        [void]$sb.AppendLine($regTitle)
+        [void]$sb.AppendLine("")
         $httpDelta = $regression.HttpQpsDelta
         $grpcDelta = $regression.GrpcQpsDelta
         if ($null -ne $httpDelta) {
             $pctVal = [math]::Round($httpDelta * 100, 1)
             $hLine = Format-DeltaLine -Protocol HTTP -PctVal $pctVal
-            AppendLine $sb $hLine
+            [void]$sb.AppendLine($hLine)
         }
         if ($null -ne $grpcDelta) {
             $pctVal = [math]::Round($grpcDelta * 100, 1)
             $gLine = Format-DeltaLine -Protocol gRPC -PctVal $pctVal
-            AppendLine $sb $gLine
+            [void]$sb.AppendLine($gLine)
         }
-        AppendLine $sb ""
+        [void]$sb.AppendLine("")
     }
 
     $content = $sb.ToString()
-    [System.IO.File]::WriteAllText($OutputPath, $content, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($OutputPath, $content, [System.Text.UTF8Encoding]::new($true))
     return $OutputPath
 }

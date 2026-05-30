@@ -12,7 +12,7 @@ benchmark\benchmark.bat
 ./benchmark/scripts/benchmark.sh
 
 # 快速验证
-benchmark\benchmark.bat --quick
+benchmark\benchmark.bat -Quick
 ```
 
 输出：

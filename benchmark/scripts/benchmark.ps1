@@ -419,10 +419,16 @@ function ConvertTo-ReportData {
         $sloDef = $sloConfig.$tierName
         if (-not $sloDef) { continue }
         $item = @{ tier = $tierName }
-        foreach ($key in @("wake_p95", "wake_p99", "e2e_p95", "e2e_p99")) {
-            $targetKey = "${key}_us"
-            if ($key -like "e2e_*") { $targetKey = "${key}_ms" }
-            $target = $sloDef.$targetKey
+        # config.json uses: p95_wakeup_us, p99_wakeup_us, p95_e2e_ms, p99_e2e_ms
+        # tierData uses:     wake_p95,      wake_p99,      e2e_p95,      e2e_p99
+        foreach ($entry in @(
+            @{ key = "wake_p95"; configKey = "p95_wakeup_us" },
+            @{ key = "wake_p99"; configKey = "p99_wakeup_us" },
+            @{ key = "e2e_p95";  configKey = "p95_e2e_ms"   },
+            @{ key = "e2e_p99";  configKey = "p99_e2e_ms"   }
+        )) {
+            $key = $entry.key
+            $target = $sloDef.$($entry.configKey)
             $actual = $tierEntry.$key
             if ($key -like "e2e_*") {
                 $item["${key}_target"] = if ($target) { "{0}ms" -f $target } else { "-" }
@@ -441,7 +447,7 @@ function ConvertTo-ReportData {
     $lastJson = Get-ChildItem -Path (Join-Path $ProjectRoot "benchmark\results\reports") -Filter "benchmark-report-*.json" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($lastJson) {
-        $lastData = Get-Content $lastJson.FullName -Raw | ConvertFrom-Json
+        $lastData = Get-Content $lastJson.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
         $lastHttpPeak = $lastData.summary.http_peak_qps
         $lastGrpcPeak = $lastData.summary.grpc_peak_qps
         if ($lastHttpPeak -and $httpPeak) {
@@ -552,7 +558,7 @@ if ($Compare) {
     $LatestMd = Get-ChildItem -Path $ReportDir -Filter "benchmark-report-*.md" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($LatestMd) {
-        Get-Content $LatestMd.FullName | ForEach-Object { Write-Host $_ }
+        Get-Content $LatestMd.FullName -Encoding UTF8 | ForEach-Object { Write-Host $_ }
     } else {
         Write-Warning "No benchmark report found."
     }
@@ -786,8 +792,23 @@ try {
 
     # Save JSON for regression comparison (在 reports 目录)
     $JsonPath = Join-Path $ReportDir "benchmark-report-$($ReportData.timestamp).json"
-    $ReportData | ConvertTo-Json -Depth 10 | Set-Content -Path $JsonPath -Encoding UTF8
+    [System.IO.File]::WriteAllText($JsonPath, ($ReportData | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($true))
     Write-Info "JSON (regression): $JsonPath"
+
+    # Rotate old reports (keep latest N)
+    $KeepRecent = 10
+    $configPath = Join-Path $ProjectRoot "benchmark\config.json"
+    if (Test-Path $configPath) {
+        $rc = (Get-Content $configPath -Raw | ConvertFrom-Json).rotation
+        if ($rc -and $rc.keep_recent) { $KeepRecent = [int]$rc.keep_recent }
+    }
+    foreach ($ext in @("*.json", "*.md", "*.xlsx")) {
+        $oldFiles = Get-ChildItem -Path $ReportDir -Filter $ext -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -Skip $KeepRecent
+        foreach ($f in $oldFiles) {
+            Remove-Item $f.FullName -ErrorAction SilentlyContinue
+        }
+    }
 
     # Print summary
     Write-Host ""
