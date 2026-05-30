@@ -14,7 +14,7 @@ import java.util.Map;
  * @author loomq
  * @since v0.9.0
  */
-public interface IntentStore {
+public interface IntentStore extends AutoCloseable {
 
     /** 保存新 Intent */
     void save(Intent intent);
@@ -77,4 +77,10 @@ public interface IntentStore {
 
     /** 关闭存储，释放资源 */
     void shutdown();
+
+    /** AutoCloseable 桥接，委托给 shutdown() */
+    @Override
+    default void close() {
+        shutdown();
+    }
 }

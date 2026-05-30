@@ -103,9 +103,9 @@ public final class PrecisionTierCatalog {
     private static PrecisionTierCatalog createDefault() {
         EnumMap<PrecisionTier, PrecisionTierProfile> profiles = new EnumMap<>(PrecisionTier.class);
         profiles.put(PrecisionTier.ULTRA, new PrecisionTierProfile(10, 200, 1, 5, 16, 200 * 16,
-            WalMode.ASYNC));
+            WalMode.DURABLE));
         profiles.put(PrecisionTier.FAST, new PrecisionTierProfile(50, 150, 1, 10, 12, 150 * 16,
-            WalMode.ASYNC));
+            WalMode.DURABLE));
         profiles.put(PrecisionTier.HIGH, new PrecisionTierProfile(100, 50, 5, 50, 4, 50 * 16,
             WalMode.BATCH_DEFERRED));
         profiles.put(PrecisionTier.STANDARD, new PrecisionTierProfile(500, 50, 20, 100, 3, 50 * 16,
