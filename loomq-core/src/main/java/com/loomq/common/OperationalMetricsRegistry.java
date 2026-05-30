@@ -77,6 +77,26 @@ final class OperationalMetricsRegistry {
         return (double) webhookTimeoutTotal.get() / totalRequests * 100;
     }
 
+    long getIntentsCreatedTotal() {
+        return intentsCreatedTotal.get();
+    }
+
+    long getIntentsAckSuccessTotal() {
+        return intentsAckSuccessTotal.get();
+    }
+
+    long getIntentsCancelledTotal() {
+        return intentsCancelledTotal.get();
+    }
+
+    long getIntentsExpiredTotal() {
+        return intentsExpiredTotal.get();
+    }
+
+    long getIntentsDeadLetterTotal() {
+        return intentsDeadLetterTotal.get();
+    }
+
     void appendPrometheusMetrics(Map<String, Long> intentStats, StringBuilder sb) {
         // Intent 统计
         sb.append("# HELP loomq_intents_total Total number of intents\n");
