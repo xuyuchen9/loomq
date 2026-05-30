@@ -90,4 +90,3 @@ The codebase already exposes shell-oriented extension points:
 - `RedeliveryDecider`
 
 That means the kernel can stay focused while higher-level products define their own behavior on top.
-

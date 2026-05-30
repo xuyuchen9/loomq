@@ -6,13 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import com.loomq.LoomqEngine;
 import com.loomq.api.IntentResponse;
-import com.loomq.callback.NettyHttpDeliveryHandler;
+import com.loomq.channel.http.NettyHttpDeliveryHandler;
+import com.loomq.common.RaftRole;
+import com.loomq.common.RaftStatusSnapshot;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import com.loomq.domain.intent.PrecisionTier;
-import com.loomq.raft.RaftRole;
-import com.loomq.raft.RaftStatusProvider;
-import com.loomq.raft.RaftStatusSnapshot;
+import com.loomq.spi.RaftStatusProvider;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.LinkedHashMap;

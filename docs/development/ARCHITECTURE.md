@@ -1,13 +1,16 @@
 # LoomQ Architecture
 
-This document describes the current codebase structure as of v0.9.1.
+This document describes the current codebase structure as of v0.9.2.
 
 ## High-Level Layers
 
 ```mermaid
 flowchart TB
-    Server["loomq-server"] --> Http["Netty HTTP / REST / webhook delivery"]
+    Server["loomq-server"] --> Http["Netty HTTP / REST"]
     Server --> Raft["RaftNode / LeaderElection / LogReplication / RaftTransport"]
+    Server --> Channel["loomq-channel"]
+    Channel --> ChannelHttp["loomq-channel-http: webhook + batch delivery"]
+    Channel --> ChannelGrpc["loomq-channel-grpc: gRPC streaming delivery"]
     Server --> Engine["LoomqEngine bootstrap"]
 
     Engine --> Scheduler["PrecisionScheduler"]
@@ -39,10 +42,22 @@ flowchart TB
 ### `loomq-server`
 
 - HTTP transport and routing: Netty server, REST handlers, JSON serialization
-- webhook delivery: `NettyHttpDeliveryHandler`, `HttpCallbackHandler`
 - Raft consensus wiring: leader election, log replication, snapshot install
 - Raft observability and safety: leader-authoritative reads, health/metrics surfacing, startup guardrails
 - standalone bootstrap: `LoomqServerApplication`
+
+### `loomq-channel-http`
+
+- HTTP webhook delivery: `NettyHttpDeliveryHandler`, `HttpCallbackHandler`
+- Batch webhook delivery: `BatchedHttpDeliveryHandler`, `BatchWebhookServer`
+- Delivery configuration: `BatchDeliveryConfig`
+
+### `loomq-channel-grpc`
+
+- gRPC streaming delivery: `GrpcStreamDeliveryHandler` (AUTO_ACK / MANUAL_ACK)
+- Intent state streaming: `GlobalIntentObserver`
+- Stream management: `DeliveryStreamRegistry`
+- gRPC configuration: `GrpcConfig`
 
 ## Runtime Flows
 
@@ -82,10 +97,12 @@ flowchart TB
 
 The kernel is designed to stay shell-friendly:
 
-- `DeliveryHandler` - owns the actual delivery mechanism
+- `DeliveryHandler` - owns the actual delivery mechanism (HTTP, batch HTTP, gRPC, or custom)
 - `CallbackHandler` - reports lifecycle events back to the host
 - `RedeliveryDecider` - decides whether to retry after failure
 - `IntentStore` - chooses between in-memory and durable local storage
+- `IntentObserver` - lifecycle event hooks (onScheduled, onDelivered, etc.)
+- `WalAccessor` - WAL read access for recovery and Raft snapshot boundary management
 - Raft wiring stays in `loomq-server` so the embedded kernel remains reusable
 
 ## Configuration Path

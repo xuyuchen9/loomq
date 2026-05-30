@@ -351,6 +351,20 @@ public class MetricsCollector {
     }
 
     /**
+     * 记录 Cohort flush 耗时（微秒）
+     */
+    public void recordCohortFlushDuration(long durationUs) {
+        latencyMetrics.recordCohortFlushDuration(durationUs);
+    }
+
+    /**
+     * 获取 Cohort flush P95 耗时（微秒）
+     */
+    public long getCohortFlushP95() {
+        return latencyMetrics.calculateP95CohortFlushDuration();
+    }
+
+    /**
      * 计算 P95 触发延迟
      */
     public long calculateP95Latency() {

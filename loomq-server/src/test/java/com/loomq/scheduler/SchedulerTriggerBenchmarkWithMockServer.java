@@ -775,15 +775,28 @@ public class SchedulerTriggerBenchmarkWithMockServer {
 
     private void printBenchmarkSummary(BenchmarkSummary summary) {
         System.out.println();
-        System.out.println("=== 调度器真实触发结果 ===");
-        System.out.printf(Locale.ROOT, "%-10s %8s %10s %10s %14s %12s %12s%n",
-            "Tier", "并发", "接收", "QPS", "理论最大QPS", "效率", "延迟(ms)");
-        System.out.println("-".repeat(70));
+        System.out.println("═══════════════════════════════════════════════════════════════");
+        System.out.println("                    调度器基准测试报告");
+        System.out.println("═══════════════════════════════════════════════════════════════");
+        System.out.println();
+
+        // --- 单位说明 ---
+        System.out.println("  单位说明: 唤醒延迟 = 微秒(µs) | E2E/调度精度 = 毫秒(ms) | QPS = 每秒处理量");
+        System.out.println();
 
         BenchmarkTierResult peak = null;
         BenchmarkTierResult worst = null;
         BenchmarkTierResult bestEfficiency = null;
         BenchmarkTierResult worstEfficiency = null;
+
+        // ── 表 1: 吞吐量总览 ──
+        System.out.println("┌─ 吞吐量 ──────────────────────────────────────────────────────────────────────────────┐");
+        System.out.printf(Locale.ROOT, "│ %-8s %6s %8s %10s %10s %8s %8s %6s %10s │%n",
+            "档位", "并发", "接收", "QPS", "理论QPS", "效率", "完成率", "背压", "信号量%");
+        System.out.println("├──────────────────────────────────────────────────────────────────────────────────────┤");
+
+        double completionRate = summary.expected() == 0 ? 0.0
+            : (double) summary.totalReceived() / summary.expected() * 100.0;
 
         for (PrecisionTier tier : PrecisionTier.values()) {
             BenchmarkTierResult result = summary.tierResults().get(tier);
@@ -791,14 +804,20 @@ public class SchedulerTriggerBenchmarkWithMockServer {
                 continue;
             }
 
-            System.out.printf(Locale.ROOT, "%-10s %8d %10d %10.1f %14.1f %11.1f%% %10.1f%n",
+            // 人工可读表行
+            System.out.printf(Locale.ROOT,
+                "│ %-8s %6d %8d %10.1f %10.1f %7.1f%% %7.1f%% %6d %9.1f%% │%n",
                 result.tier().name(),
                 result.concurrency(),
                 result.received(),
                 result.qps(),
                 result.theoreticalMaxQps(),
                 result.efficiencyPct(),
-                result.avgLatencyMs());
+                result.received() == 0 ? 0.0 : (double) result.received() / (summary.expected() / 5) * 100.0,
+                result.backpressureEvents(),
+                result.semaphoreUtilizationPct());
+
+            // ── 机器解析行（保持不变）──
             System.out.printf(Locale.ROOT,
                 "RESULT_ROW|tier=%s|concurrency=%d|received=%d|qps=%.1f|avg_latency_ms=%.1f|theoretical_qps=%.1f|efficiency=%.1f|backpressure=%d%n",
                 result.tier().name(),
@@ -810,10 +829,10 @@ public class SchedulerTriggerBenchmarkWithMockServer {
                 result.efficiencyPct(),
                 result.backpressureEvents());
 
-            // 维度 1: 延迟分布 (scheduler-internal wakeup latency)
+            // 维度 1: 延迟分布 (scheduler-internal wakeup latency, microseconds)
             var lat = result.latencySnapshot();
             System.out.printf(Locale.ROOT,
-                "RESULT_LATENCY|tier=%s|type=wakeup|p50=%d|p75=%d|p90=%d|p95=%d|p99=%d|p999=%d|max=%d|mean=%d|samples=%d%n",
+                "RESULT_LATENCY|tier=%s|type=wakeup_us|p50=%d|p75=%d|p90=%d|p95=%d|p99=%d|p999=%d|max=%d|mean=%d|samples=%d%n",
                 result.tier().name(), lat.p50(), lat.p75(), lat.p90(),
                 lat.p95(), lat.p99(), lat.p999(), lat.max(), lat.mean(), lat.sampleCount());
 
@@ -878,27 +897,52 @@ public class SchedulerTriggerBenchmarkWithMockServer {
                 worstEfficiency = result;
             }
         }
+        System.out.println("└──────────────────────────────────────────────────────────────────────────────────────┘");
+        System.out.println();
 
-        double completionRate = summary.expected() == 0 ? 0.0
-            : (double) summary.totalReceived() / summary.expected() * 100.0;
         long clampedTierCount = summary.tierResults().values().stream()
             .filter(r -> Math.abs(r.efficiencyRawPct() - r.efficiencyPct()) > 0.1)
             .count();
 
-        // 维度 6: 全局延迟
+        // ── 表 2: 延迟分布 ──
+        System.out.println("┌─ 延迟分布 ────────────────────────────────────────────────────────────────────────────┐");
+        System.out.printf(Locale.ROOT, "│ %-8s │ %-17s │ %-17s │ %-19s │ %-14s │%n",
+            "档位", "唤醒延迟(µs)", "E2E延迟(ms)", "调度精度(ms)", "批处理窗口(ms)");
+        System.out.printf(Locale.ROOT, "│ %-8s │ %5s %5s %5s │ %5s %5s %5s │ %5s %5s %5s │ %6s │%n",
+            "", "p50", "p95", "p99", "p50", "p95", "p99", "p50", "p95", "p99", "");
+        System.out.println("├──────────┼─────────────────┼─────────────────┼───────────────────┼────────────────┤");
+
+        for (PrecisionTier tier : PrecisionTier.values()) {
+            BenchmarkTierResult result = summary.tierResults().get(tier);
+            if (result == null) {
+                continue;
+            }
+            var lat = result.latencySnapshot();
+            System.out.printf(Locale.ROOT,
+                "│ %-8s │ %5d %5d %5d │ %5d %5d %5d │ %5d %5d %5d │ %6d │%n",
+                result.tier().name(),
+                lat.p50(), lat.p95(), lat.p99(),
+                result.e2eP50Ms(), result.e2eP95Ms(), result.e2eP99Ms(),
+                result.schedP50Ms(), result.schedP95Ms(), result.schedP99Ms(),
+                result.batchWindowMs());
+        }
+        System.out.println("└──────────┴─────────────────┴─────────────────┴───────────────────┴────────────────┘");
+        System.out.println();
+
+        // 维度 6: 全局延迟（机器解析行）
         System.out.printf(Locale.ROOT,
             "RESULT_GLOBAL_LATENCY|p95_trigger=%d|p95_wake=%d|p95_webhook=%d|p95_total=%d%n",
             metrics.calculateP95Latency(), metrics.calculateP95WakeLatency(),
             metrics.calculateP95WebhookLatency(), metrics.calculateP95TotalLatency());
 
-        // System resource samples
+        // System resource samples（机器解析行）
         for (SystemSample s : summary.systemSamples()) {
             System.out.printf(Locale.ROOT,
                 "RESULT_SYSTEM|ts=%d|cpu=%.2f|heap_mb=%d%n",
                 s.tsMs(), s.cpuLoad(), s.heapMb());
         }
 
-        // --- DeepSeek V4 optimization observability ---
+        // --- 优化指标（机器解析行）---
 
         // Cohort (CSA-inspired) metrics
         var cohortMgr = scheduler.getCohortManager();
@@ -920,11 +964,9 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         }
 
         // Optimization impact: VT reduction ratio
-        // For intents with delayMs > precisionWindowMs, old code spawned 1 VT each
-        // New code: 0 VTs (cohort waker is 1 platform thread for ALL tiers)
         int totalIntents = summary.expected();
-        long vtsOld = cohortRegistered; // old: 1 VT per registered intent
-        long vtsNew = cohortWakeEvents; // new: 1 wake per cohort (platform thread)
+        long vtsOld = cohortRegistered;
+        long vtsNew = cohortWakeEvents;
         double vtReductionPct = vtsOld > 0 ? (1.0 - (double) vtsNew / vtsOld) * 100.0 : 0.0;
         System.out.printf(Locale.ROOT,
             "RESULT_OPTIMIZATION|vts_old_path=%d|vts_new_path=%d|vt_reduction_pct=%.1f|vts_saved=%d%n",
@@ -973,24 +1015,13 @@ public class SchedulerTriggerBenchmarkWithMockServer {
         // Pipeline trace: avg time at each stage (all tiers combined)
         printPipelineTrace();
 
+        // ── 表 3: SLO 验证 ──
         System.out.println();
-        System.out.printf(Locale.ROOT, "总接收: %d / %d (%.1f%%)%n",
-            summary.totalReceived(), summary.expected(), completionRate);
-        System.out.printf(Locale.ROOT, "总等待: %d ms%n", summary.totalWaitMs());
-        double systemQps = summary.totalWaitMs() > 0
-            ? (double) summary.totalReceived() / summary.totalWaitMs() * 1000 : 0;
-        System.out.printf(Locale.ROOT, "RESULT_SYSTEM_QPS|total_qps=%.1f|total_received=%d|total_wait_ms=%d%n",
-            systemQps, summary.totalReceived(), summary.totalWaitMs());
-        if (clampedTierCount > 0) {
-            System.out.printf(Locale.ROOT,
-                "注意: %d 个档位原始效率超过 100%%（理论值受抖动影响），报告效率已封顶到 100%%。%n",
-                clampedTierCount);
-        }
+        System.out.println("┌─ SLO 验证 (E2E延迟: 从executeAt到webhook收到) ───────────────────────────────────────┐");
+        System.out.printf(Locale.ROOT, "│ %-8s │ %-15s │ %-10s │ %-6s │ %-15s │ %-10s │ %-6s │%n",
+            "档位", "E2E-p95", "阈值", "结果", "E2E-p99", "阈值", "结果");
+        System.out.println("├──────────┼─────────────────┼────────────┼────────┼─────────────────┼────────────┼────────┤");
 
-        // SLO Validation — uses E2E latency (real customer-perceived time from executeAt to webhook received)
-        System.out.println();
-        System.out.println("=== SLO Validation (E2E latency: executeAt -> webhook received) ===");
-        System.out.println("Note: BatchWindowMs contributes directly to E2E latency. Lower batch=lower latency, higher QPS.");
         Map<String, long[]> slo = Map.of(
             "ULTRA",    new long[]{20, 35},
             "FAST",     new long[]{70, 110},
@@ -1004,51 +1035,44 @@ public class SchedulerTriggerBenchmarkWithMockServer {
             long[] limits = slo.getOrDefault(tier.name(), new long[]{9999, 9999});
             boolean p95ok = result.e2eP95Ms() <= limits[0];
             boolean p99ok = result.e2eP99Ms() <= limits[1];
-            String note = result.batchWindowMs() > 0 && result.e2eP99Ms() >= result.batchWindowMs() * 0.8
-                ? String.format(" [batch window %dms dominates]", result.batchWindowMs())
-                : "";
-            System.out.printf(Locale.ROOT, "  %-10s E2E-p95=%d <= %d %s | E2E-p99=%d <= %d %s%s%n",
+            System.out.printf(Locale.ROOT,
+                "│ %-8s │ %11d ms │ ≤%d ms │ %s │ %11d ms │ ≤%d ms │ %s │%n",
                 tier.name(),
-                result.e2eP95Ms(), limits[0], p95ok ? "PASS" : "FAIL",
-                result.e2eP99Ms(), limits[1], p99ok ? "PASS" : "FAIL",
-                note);
+                result.e2eP95Ms(), limits[0], p95ok ? "✅通过" : "❌失败",
+                result.e2eP99Ms(), limits[1], p99ok ? "✅通过" : "❌失败");
         }
-        System.out.println("解释: 这组结果反映的是调度器 + callback 投递 + webhook 响应的联合作用，不是纯创建接口。");
+        System.out.println("└──────────┴─────────────────┴────────────┴────────┴─────────────────┴────────────┴────────┘");
+        System.out.println("  说明: E2E延迟 = 调度器 + 投递 + webhook响应的联合延迟，非纯创建接口延迟。");
 
-        // DeepSeek V4 optimization impact section
-        if (cohortRegistered > 0) {
-            System.out.println();
-            System.out.println("=== DeepSeek V4 Optimization Impact ===");
-            System.out.println("CSA Cohort Consolidation (per-intent VT sleep -> batched cohort wake):");
-            System.out.printf(Locale.ROOT, "  Intents via cohort: %d (old path: %d VT sleeps)%n",
-                cohortRegistered, cohortRegistered);
-            System.out.printf(Locale.ROOT, "  Cohort wake events: %d (single platform daemon thread)%n",
-                cohortWakeEvents);
-            System.out.printf(Locale.ROOT, "  VT reduction:       %.1f%% (%d VTs eliminated)%n",
-                vtReductionPct, vtsOld - vtsNew);
-            System.out.printf(Locale.ROOT, "  Active cohorts:     %d (%d intents pending)%n",
-                cohortActive, cohortPending);
-            System.out.println("  Note: VT reduction benefit is real at scale (>10k intents).");
-            System.out.println("  At <100 intents the overhead is negligible on modern hardware.");
-            System.out.println();
-            System.out.println("Tier-Differentiated WAL (FP4 QAT-inspired):");
-            System.out.println("  ULTRA/FAST: ASYNC — memory-mapped write, no fsync wait. Crash-lose window = flush interval (~10ms).");
-            System.out.println("  HIGH:       BATCH_DEFERRED — async write, periodic batch fsync (~50ms window).");
-            System.out.println("  STANDARD/ECONOMY: DURABLE — full fsync per write. Strongest guarantee, highest latency.");
-            System.out.println("  WARNING: ASYNC correctness has NOT been validated with crash-recovery testing.");
-            System.out.println("  Production deployment requires quantifying the data-loss window in milliseconds.");
-            System.out.println();
-            System.out.println("E2E Latency Note:");
-            System.out.println("  Measured E2E = executeAt -> webhook received (real customer-perceived time).");
-            System.out.println("  Current bottleneck: Mock HttpServer (java built-in), NOT the scheduler.");
-            System.out.println("  Scheduler internal dispatch: ~0-10ms. Actual E2E is dominated by HTTP server capacity.");
-        }
-
+        // ── 系统摘要 ──
+        System.out.println();
+        System.out.println("┌─ 系统摘要 ────────────────────────────────────────────────────────────────────────────┐");
+        double systemQps = summary.totalWaitMs() > 0
+            ? (double) summary.totalReceived() / summary.totalWaitMs() * 1000 : 0;
+        System.out.printf(Locale.ROOT, "│  总吞吐量: %,.1f QPS     完成率: %.1f%%     总等待: %,d ms%n",
+            systemQps, completionRate, summary.totalWaitMs());
         if (peak != null && worst != null && bestEfficiency != null && worstEfficiency != null) {
-            System.out.printf(Locale.ROOT, "峰值档位: %s @ %.1f QPS%n", peak.tier().name(), peak.qps());
-            System.out.printf(Locale.ROOT, "最弱档位: %s @ %.1f QPS%n", worst.tier().name(), worst.qps());
-            System.out.printf(Locale.ROOT, "最高效率: %s @ %.1f%%%n", bestEfficiency.tier().name(), bestEfficiency.efficiencyPct());
-            System.out.printf(Locale.ROOT, "最低效率: %s @ %.1f%%%n", worstEfficiency.tier().name(), worstEfficiency.efficiencyPct());
+            System.out.printf(Locale.ROOT, "│  峰值档位: %s @ %,.1f QPS     最弱档位: %s @ %,.1f QPS%n",
+                peak.tier().name(), peak.qps(), worst.tier().name(), worst.qps());
+            System.out.printf(Locale.ROOT, "│  最高效率: %s @ %.1f%%          最低效率: %s @ %.1f%%%n",
+                bestEfficiency.tier().name(), bestEfficiency.efficiencyPct(),
+                worstEfficiency.tier().name(), worstEfficiency.efficiencyPct());
+        }
+        System.out.printf(Locale.ROOT, "│  背压事件: %d 次%n",
+            summary.tierResults().values().stream().mapToLong(BenchmarkTierResult::backpressureEvents).sum());
+        if (cohortRegistered > 0) {
+            System.out.printf(Locale.ROOT, "│  Cohort统计: 注册 %,d | flush %,d | 唤醒事件 %,d | VT缩减 %.1f%%%n",
+                cohortRegistered, cohortFlushed, cohortWakeEvents, vtReductionPct);
+        }
+        if (clampedTierCount > 0) {
+            System.out.printf(Locale.ROOT, "│  注意: %d 个档位原始效率超过100%%（理论值受抖动影响），已封顶%n", clampedTierCount);
+        }
+        System.out.println("└──────────────────────────────────────────────────────────────────────────────────────┘");
+
+        // 机器解析行（保持不变）
+        System.out.printf(Locale.ROOT, "RESULT_SYSTEM_QPS|total_qps=%.1f|total_received=%d|total_wait_ms=%d%n",
+            systemQps, summary.totalReceived(), summary.totalWaitMs());
+        if (peak != null && worst != null && bestEfficiency != null && worstEfficiency != null) {
             System.out.printf(Locale.ROOT,
                 "RESULT|peak_tier=%s|peak_qps=%.1f|worst_tier=%s|worst_qps=%.1f|best_efficiency_tier=%s|best_efficiency=%.1f|worst_efficiency_tier=%s|worst_efficiency=%.1f|completion_rate=%.1f|total_received=%d|total_expected=%d|total_wait_ms=%d|efficiency_clamped_tiers=%d%n",
                 peak.tier().name(),

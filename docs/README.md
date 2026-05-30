@@ -16,6 +16,7 @@
 | 文档 | 说明 |
 |------|------|
 | [核心模型](architecture/core-model.md) | Intent、状态机、语义边界 |
+| [投递模式选择](architecture/delivery-modes.md) | HTTP 单请求/批量/gRPC 流三种模式对比 |
 | [架构说明](development/ARCHITECTURE.md) | 系统分层、调度器、Raft、快照与恢复 |
 | [API 文档](development/API.md) | REST API 接口与错误响应 |
 | [OpenAPI 规范](development/openapi.yaml) | OpenAPI 3.0 规范 |

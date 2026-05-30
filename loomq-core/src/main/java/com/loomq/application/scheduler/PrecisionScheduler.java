@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -30,6 +31,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
@@ -73,6 +75,9 @@ public class PrecisionScheduler {
     // 按精度档位的扫描调度器
     private final Map<PrecisionTier, ScheduledExecutorService> scanSchedulers;
     private final Map<PrecisionTier, ScheduledFuture<?>> scanFutures;
+
+    // scanTrigger 去重：同一 tier 同时最多一个待执行的 triggered scan
+    private final Map<PrecisionTier, AtomicBoolean> pendingScanTrigger = new ConcurrentHashMap<>();
 
     // due→dispatch lag 追踪（key=intentId, value=enqueueTimeNanos）
     private final ConcurrentHashMap<String, Long> enqueueTimeNanos = new ConcurrentHashMap<>();
@@ -192,9 +197,26 @@ public class PrecisionScheduler {
             ? precisionTierCatalog
             : PrecisionTierCatalog.defaultCatalog();
         this.bucketGroupManager = new BucketGroupManager(this.precisionTierCatalog);
-        this.cohortManager = new CohortManager(this.bucketGroupManager, this.precisionTierCatalog);
         this.scanSchedulers = new ConcurrentHashMap<>();
         this.scanFutures = new ConcurrentHashMap<>();
+        this.cohortManager = new CohortManager(this.bucketGroupManager, this.precisionTierCatalog, flushedIntents -> {
+            Set<PrecisionTier> tiers = EnumSet.noneOf(PrecisionTier.class);
+            for (Intent intent : flushedIntents) {
+                tiers.add(intent.getPrecisionTier());
+            }
+            for (PrecisionTier tier : tiers) {
+                AtomicBoolean pending = pendingScanTrigger.computeIfAbsent(tier, k -> new AtomicBoolean(false));
+                if (pending.compareAndSet(false, true)) {
+                    ScheduledExecutorService scanScheduler = scanSchedulers.get(tier);
+                    if (scanScheduler != null) {
+                        scanScheduler.submit(() -> {
+                            pending.set(false);
+                            scanAndDispatch(tier);
+                        });
+                    }
+                }
+            }
+        });
 
         // 加载重投决策器
         if (redeliveryDecider != null) {
@@ -749,8 +771,8 @@ public class PrecisionScheduler {
      */
     private void recordWakeupLatency(Intent intent, Instant actualTime) {
         Instant executeAt = intent.getExecuteAt();
-        long latencyMs = Duration.between(executeAt, actualTime).toMillis();
-        metrics.recordWakeupLatencyByTier(intent.getPrecisionTier(), latencyMs);
+        long latencyUs = Duration.between(executeAt, actualTime).toNanos() / 1_000;
+        metrics.recordWakeupLatencyByTier(intent.getPrecisionTier(), latencyUs);
     }
 
     /**

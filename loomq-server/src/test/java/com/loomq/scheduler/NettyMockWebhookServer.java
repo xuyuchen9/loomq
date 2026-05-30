@@ -51,6 +51,7 @@ final class NettyMockWebhookServer {
     private final ConcurrentHashMap<String, Long> receiveTimeMs;
     private final AtomicInteger totalReceived;
     private final boolean zeroDelay;
+    private final AtomicInteger httpRequestCount = new AtomicInteger(0);
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -113,7 +114,14 @@ final class NettyMockWebhookServer {
         if (workerGroup != null) {
             workerGroup.shutdownGracefully();
         }
-        log.info("Netty mock webhook server stopped");
+        log.info("Netty mock webhook server stopped: {} HTTP requests received", httpRequestCount.get());
+    }
+
+    /**
+     * 获取 HTTP 请求总数（每个 HTTP POST 计为一次请求，无论包含多少 Intent）。
+     */
+    int getHttpRequestCount() {
+        return httpRequestCount.get();
     }
 
     private class WebhookHandler extends ChannelInboundHandlerAdapter {
@@ -125,6 +133,7 @@ final class NettyMockWebhookServer {
                 return;
             }
 
+            httpRequestCount.incrementAndGet();
             long receiveMs = System.currentTimeMillis();
             ByteBuf content = req.content();
             String body = content.toString(StandardCharsets.UTF_8);

@@ -1,17 +1,17 @@
 # LoomQ Makefile
-# Version: 0.9.1
+# Version: 0.9.2
 
 .PHONY: help build test clean run docker-build docker-run docker-compose-up docker-compose-down format check-format
 
 # Variables
-JAR_FILE := loomq-server/target/loomq-server-0.9.1.jar
-DOCKER_IMAGE := loomq:0.9.1
+JAR_FILE := loomq-server/target/loomq-server-0.9.2.jar
+DOCKER_IMAGE := loomq:0.9.2
 DOCKER_COMPOSE := docker-compose
 SPOTLESS_PLUGIN := com.diffplug.spotless:spotless-maven-plugin:3.0.0
 
 # Default target
 help:
-	@echo "LoomQ Build System v0.9.1"
+	@echo "LoomQ Build System v0.9.2"
 	@echo ""
 	@echo "Available targets:"
 	@echo "  build                - Build the project (mvn clean package)"
@@ -52,6 +52,15 @@ test-integration:
 
 test-benchmark:
 	mvn test -Pfull-tests -Dtest.groups=benchmark
+
+benchmark:
+	powershell -ExecutionPolicy Bypass -File benchmark/scripts/benchmark.ps1 -NoPause
+
+benchmark-quick:
+	powershell -ExecutionPolicy Bypass -File benchmark/scripts/benchmark.ps1 -Quick -NoPause
+
+benchmark-stress:
+	powershell -ExecutionPolicy Bypass -File benchmark/scripts/benchmark.ps1 -Stress -NoPause
 
 # Clean
 clean:

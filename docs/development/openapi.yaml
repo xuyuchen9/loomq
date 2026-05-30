@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: LoomQ v0.9 API
+  title: LoomQ v0.9.2 API
   description: |
     LoomQ is a future event infrastructure for delayed execution, redelivery, and durable delivery.
 
@@ -10,7 +10,7 @@ info:
     - Raft-backed replication and snapshot recovery
     - Immediate fire-now execution
     - 幂等性保证（24h 窗口期）
-  version: 0.9.1
+  version: 0.9.2
 
 servers:
   - url: http://localhost:7928

@@ -1,6 +1,7 @@
 package com.loomq.application.scheduler;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -10,10 +11,14 @@ import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -22,13 +27,30 @@ class CohortManagerTest {
 
     private static CohortManager createCohortManager() {
         BucketGroupManager bucketGroupManager = new BucketGroupManager();
-        return new CohortManager(bucketGroupManager, PrecisionTierCatalog.defaultCatalog());
+        return new CohortManager(bucketGroupManager, PrecisionTierCatalog.defaultCatalog(), null);
+    }
+
+    private static CohortManager createCohortManager(Consumer<Collection<Intent>> scanTrigger) {
+        BucketGroupManager bucketGroupManager = new BucketGroupManager();
+        return new CohortManager(bucketGroupManager, PrecisionTierCatalog.defaultCatalog(), scanTrigger);
     }
 
     private static Intent readyIntent(String id, long delaySeconds, PrecisionTier tier) {
         Intent intent = new Intent(id);
         intent.setExecuteAt(Instant.now().plusSeconds(delaySeconds));
         intent.setDeadline(Instant.now().plusSeconds(delaySeconds + 3600));
+        intent.setPrecisionTier(tier);
+        intent.transitionTo(IntentStatus.SCHEDULED);
+        return intent;
+    }
+
+    /**
+     * 创建一个 executeAt 已过期的 intent，用于触发即时 flush。
+     */
+    private static Intent pastIntent(String id, PrecisionTier tier) {
+        Intent intent = new Intent(id);
+        intent.setExecuteAt(Instant.now().minusMillis(100));
+        intent.setDeadline(Instant.now().plusSeconds(3600));
         intent.setPrecisionTier(tier);
         intent.transitionTo(IntentStatus.SCHEDULED);
         return intent;
@@ -163,6 +185,83 @@ class CohortManagerTest {
                     "Concurrent test should complete within 10s");
             } finally {
                 executor.shutdownNow();
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("scanTrigger 回调")
+    class ScanTrigger {
+
+        @Test
+        @DisplayName("cohort flush 时 scanTrigger 被调用，传入非终态 intents")
+        void scanTriggerCalledOnFlush() throws Exception {
+            CountDownLatch latch = new CountDownLatch(1);
+            List<Intent> captured = new CopyOnWriteArrayList<>();
+
+            CohortManager cm = createCohortManager(intents -> {
+                captured.addAll(intents);
+                latch.countDown();
+            });
+            cm.start();
+            try {
+                // 使用相同的 executeAt 确保两个 intent 落入同一个 cohort
+                Instant pastTime = Instant.now().minusMillis(100);
+                Intent i1 = new Intent("flush-1");
+                i1.setExecuteAt(pastTime);
+                i1.setDeadline(Instant.now().plusSeconds(3600));
+                i1.setPrecisionTier(PrecisionTier.STANDARD);
+                i1.transitionTo(IntentStatus.SCHEDULED);
+
+                Intent i2 = new Intent("flush-2");
+                i2.setExecuteAt(pastTime);
+                i2.setDeadline(Instant.now().plusSeconds(3600));
+                i2.setPrecisionTier(PrecisionTier.STANDARD);
+                i2.transitionTo(IntentStatus.SCHEDULED);
+
+                cm.register(i1);
+                cm.register(i2);
+
+                assertTrue(latch.await(5, TimeUnit.SECONDS),
+                    "scanTrigger should be called within 5s");
+                assertEquals(2, captured.size(), "scanTrigger should receive 2 intents");
+            } finally {
+                cm.stop();
+            }
+        }
+
+        @Test
+        @DisplayName("所有 intent 为终态时 scanTrigger 不被调用")
+        void scanTriggerNotCalledWhenAllTerminal() throws Exception {
+            AtomicInteger callCount = new AtomicInteger(0);
+
+            CohortManager cm = createCohortManager(intents -> callCount.incrementAndGet());
+            cm.start();
+            try {
+                Intent terminal = pastIntent("terminal-1", PrecisionTier.STANDARD);
+                terminal.transitionTo(IntentStatus.CANCELED);
+                cm.register(terminal);
+
+                Thread.sleep(500);
+                assertEquals(0, callCount.get(),
+                    "scanTrigger should not be called when all intents are terminal");
+            } finally {
+                cm.stop();
+            }
+        }
+
+        @Test
+        @DisplayName("scanTrigger 为 null 时 flush 正常工作不抛异常")
+        void scanTriggerNullDoesNotThrow() throws Exception {
+            CohortManager cm = createCohortManager(null);
+            cm.start();
+            try {
+                assertDoesNotThrow(() -> {
+                    cm.register(pastIntent("null-trigger-1", PrecisionTier.STANDARD));
+                    Thread.sleep(500);
+                });
+            } finally {
+                cm.stop();
             }
         }
     }

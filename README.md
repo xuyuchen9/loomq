@@ -27,7 +27,7 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 
 | Category | Examples |
 |----------|----------|
-| **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics, pluggable storage (in-memory + RocksDB), WAL segment rotation with snapshot compaction, IntentObserver lifecycle hooks, Raft leader election + log replication + snapshot catch-up, leader-authoritative reads/writes, Raft observability, token authentication, error recovery advisor, health narration, dead letter revival |
+| **Stable** | durable delayed execution, persistence + recovery, precision-tier scheduling, retry orchestration, metrics, pluggable storage (in-memory + RocksDB), WAL segment rotation with snapshot compaction, IntentObserver lifecycle hooks, Raft leader election + log replication + snapshot catch-up, leader-authoritative reads/writes, Raft observability, token authentication, error recovery advisor, health narration, dead letter revival, HTTP webhook delivery, batch HTTP delivery, gRPC streaming delivery |
 | **Beta** | dynamic Raft membership, Kubernetes operator |
 | **Not yet committed** | distributed coordination primitives, lock/lease semantics |
 
@@ -46,7 +46,7 @@ LoomQ is a durable time kernel for distributed systems — scheduling, persisten
 <dependency>
     <groupId>com.loomq</groupId>
     <artifactId>loomq-core</artifactId>
-    <version>0.9.1</version>
+    <version>0.9.2</version>
 </dependency>
 ```
 
@@ -61,7 +61,7 @@ mvn clean package -DskipTests
 ### Start Server
 
 ```bash
-java -jar loomq-server/target/loomq-server-0.9.1.jar
+java -jar loomq-server/target/loomq-server-0.9.2.jar
 ```
 
 Server listens on `http://localhost:7928` by default.
@@ -104,11 +104,11 @@ When `LOOMQ_RAFT_ENABLED=true`, the standalone server switches to Raft mode:
 # Build the CLI
 mvn package -pl loomq-cli -am -DskipTests
 
-# Run (defaults to http://localhost:8080, override with LOOMQ_URL env var)
-java -jar loomq-cli/target/loomq-cli-0.9.1.jar
+# Run (defaults to http://localhost:7928, override with LOOMQ_URL env var)
+java -jar loomq-cli/target/loomq-cli-0.9.2.jar
 
 # Or set a custom server URL
-$env:LOOMQ_URL="http://localhost:7928"; java -jar loomq-cli/target/loomq-cli-0.9.1.jar
+$env:LOOMQ_URL="http://localhost:7928"; java -jar loomq-cli/target/loomq-cli-0.9.2.jar
 ```
 
 Interactive commands: `schedule`, `get`, `list`, `chronoscope`, `timeline`, `dead-letters`, `revive`, `health`, `follow`, `help`, `exit`.
@@ -275,11 +275,13 @@ Use cases for embedded mode: single-node apps, integration tests, resource-const
 loomq-cli (interactive temporal explorer shell)
     └── HTTP client → loomq-server REST API
 
-loomq-server (Netty HTTP + JSON + webhook delivery + security)
+loomq-server (Netty HTTP + JSON + security)
     ├── IntentHandler        — REST API routing (RadixTree) + error recovery advisor
     ├── NettyHttpServer      — epoll + pooled allocator + semaphore backpressure
-    ├── HttpDeliveryHandler  — Reactor Netty HTTP client
-    └── SecurityConfig       — token-based authentication
+    ├── SecurityConfig       — token-based authentication
+    └── loomq-channel        — pluggable delivery channels
+        ├── loomq-channel-http  — HTTP webhook delivery + batch delivery
+        └── loomq-channel-grpc  — gRPC streaming delivery (AUTO_ACK / MANUAL_ACK)
 
 loomq-core (embeddable kernel, zero HTTP/JSON deps)
     ├── LoomqEngine           — builder-pattern entry point
@@ -444,7 +446,7 @@ make docker-build   # Build Docker image
 
 ## Roadmap
 
-### v0.9.1 (current)
+### v0.9.2 (current)
 - [x] Cohort-based batched wakeup (CSA-inspired)
 - [x] Arrow cross-tier slot borrowing + AdapTBF constraints
 - [x] ResizableSemaphore (runtime concurrency adjustment)
@@ -469,11 +471,10 @@ make docker-build   # Build Docker image
 - [x] ChronoscopeSnapshot: scheduler internal state X-ray for diagnostics
 - [x] Benchmark suite: WAL throughput, storage comparison, observer overhead
 
-### v0.9.2 (next)
+### v0.10.0 (next)
 - [ ] Dynamic Raft membership management
 - [ ] Kubernetes operator
 - [ ] Web-based management console
-- [ ] gRPC delivery handler
 
 ---
 

@@ -1,16 +1,19 @@
 package com.loomq.application.scheduler;
 
+import com.loomq.common.MetricsCollector;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,6 +37,7 @@ public final class CohortManager {
 
     private final BucketGroupManager bucketGroupManager;
     private final PrecisionTierCatalog catalog;
+    private final Consumer<Collection<Intent>> scanTrigger;
 
     private final Thread wakeThread;
     private final AtomicBoolean running;
@@ -43,9 +47,11 @@ public final class CohortManager {
     private final AtomicLong totalFlushed = new AtomicLong(0);
     private final AtomicLong wakeEventCount = new AtomicLong(0);
 
-    CohortManager(BucketGroupManager bucketGroupManager, PrecisionTierCatalog catalog) {
+    CohortManager(BucketGroupManager bucketGroupManager, PrecisionTierCatalog catalog,
+                  Consumer<Collection<Intent>> scanTrigger) {
         this.bucketGroupManager = bucketGroupManager;
         this.catalog = catalog;
+        this.scanTrigger = scanTrigger;
         this.cohorts = new ConcurrentSkipListMap<>();
         this.running = new AtomicBoolean(false);
 
@@ -180,9 +186,16 @@ public final class CohortManager {
                 if (!validIntents.isEmpty()) {
                     totalFlushed.addAndGet(validIntents.size());
                     wakeEventCount.incrementAndGet();
+                    long flushStartNanos = System.nanoTime();
                     bucketGroupManager.addAll(validIntents);
+                    if (scanTrigger != null) {
+                        scanTrigger.accept(validIntents);
+                    }
+                    long flushDurationUs = (System.nanoTime() - flushStartNanos) / 1_000;
+                    MetricsCollector.getInstance().recordCohortFlushDuration(flushDurationUs);
                     if (logger.isDebugEnabled()) {
-                        logger.debug("Cohort flushed: bucketKey={}, count={}", bucketKey, validIntents.size());
+                        logger.debug("Cohort flushed: bucketKey={}, count={}, duration={}us",
+                            bucketKey, validIntents.size(), flushDurationUs);
                     }
                 }
             } catch (Exception e) {

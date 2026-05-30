@@ -1,188 +1,187 @@
-# LoomQ 性能基准测试
+# LoomQ Benchmark Suite
+
+性能基准测试套件，覆盖内部吞吐、HTTP/gRPC 创建路径、调度器触发、压力测试四个维度。
+
+## 快速开始
+
+```bash
+# Windows
+benchmark\benchmark.bat
+
+# Linux/macOS
+./benchmark/scripts/benchmark.sh
+
+# 快速验证
+benchmark\benchmark.bat -Quick
+```
+
+输出：
+- **Excel 报告**: `benchmark/results/reports/benchmark-report-{timestamp}.xlsx`
+- **MD 报告**: `benchmark/results/reports/benchmark-report-{timestamp}.md`
+
+---
 
 ## 目录结构
 
 ```
 benchmark/
-├── scripts/                    # 测试脚本
-│   ├── benchmark.ps1          # PowerShell 脚本 (Windows)
-│   ├── benchmark.sh           # Bash 脚本 (Linux/macOS)
-│   ├── run-all.ps1            # 一键全量测试 (Windows)
-│   └── run-all.sh             # 一键全量测试 (Linux/macOS)
-├── results/                    # 测试结果
-│   ├── history.csv            # 历史记录 (48 列宽格式)
-│   ├── reports/               # 测试报告 (JSON + TXT)
-│   └── logs/                  # 完整运行日志
-├── post_intent.lua            # wrk 压测脚本
-└── README.md                   # 本文档
+├── README.md
+├── benchmark.bat                    # Windows 入口
+├── benchmark.sh                     # Linux/macOS 入口
+├── config.json                      # SLO 阈值配置
+├── scripts/
+│   ├── benchmark.ps1                # 主脚本（Windows）
+│   ├── benchmark.sh                 # 主脚本（Linux/macOS）
+│   └── lib/
+│       ├── ui.ps1 / ui.sh           # 终端 UI
+│       ├── util.ps1 / util.sh       # 工具函数
+│       ├── server.ps1 / server.sh   # 服务器生命周期
+│       ├── report.ps1 / report.sh   # Excel + MD 报告生成
+│       └── gen_excel.py             # Python Excel 生成器
+└── results/
+    ├── reports/                     # Excel + MD 报告
+    ├── logs/                        # 场景日志
+    ├── runtime/                     # 临时服务器数据
+    └── m2repo/                      # 隔离 Maven 仓库
 ```
 
-## 快速开始
+---
 
-### Windows (PowerShell)
+## 用法
+
+### Windows
 
 ```powershell
-# 运行全部场景 (internal + HTTP + scheduler)
-.\benchmark\scripts\benchmark.ps1
-
-# 仅运行内部测试（无需启动服务）
-.\benchmark\scripts\benchmark.ps1 -InternalOnly
-
-# 快速模式
-.\benchmark\scripts\benchmark.ps1 -Quick
-
-# 查看历史对比
-.\benchmark\scripts\benchmark.ps1 -Compare
-
-# 一键全量测试 (快测 + 慢测 + 集成 + 压测)
-.\benchmark\scripts\run-all.ps1
-.\benchmark\scripts\run-all.ps1 -Quick
+.\benchmark\scripts\benchmark.ps1 [Options]
 ```
 
-### Linux/macOS (Bash)
+### Linux/macOS
 
 ```bash
-# 运行全部场景
-./benchmark/scripts/benchmark.sh
-
-# 仅运行调度器压测
-./benchmark/scripts/benchmark.sh --scenario=scheduler
-
-# 快速模式
-./benchmark/scripts/benchmark.sh --quick
-
-# 查看历史对比
-./benchmark/scripts/benchmark.sh --compare
-
-# 一键全量测试
-./benchmark/scripts/run-all.sh
-./benchmark/scripts/run-all.sh --quick
+./benchmark/scripts/benchmark.sh [Options]
 ```
 
-## 参数说明
+### 参数
 
-### benchmark.ps1
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `-Quick` / `--quick` | 快速测试模式 | false |
+| `-Stress` / `--stress` | 包含压力测试 | false |
+| `-StressOnly <type>` / `--stress-only=<type>` | 仅压力测试: http / grpc | - |
+| `-Scenario <name>` / `--scenario=<name>` | 场景: all / internal / create / scheduler | all |
+| `-GrpcTier <tier>` / `--grpc-tier=<tier>` | gRPC 精度档位 | STANDARD |
+| `-NoCompile` / `--no-compile` | 跳过编译 | false |
+| `-Compare` / `--compare` | 查看上次报告 | false |
+| `-VerboseOutput` / `--verbose` | 显示完整日志 | false |
 
-| 参数 | 说明 |
-|------|------|
-| `-InternalOnly` | 仅运行内部组件测试 |
-| `-Quick` | 快速测试模式 |
-| `-Compare` | 显示历史对比 |
-| `-NoCompile` | 跳过编译步骤 |
-| `-Workload <name>` | 负载分布: uniform, prod-typical, burst-ultra, mixed-heavy (默认: uniform) |
-| `-VerboseOutput` | 显示完整场景日志 |
-| `-KeepOpen` | 运行结束后保持窗口 |
-| `-NoPause` | 不暂停窗口 |
+### 测试场景
 
-### benchmark.sh
+| 场景 | 说明 | 需要服务器 |
+|------|------|-----------|
+| internal | IntentStore 吞吐、内存、冷热交换、WAL、存储引擎 | 否 |
+| create | HTTP + gRPC 创建路径吞吐和延迟 | 是 |
+| scheduler | 调度器触发精度（5 档位唤醒延迟 + E2E） | 是 |
+| stress | 多线程梯度压力扫描，拐点检测 | 是 |
 
-| 参数 | 说明 |
-|------|------|
-| `--quick` | 快速测试模式 |
-| `--full` | 完整测试模式 (默认) |
-| `--scenario=<name>` | 场景选择: all, internal, http, scheduler (默认: all) |
-| `--workload=<name>` | 负载分布: uniform, prod-typical, burst-ultra, mixed-heavy (默认: uniform) |
-| `--no-compile` | 跳过编译 |
-| `--compare` | 显示历史对比 |
-| `--verbose` | 显示完整输出 |
+### 示例
 
-### run-all.ps1 / run-all.sh
+```powershell
+# 全量测试
+.\benchmark\scripts\benchmark.ps1
 
-| 参数 | 说明 |
-|------|------|
-| `-Quick` / `--quick` | 快速模式 (跳过大压测) |
-| `-SkipBenchmark` / `--no-bench` | 跳过所有压测 |
+# 快速验证
+.\benchmark\scripts\benchmark.ps1 -Quick
 
-## 强制落库
+# 全量 + 压力测试
+.\benchmark\scripts\benchmark.ps1 -Stress
 
-所有测试运行的结果**始终**持久化到 `benchmark/results/` 目录：
+# 仅 gRPC 压力测试
+.\benchmark\scripts\benchmark.ps1 -Stress -StressOnly grpc
 
-- **CSV**: `history.csv` — 48 列宽格式，每次运行追加一行
-- **JSON**: `reports/benchmark-*.json` 或 `reports/full-suite-*.json` — 完整结构化数据
-- **TXT**: `reports/benchmark-*.txt` 或 `reports/full-suite-*.txt` — 人类可读摘要
+# 仅内部组件测试
+.\benchmark\scripts\benchmark.ps1 -Scenario internal
 
-## 报告自动轮转
+# 查看上次报告
+.\benchmark\scripts\benchmark.ps1 -Compare
+```
 
-每次运行脚本时，自动删除超过 10 组的旧报告和日志（保留最近 10 组）。每组包含一个 JSON + TXT 文件对。
+---
 
-## CSV Schema (48 列)
+## 输出格式
 
-### 运行标识 (6 列)
+### Excel 报告（6 个 Sheet）
 
-| 列名 | 来源 | 说明 |
+| Sheet | 内容 |
+|-------|------|
+| Summary | 吞吐量对比（HTTP vs gRPC）、回归对比 |
+| Create Path | 各线程数下的 QPS、P50/P90/P99 |
+| Scheduler | 5 档位的唤醒延迟、E2E 延迟、利用率、背压 |
+| Internal | IntentStore QPS、内存、WAL、存储引擎对比 |
+| SLO | 各档位 SLO 验证（目标 vs 实际，PASS/FAIL） |
+| Environment | 时间、Commit、分支、Java、OS、CPU |
+
+### MD 报告
+
+中文 Markdown 格式，结构与 Excel 对应，适合嵌入 GitHub Release Notes。
+
+---
+
+## 配置
+
+`config.json` 定义 SLO 阈值：
+
+```json
+{
+  "slo": {
+    "ULTRA":    { "p95_wakeup_us": 15000,  "p99_wakeup_us": 25000,  "p95_e2e_ms": 50,   "p99_e2e_ms": 100  },
+    "FAST":     { "p95_wakeup_us": 30000,  "p99_wakeup_us": 50000,  "p95_e2e_ms": 100,  "p99_e2e_ms": 200  },
+    "HIGH":     { "p95_wakeup_us": 50000,  "p99_wakeup_us": 80000,  "p95_e2e_ms": 200,  "p99_e2e_ms": 400  },
+    "STANDARD": { "p95_wakeup_us": 200000, "p99_wakeup_us": 400000, "p95_e2e_ms": 800,  "p99_e2e_ms": 1500 },
+    "ECONOMY":  { "p95_wakeup_us": 400000, "p99_wakeup_us": 800000, "p95_e2e_ms": 1500, "p99_e2e_ms": 3000 }
+  }
+}
+```
+
+---
+
+## 依赖
+
+| 工具 | 用途 | 必需 |
 |------|------|------|
-| `timestamp` | 系统 | ISO 8601 时间戳 |
-| `commit` | Git | 短哈希 |
-| `branch` | Git | 分支名 |
-| `mode` | 参数 | quick 或 full |
-| `java_version` | RESULT_ENV | JDK 版本 |
-| `os_name` | RESULT_ENV | 操作系统 |
+| JDK 25+ | 编译和运行 | 是 |
+| Maven 3.9+ | 构建系统 | 是 |
+| Python 3 + xlsxwriter | Excel 报告生成 | 是（Linux/macOS） |
+| PowerShell 5.1+ | Windows 脚本 | Windows |
 
-### 测试结果 (2 列)
+安装 xlsxwriter：
+```bash
+pip install xlsxwriter
+```
 
-| 列名 | 说明 |
-|------|------|
-| `total_tests` | 总测试数 (仅 run-all 脚本) |
-| `total_failed` | 失败测试数 |
-
-### Per-Tier 核心指标 (7 列 × 5 层级 = 35 列)
-
-对每个层级 T (ULTRA, FAST, HIGH, STANDARD, ECONOMY):
-
-| 列名 | 来源 | 说明 |
-|------|------|------|
-| `T_qps` | RESULT_ROW | 吞吐量 |
-| `T_p95_ms` | RESULT_LATENCY | 唤醒延迟 p95 |
-| `T_p99_ms` | RESULT_LATENCY | 唤醒延迟 p99 |
-| `T_e2e_p95_ms` | RESULT_E2E_LATENCY | 端到端延迟 p95 |
-| `T_e2e_p99_ms` | RESULT_E2E_LATENCY | 端到端延迟 p99 |
-| `T_util_pct` | RESULT_SEMAPHORE | 信号量利用率 |
-| `T_backpressure` | RESULT_ROW | 背压事件数 |
-
-### 全局聚合 (5 列)
-
-| 列名 | 来源 | 说明 |
-|------|------|------|
-| `completion_rate` | RESULT | 完成率 |
-| `total_qps` | RESULT_SYSTEM_QPS | 系统总 QPS |
-| `global_p95_total_ms` | RESULT_GLOBAL_LATENCY | 全局 p95 总延迟 |
-| `vt_reduction_pct` | RESULT_OPTIMIZATION | VT 减少百分比 |
-| `cohort_wake_events` | RESULT_COHORT | Cohort 唤醒事件数 |
-
-详细数据（p50/p75/p90/p999/max/mean/samples、队列、生命周期、批次、追踪、借用等）保留在 JSON 报告中。
-
-## 测试场景
-
-### 1) In-process upper bound
-
-直接调用 IntentStore 和 BucketGroup，测量存储和调度层的理论极限。
-
-### 2) HTTP create path
-
-通过 HTTP 接口创建 Intent，测量 Netty + JSON + 存储的完整链路吞吐。
-
-### 3) Scheduler trigger path
-
-模拟调度器触发 + Webhook 回调的完整链路，包含五层精度档位的差异化行为。这是最接近生产负载的测试。
-
-## SLO 验证
-
-端到端延迟 (executeAt → webhook received) 的 SLO 阈值:
-
-| 档位 | p95 | p99 |
-|------|-----|-----|
-| ULTRA | 50ms | 100ms |
-| FAST | 150ms | 250ms |
-| HIGH | 600ms | 1000ms |
-| STANDARD | 1500ms | 2200ms |
-| ECONOMY | 3500ms | 5000ms |
+---
 
 ## 常见问题
 
-### Q: 为什么 scheduler QPS 远低于 in-process QPS?
+**Q: 如何只运行调度器测试？**
+```powershell
+.\benchmark\scripts\benchmark.ps1 -Scenario scheduler
+```
 
-调度器压测包含 HTTP 回调延迟（mock server 模拟 5ms 延迟），理论 QPS ≈ 并发数 / (batch_dwell + HTTP_RTT)。in-process 测试不包含网络和回调开销。
+**Q: 如何查看历史对比？**
+```powershell
+.\benchmark\scripts\benchmark.ps1 -Compare
+```
 
-### Q: history.csv 被截断/重建了?
+**Q: Excel 生成失败？**
+确认 Python 3 和 xlsxwriter 已安装：
+```bash
+python3 --version
+pip install xlsxwriter
+```
 
-CSV header 一致性检查会验证列数和列名。如果检测到旧格式（列数或列名不匹配），会自动重建 header。历史数据在 JSON 报告中保留。
+**Q: 如何清理旧报告？**
+报告自动轮转（保留最近 10 组）。手动清理：
+```bash
+rm -rf benchmark/results/reports/*
+rm -rf benchmark/results/logs/*
+```

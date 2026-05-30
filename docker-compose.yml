@@ -1,7 +1,5 @@
 # LoomQ Docker Compose Configuration
-# Version: 0.9.1
-
-version: '3.8'
+# Version: 0.9.2
 
 services:
   # Single-node Raft-capable deployment
@@ -9,7 +7,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: loomq:0.9.1
+    image: loomq:0.9.2
     container_name: loomq-single
     ports:
       - "7928:7928"
