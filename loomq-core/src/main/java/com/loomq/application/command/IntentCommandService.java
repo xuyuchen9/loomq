@@ -205,12 +205,14 @@ public final class IntentCommandService {
         }
 
         try {
-            intent.transitionTo(IntentStatus.CANCELED);
-            scheduler.getBucketGroupManager().remove(intent);
-            intent.incrementRevision();
-            persistIntentState(intent, AckMode.DURABLE);
-            intentStore.update(intent);
-            dispatchCallback(intent, CallbackHandler.EventType.CANCELLED, null);
+            synchronized (intent) {
+                intent.transitionTo(IntentStatus.CANCELED);
+                scheduler.getBucketGroupManager().remove(intent);
+                intent.incrementRevision();
+                persistIntentState(intent, AckMode.DURABLE);
+                intentStore.update(intent);
+                dispatchCallback(intent, CallbackHandler.EventType.CANCELLED, null);
+            }
 
             metricsCollector.incrementIntentsCancelled();
             logger.info("Intent cancelled: id={}", intentId);
@@ -233,12 +235,14 @@ public final class IntentCommandService {
         }
 
         try {
-            scheduler.getBucketGroupManager().remove(intent);
-            intent.setExecuteAt(Instant.now());
-            intent.incrementRevision();
-            persistIntentState(intent, AckMode.DURABLE);
-            intentStore.update(intent);
-            scheduler.restore(intent);
+            synchronized (intent) {
+                scheduler.getBucketGroupManager().remove(intent);
+                intent.setExecuteAt(Instant.now());
+                intent.incrementRevision();
+                persistIntentState(intent, AckMode.DURABLE);
+                intentStore.update(intent);
+                scheduler.restore(intent);
+            }
 
             logger.info("Intent fired immediately: id={}", intentId);
             return true;

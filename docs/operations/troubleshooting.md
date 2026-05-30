@@ -75,3 +75,21 @@ Check the lifecycle first:
 - only modifiable states can be patched
 
 If the behavior still looks inconsistent, compare the API response with the lifecycle defined in `IntentStatus`.
+
+## Intent Lost After Crash
+
+If Intents are missing after a process restart:
+
+1. **检查 `ackLevel`**：使用 `ASYNC` 模式创建的 Intent 在崩溃窗口（API 返回到 WAL 落盘之间）内可能丢失。这是设计行为，不是 bug。详见[持久性语义](../architecture/core-model.md#durability-semantics)。
+
+2. **检查 WAL 目录**：确认 WAL 段文件未被意外删除。
+
+3. **检查快照**：`GET /health` 查看最近快照时间。如果快照间隔过长，WAL 截断后旧数据不可恢复。
+
+4. **确认恢复日志**：启动日志应包含 `Recovery completed: snapshot=X, walReplay=Y`。如果 Y=0 且预期有 WAL 数据，检查 WAL 目录权限。
+
+**预防措施**：
+
+- 对可靠性要求高的场景，使用 `ackLevel: DURABLE` 或 `ackLevel: REPLICATED`
+- 监控 WAL 健康状态：`walHealthy`、`walFlushDurationMs`
+- 配置合理的快照间隔（默认 5 分钟）

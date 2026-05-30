@@ -52,6 +52,7 @@ public class RocksDBIntentStore implements IntentStore {
     private static final byte[] EXECUTE_AT_PREFIX = "e:".getBytes(StandardCharsets.UTF_8);
 
     private final RocksDB db;
+    private final Options options;
     private final WriteOptions writeOptions;
     private final Path dbPath;
     private final Map<IntentStatus, AtomicLong> statusCounts = new EnumMap<>(IntentStatus.class);
@@ -80,11 +81,11 @@ public class RocksDBIntentStore implements IntentStore {
 
         try {
             Files.createDirectories(dbPath);
-            Options options = new Options()
+            this.options = new Options()
                 .setCreateIfMissing(true)
                 .setCreateMissingColumnFamilies(false);
 
-            this.db = RocksDB.open(options, dbPath.toString());
+            this.db = RocksDB.open(this.options, dbPath.toString());
             this.writeOptions = new WriteOptions().setSync(syncWrites);
             initializeCounters();
 
@@ -324,6 +325,7 @@ public class RocksDBIntentStore implements IntentStore {
     public void shutdown() {
         writeOptions.close();
         db.close();
+        options.close();
         logger.info("RocksDBIntentStore closed: path={}", dbPath);
     }
 

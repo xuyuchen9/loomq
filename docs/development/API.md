@@ -80,7 +80,7 @@ working without sharing application credentials.
 | `shardKey` | Optional. Used for shard routing in distributed deployments |
 | `callback.url` | Required when `callback` is provided |
 | `precisionTier` | Optional. Defaults to `STANDARD`. One of: ULTRA, FAST, HIGH, STANDARD, ECONOMY |
-| `ackLevel` | Optional. Defaults to `ASYNC`. One of: ASYNC, DURABLE, REPLICATED |
+| `ackLevel` | Optional. Defaults to `ASYNC`. One of: ASYNC, DURABLE, REPLICATED. Controls API 返回前的持久化级别 — 见[持久性语义](../architecture/core-model.md#durability-semantics) |
 | `expiredAction` | Optional. Defaults to `DISCARD`. One of: DISCARD, DEAD_LETTER |
 
 ### Response (201)

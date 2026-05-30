@@ -29,7 +29,7 @@ public class Intent {
     /**
      * 当前状态
      */
-    private IntentStatus status;
+    private volatile IntentStatus status;
 
     /**
      * 创建时间
@@ -39,14 +39,14 @@ public class Intent {
     /**
      * 最后更新时间
      */
-    private Instant updatedAt;
+    private volatile Instant updatedAt;
 
     // ========== 调度字段 ==========
 
     /**
      * 计划执行时间 (RFC3339)
      */
-    private Instant executeAt;
+    private volatile Instant executeAt;
 
     /**
      * 最晚有效时间 (RFC3339)
@@ -119,7 +119,7 @@ public class Intent {
     /**
      * 当前尝试次数
      */
-    private int attempts;
+    private volatile int attempts;
 
     /**
      * 最后一次投递 ID
@@ -129,7 +129,7 @@ public class Intent {
     /**
      * 单调递增的写版本号，用于 Raft 写幂等和乐观并发控制。
      */
-    private long revision;
+    private volatile long revision;
 
     // ========== 构造函数 ==========
 
