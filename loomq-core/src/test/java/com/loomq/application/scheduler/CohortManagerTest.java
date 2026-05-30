@@ -203,7 +203,6 @@ class CohortManagerTest {
                 captured.addAll(intents);
                 latch.countDown();
             });
-            cm.start();
             try {
                 // 使用相同的 executeAt 确保两个 intent 落入同一个 cohort
                 Instant pastTime = Instant.now().minusMillis(100);
@@ -219,8 +218,10 @@ class CohortManagerTest {
                 i2.setPrecisionTier(PrecisionTier.STANDARD);
                 i2.transitionTo(IntentStatus.SCHEDULED);
 
+                // 先注册再启动，避免 wake thread 在两次 register 之间抢先 flush
                 cm.register(i1);
                 cm.register(i2);
+                cm.start();
 
                 assertTrue(latch.await(5, TimeUnit.SECONDS),
                     "scanTrigger should be called within 5s");
