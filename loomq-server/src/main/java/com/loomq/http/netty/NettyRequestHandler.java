@@ -180,6 +180,10 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
                             // 原始字节响应可直接写回，避免二次 JSON 编码
                             if (responseBody instanceof byte[] rawBytes) {
                                 writeResponse(ctx, responseStatus, rawBytes);
+                            // 纯文本响应（Prometheus 等）
+                            } else if (responseBody instanceof TextResponse textResp) {
+                                byte[] textBytes = textResp.content().getBytes(StandardCharsets.UTF_8);
+                                writeTextResponse(ctx, responseStatus, textBytes, textResp.contentType());
                                 metrics.recordRequest(System.nanoTime() - startTime, responseStatus.code());
                             // /metrics 快路径：直接把 snapshot 写入 ByteBuf
                             } else if (responseBody instanceof LoomQMetrics.MetricsSnapshot snapshot) {
@@ -309,6 +313,22 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
     }
 
     /**
+     * 写入纯文本响应
+     */
+    private void writeTextResponse(ChannelHandlerContext ctx, HttpResponseStatus status, byte[] body, String contentType) {
+        FullHttpResponse response = new DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            status,
+            Unpooled.wrappedBuffer(body)
+        );
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, contentType);
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.length);
+        response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+
+        ctx.writeAndFlush(response);
+    }
+
+    /**
      * 写入 429 Too Many Requests 响应
      */
     private void writeTooManyRequestsResponse(ChannelHandlerContext ctx) {
@@ -355,6 +375,15 @@ public class NettyRequestHandler extends ChannelInboundHandlerAdapter {
         response.headers().set("Retry-After", String.valueOf(Math.max(1, retryAfterMs / 1000)));
 
         ctx.writeAndFlush(response);
+    }
+
+    /**
+     * 纯文本响应包装器，用于 Prometheus 等非 JSON 端点
+     */
+    public record TextResponse(String content, String contentType) {
+        public TextResponse(String content) {
+            this(content, "text/plain; charset=utf-8");
+        }
     }
 
     /**

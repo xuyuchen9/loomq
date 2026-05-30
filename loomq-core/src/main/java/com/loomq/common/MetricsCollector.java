@@ -395,6 +395,13 @@ public class MetricsCollector {
     // ========== 导出指标 ==========
 
     /**
+     * 导出 Prometheus 格式的指标（使用当前运行时状态）
+     */
+    public String exportPrometheusMetrics() {
+        return exportPrometheusMetrics(getIntentStatusCounts());
+    }
+
+    /**
      * 导出 Prometheus 格式的指标
      */
     public String exportPrometheusMetrics(Map<String, Long> intentStats) {
@@ -445,6 +452,28 @@ public class MetricsCollector {
 
     public Map<String, Long> getIntentStatusCounts() {
         return runtimeMetrics.getIntentStatusCounts();
+    }
+
+    // ========== Intent 生命周期计数器 getter (供 LoomQMetrics.snapshot() 使用) ==========
+
+    public long getIntentsCreatedTotal() {
+        return operationalMetrics.getIntentsCreatedTotal();
+    }
+
+    public long getIntentsAckSuccessTotal() {
+        return operationalMetrics.getIntentsAckSuccessTotal();
+    }
+
+    public long getIntentsCancelledTotal() {
+        return operationalMetrics.getIntentsCancelledTotal();
+    }
+
+    public long getIntentsExpiredTotal() {
+        return operationalMetrics.getIntentsExpiredTotal();
+    }
+
+    public long getIntentsDeadLetterTotal() {
+        return operationalMetrics.getIntentsDeadLetterTotal();
     }
 
     public void resetRuntimeIntentMetrics() {

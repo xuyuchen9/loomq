@@ -549,6 +549,9 @@ public class LoomqServerApplication {
             LoomQMetrics.getInstance().snapshot());
         router.add(HttpMethod.GET, "/api/v1/metrics", (method, uri, body, headers, pathParams) ->
             LoomQMetrics.getInstance().snapshot());
+        router.add(HttpMethod.GET, "/metrics/prometheus", (method, uri, body, headers, pathParams) ->
+            new com.loomq.http.netty.NettyRequestHandler.TextResponse(
+                MetricsCollector.getInstance().exportPrometheusMetrics()));
         router.add(HttpMethod.GET, "/v1/system/chronoscope", (method, uri, body, headers, pathParams) ->
             com.loomq.application.scheduler.ChronoscopeSnapshot.from(
                 engine.getScheduler(),
@@ -803,7 +806,6 @@ public class LoomqServerApplication {
                 engine.getScheduler().unschedule(intent);
                 if (intent.getStatus() == IntentStatus.CANCELED) {
                     MetricsCollector.getInstance().incrementIntentsCancelled();
-                    LoomQMetrics.getInstance().incrementIntentsCancelled();
                 }
                 return;
             }
@@ -811,7 +813,6 @@ public class LoomqServerApplication {
             if (isNew) {
                 engine.getScheduler().schedule(intent);
                 MetricsCollector.getInstance().incrementIntentsCreated();
-                LoomQMetrics.getInstance().incrementIntentsCreated();
             } else {
                 engine.getScheduler().restore(intent);
             }

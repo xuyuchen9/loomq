@@ -85,6 +85,18 @@ public final class IntentCommandService {
         return intentStore.checkIdempotency(idempotencyKey);
     }
 
+    /**
+     * 创建 Intent 并调度。
+     *
+     * <p>持久化语义取决于 ackMode：
+     * <ul>
+     *   <li><b>DURABLE</b>（默认）：WAL 同步刷盘后才返回，崩溃不丢数据</li>
+     *   <li><b>ASYNC</b>：WAL 异步写入，高吞吐但崩溃时可能丢失最近创建的 Intent</li>
+     *   <li><b>BATCH_DEFERRED</b>：WAL 批量写入，吞吐优先但崩溃窗口更大</li>
+     * </ul>
+     *
+     * @return 序列号
+     */
     public long createIntent(Intent intent, AckMode ackMode) {
         ensureRunning();
 
@@ -105,6 +117,12 @@ public final class IntentCommandService {
 
             // 2. Resolve effective WAL mode
             WalMode effectiveMode = resolveWalMode(intent, ackMode);
+
+            // 非 DURABLE 模式下 WAL 写入为 fire-and-forget，崩溃时可能丢失数据
+            if (effectiveMode != WalMode.DURABLE) {
+                logger.warn("Intent {} using non-DURABLE walMode={}, crash may cause data loss",
+                    intent.getIntentId(), effectiveMode);
+            }
 
             // 3. Start WAL write (I/O) — runs on background thread for DURABLE
             CompletableFuture<Long> walFuture = startWalWrite(walPayload, effectiveMode);

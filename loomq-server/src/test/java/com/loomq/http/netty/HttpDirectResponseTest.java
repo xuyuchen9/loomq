@@ -40,8 +40,8 @@ class HttpDirectResponseTest {
         MetricsCollector collector = MetricsCollector.getInstance();
         metrics.reset();
         try {
-            metrics.incrementIntentsCreated();
-            metrics.incrementIntentsCancelled();
+            collector.incrementIntentsCreated();
+            collector.incrementIntentsCancelled();
             metrics.updateActiveDispatches(2);
             metrics.updateWalHealth(true);
             metrics.updateWalLastFlushTime(1713582000000L);
