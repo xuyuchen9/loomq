@@ -22,9 +22,9 @@ import com.loomq.domain.intent.PrecisionTier;
 import com.loomq.domain.intent.PrecisionTierCatalog;
 import com.loomq.raft.RaftWriteBackPressureException;
 import com.loomq.raft.RaftWriteConflictException;
-import com.loomq.raft.RaftWriteCoordinator;
 import com.loomq.raft.RaftWriteUnavailableException;
 import com.loomq.spi.RaftStatusProvider;
+import com.loomq.spi.WriteCoordinator;
 import com.loomq.store.IdempotencyResult;
 import com.loomq.tracing.IntentTrace;
 import com.loomq.tracing.IntentTraceStore;
@@ -58,23 +58,24 @@ public class IntentHandler {
     private static final String EXPECTED_REVISION_HEADER = "X-LoomQ-Expected-Revision";
 
     private final LoomqEngine engine;
+    private final WriteCoordinator writeCoordinator;
     private final RaftStatusProvider raftStatus;
-    private final RaftWriteCoordinator raftWriteCoordinator;
     private final JsonCodec jsonCodec;
 
     public IntentHandler(LoomqEngine engine) {
         this(engine, null, null);
     }
 
+    /** Read-only handler with Raft status (no write coordinator). */
     public IntentHandler(LoomqEngine engine, RaftStatusProvider raftStatus) {
-        this(engine, raftStatus, null);
+        this(engine, null, raftStatus);
     }
 
-    public IntentHandler(LoomqEngine engine, RaftStatusProvider raftStatus,
-                         RaftWriteCoordinator raftWriteCoordinator) {
+    public IntentHandler(LoomqEngine engine, WriteCoordinator writeCoordinator,
+                         RaftStatusProvider raftStatus) {
         this.engine = engine;
+        this.writeCoordinator = writeCoordinator;
         this.raftStatus = raftStatus;
-        this.raftWriteCoordinator = raftWriteCoordinator;
         this.jsonCodec = JsonCodec.instance();
     }
 
@@ -148,16 +149,17 @@ public class IntentHandler {
         try {
             Intent intent = buildCreateIntentDraft(request, intentId);
 
-            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
-                Intent raftSnapshot = intent.copy();
-                raftSnapshot.transitionTo(IntentStatus.SCHEDULED);
+            if (writeCoordinator != null) {
+                Intent snapshot = intent.copy();
+                snapshot.transitionTo(IntentStatus.SCHEDULED);
                 String requestKey = requestKey("create", intentId, body, headers, null, request.idempotencyKey());
-                Intent committed = raftWriteCoordinator.commitSnapshot(raftSnapshot, "create", requestKey);
-                logger.info("Intent created via Raft: id={}, executeAt={}, ackLevel={}",
+                Intent committed = writeCoordinator.commitSnapshot(snapshot, "create", requestKey);
+                logger.info("Intent created via coordinator: id={}, executeAt={}, ackLevel={}",
                     committed.getIntentId(), committed.getExecuteAt(), committed.getAckMode());
                 return new IntentHandler.CreatedResponse(201, IntentResponse.from(committed));
             }
 
+            // Fallback: direct engine call (no coordinator)
             engine.createIntent(intent, intent.getAckMode()).join();
             logger.info("Intent created: id={}, executeAt={}, ackLevel={}",
                 intent.getIntentId(), intent.getExecuteAt(), intent.getAckMode());
@@ -243,13 +245,13 @@ public class IntentHandler {
         }
 
         try {
-            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+            if (writeCoordinator != null) {
                 String requestKey = requestKey("patch", intentId, body, headers, expectedRevision, null);
-                Intent committed = raftWriteCoordinator.commitMutation(
+                Intent committed = writeCoordinator.commitMutation(
                     intentId,
                     "patch",
                     requestKey,
-                    expectedRevision,
+                    expectedRevision != null ? expectedRevision : 0,
                     snapshot -> {
                         if (request.deadline() != null) {
                             snapshot.setDeadline(request.deadline());
@@ -271,6 +273,7 @@ public class IntentHandler {
                 return IntentResponse.from(committed);
             }
 
+            // Fallback: direct engine call (no coordinator)
             Optional<Intent> updated = engine.updateIntent(intentId, intent -> {
                 if (request.deadline() != null) {
                     intent.setDeadline(request.deadline());
@@ -336,13 +339,13 @@ public class IntentHandler {
         }
 
         try {
-            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+            if (writeCoordinator != null) {
                 String requestKey = requestKey("cancel", intentId, body, headers, expectedRevision, null);
-                Intent committed = raftWriteCoordinator.commitMutation(
+                Intent committed = writeCoordinator.commitMutation(
                     intentId,
                     "cancel",
                     requestKey,
-                    expectedRevision,
+                    expectedRevision != null ? expectedRevision : 0,
                     snapshot -> {
                         snapshot.transitionTo(IntentStatus.CANCELED);
                         return snapshot;
@@ -350,6 +353,7 @@ public class IntentHandler {
                 return IntentResponse.from(committed);
             }
 
+            // Fallback: direct engine call (no coordinator)
             if (!engine.cancelIntent(intentId)) {
                 return errorResponse(500, "50002", "Failed to cancel intent");
             }
@@ -393,13 +397,13 @@ public class IntentHandler {
         }
 
         try {
-            if (raftWriteCoordinator != null && raftStatus != null && raftStatus.isRaftEnabled()) {
+            if (writeCoordinator != null) {
                 String requestKey = requestKey("fire-now", intentId, body, headers, expectedRevision, null);
-                raftWriteCoordinator.commitMutation(
+                writeCoordinator.commitMutation(
                     intentId,
                     "fire-now",
                     requestKey,
-                    expectedRevision,
+                    expectedRevision != null ? expectedRevision : 0,
                     snapshot -> {
                         snapshot.setExecuteAt(java.time.Instant.now());
                         return snapshot;
@@ -407,6 +411,7 @@ public class IntentHandler {
                 return new IntentActionResponse(intentId, IntentStatus.DISPATCHING.name());
             }
 
+            // Fallback: direct engine call (no coordinator)
             if (!engine.fireNow(intentId)) {
                 return errorResponse(500, "50003", "Failed to trigger intent immediately");
             }
@@ -536,6 +541,18 @@ public class IntentHandler {
         }
 
         try {
+            if (writeCoordinator != null) {
+                Intent snapshot = intent.copy();
+                snapshot.transitionTo(IntentStatus.SCHEDULED);
+                String requestKey = requestKey("revive", intentId, body, headers, null, null);
+                Intent committed = writeCoordinator.commitSnapshot(snapshot, "revive", requestKey);
+                IntentTraceStore.getInstance().updateStatus(intentId, IntentStatus.SCHEDULED);
+                logger.info("Intent revived via coordinator: id={}, newExecuteAt={}, tier={}",
+                    committed.getIntentId(), committed.getExecuteAt(), committed.getPrecisionTier());
+                return IntentResponse.from(committed);
+            }
+
+            // Fallback: direct engine call (no coordinator)
             engine.createIntent(intent, intent.getAckMode()).join();
         } catch (CompletionException e) {
             if (e.getCause() instanceof BackPressureException bpe) {

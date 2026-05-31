@@ -4,6 +4,7 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Intent 存储接口。
@@ -49,6 +50,33 @@ public interface IntentStore extends AutoCloseable {
 
     /** 获取所有 Intent（恢复/快照用，大数据量场景慎用） */
     Map<String, Intent> getAllIntents();
+
+    /**
+     * 获取自上次 {@link #markSnapshotPoint()} 以来变更的 intent ID 集合。
+     * 用于增量快照：只序列化变更的 intent。
+     *
+     * @return 变更的 intent ID 集合（不可变副本）
+     */
+    default Set<String> getDirtyIntentIds() {
+        return Set.of();
+    }
+
+    /**
+     * 标记当前快照点，清空 dirty set。
+     * 调用后 {@link #getDirtyIntentIds()} 将返回空集，直到有新的写入。
+     */
+    default void markSnapshotPoint() {
+        // no-op by default
+    }
+
+    /**
+     * 获取存储中的 intent 总数。
+     *
+     * @return intent 总数
+     */
+    default long count() {
+        return getAllIntents().size();
+    }
 
     /** 按状态统计数量 */
     long countByStatus(IntentStatus status);

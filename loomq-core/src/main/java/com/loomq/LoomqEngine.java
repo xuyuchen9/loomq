@@ -348,6 +348,20 @@ public class LoomqEngine implements AutoCloseable {
     }
 
     /**
+     * 获取命令服务（供 WriteCoordinator 使用）
+     */
+    public IntentCommandService getCommandService() {
+        return commandService;
+    }
+
+    /**
+     * 获取运行状态标志（供 WriteCoordinator 使用）
+     */
+    public AtomicBoolean getRunning() {
+        return running;
+    }
+
+    /**
      * 获取桶组管理器（高级使用）
      *
      * @return BucketGroupManager
