@@ -13,7 +13,8 @@ public record PrecisionTierProfile(
     int batchWindowMs,
     int consumerCount,
     int dispatchQueueCapacity,
-    WalMode walMode
+    WalMode walMode,
+    long scanIntervalMs
 ) {
 
     public PrecisionTierProfile {
@@ -38,25 +39,29 @@ public record PrecisionTierProfile(
         if (walMode == null) {
             throw new IllegalArgumentException("walMode must not be null");
         }
+        if (scanIntervalMs <= 0) {
+            throw new IllegalArgumentException("scanIntervalMs must be positive");
+        }
     }
 
     /**
-     * 5-argument convenience constructor using default dispatchQueueCapacity = maxConcurrency * 16
-     * and default WalMode = DURABLE.
+     * 5-argument convenience constructor using default dispatchQueueCapacity = maxConcurrency * 16,
+     * default WalMode = DURABLE, and default scanIntervalMs = precisionWindowMs.
      */
     public PrecisionTierProfile(long precisionWindowMs, int maxConcurrency, int batchSize,
                                 int batchWindowMs, int consumerCount) {
         this(precisionWindowMs, maxConcurrency, batchSize, batchWindowMs, consumerCount,
-             maxConcurrency * 16, WalMode.DURABLE);
+             maxConcurrency * 16, WalMode.DURABLE, precisionWindowMs);
     }
 
     /**
-     * 6-argument convenience constructor using default WalMode = DURABLE.
+     * 6-argument convenience constructor using default WalMode = DURABLE
+     * and default scanIntervalMs = precisionWindowMs.
      */
     public PrecisionTierProfile(long precisionWindowMs, int maxConcurrency, int batchSize,
                                 int batchWindowMs, int consumerCount, int dispatchQueueCapacity) {
         this(precisionWindowMs, maxConcurrency, batchSize, batchWindowMs, consumerCount,
-             dispatchQueueCapacity, WalMode.DURABLE);
+             dispatchQueueCapacity, WalMode.DURABLE, precisionWindowMs);
     }
 
     public boolean isBatchEnabled() {
