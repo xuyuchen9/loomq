@@ -23,7 +23,9 @@ import com.loomq.http.netty.RadixRouter;
 import com.loomq.metrics.LoomQMetrics;
 import com.loomq.raft.RaftRuntimeListener;
 import com.loomq.raft.RaftWriteCoordinator;
+import com.loomq.spi.DirectWriteCoordinator;
 import com.loomq.spi.RaftStatusProvider;
+import com.loomq.spi.WriteCoordinator;
 import io.netty.handler.codec.http.HttpMethod;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -83,7 +85,7 @@ public class LoomqServerApplication {
         // ---- Raft 共识模式（v0.9.2）----
         final com.loomq.raft.RaftNode raftNode;
         final RaftRuntimeListener raftRuntimeListener;
-        final RaftWriteCoordinator raftWriteCoordinator;
+        final WriteCoordinator writeCoordinator;
         boolean raftEnabled = Boolean.parseBoolean(
             resolveSetting("LOOMQ_RAFT_ENABLED", "loomq.raft.enabled", "false"));
         if (raftEnabled) {
@@ -110,7 +112,7 @@ public class LoomqServerApplication {
                 logger.warn("Raft peers were configured without connectable endpoints; use peerId@host:port to enable peer connections");
             }
             connectRaftPeers(raftTransport, peerTargets, raftNodeId);
-            raftWriteCoordinator = new RaftWriteCoordinator(
+            writeCoordinator = new RaftWriteCoordinator(
                 raftNode,
                 engine.getIntentStore(),
                 serverConfig.maxConcurrentBusinessRequests(),
@@ -122,12 +124,17 @@ public class LoomqServerApplication {
         } else {
             raftNode = null;
             raftRuntimeListener = null;
-            raftWriteCoordinator = null;
+            writeCoordinator = new DirectWriteCoordinator(
+                engine.getCommandService(),
+                engine.getIntentStore(),
+                engine.getRunning()
+            );
+            logger.info("Single-node mode: DirectWriteCoordinator enabled");
         }
 
         RadixRouter router = new RadixRouter();
         RaftStatusProvider raftStatus = raftNode;
-        new IntentHandler(engine, raftStatus, raftWriteCoordinator).register(router);
+        new IntentHandler(engine, writeCoordinator, raftStatus).register(router);
         registerSystemRoutes(router, engine, raftStatus);
 
         NettyHttpServer server = new NettyHttpServer(serverConfig, router, config.getSecurityConfig());
@@ -140,7 +147,7 @@ public class LoomqServerApplication {
                 deliveryHandler instanceof com.loomq.channel.grpc.server.GrpcStreamDeliveryHandler gdh
                     ? gdh : null;
 
-            grpcServer = new LoomqGrpcServer(grpcConfig, engine, raftStatus, raftWriteCoordinator,
+            grpcServer = new LoomqGrpcServer(grpcConfig, engine, raftStatus, writeCoordinator,
                 globalObserver, grpcDeliveryHandler);
             logger.info("gRPC server will be started on {}:{}", grpcConfig.host(), grpcConfig.port());
         } else {

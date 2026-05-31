@@ -8,6 +8,7 @@ import com.loomq.snapshot.SnapshotManager.SnapshotRestoreResult;
 import com.loomq.spi.WalAccessor;
 import com.loomq.store.IntentStore;
 import java.nio.file.Path;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -84,14 +85,21 @@ public final class RecoveryPipeline implements AutoCloseable {
 
         snapshotExecutor.scheduleAtFixedRate(() -> {
             try {
-                SnapshotInfo info = snapshotManager.createSnapshot(store, walOffsetSupplier.getAsLong());
-                logger.debug("Snapshot checkpoint written: {}", info);
-
-                // 截断已快照覆盖的旧 WAL 段
-                WalAccessor wal = walAccessorSupplier.get();
-                if (wal != null) {
-                    wal.truncateBefore(info.walOffset);
-                }
+                long walOffset = walOffsetSupplier.getAsLong();
+                // Async snapshot: create snapshot in background, truncate WAL on completion
+                CompletableFuture.supplyAsync(() ->
+                        snapshotManager.createSnapshot(store, walOffset), snapshotExecutor)
+                    .thenAcceptAsync(info -> {
+                        logger.debug("Snapshot checkpoint written: {}", info);
+                        WalAccessor wal = walAccessorSupplier.get();
+                        if (wal != null) {
+                            wal.truncateBefore(info.walOffset);
+                        }
+                    }, snapshotExecutor)
+                    .exceptionally(ex -> {
+                        logger.error("Async snapshot checkpoint failed", ex);
+                        return null;
+                    });
             } catch (Exception e) {
                 logger.error("Snapshot checkpoint failed", e);
             }

@@ -28,6 +28,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private static final Logger log = LoggerFactory.getLogger(RaftNode.class);
     private static final LoomQMetrics metrics = LoomQMetrics.getInstance();
     private static final int MAX_ENTRIES_PER_APPEND = 1000;
+    private static final int SNAPSHOT_CHUNK_SIZE = 256 * 1024; // 256KB per chunk
     private final String nodeId;
     private final WalAccessor wal;
     private final IntentStore store;
@@ -43,6 +44,8 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private final ConcurrentMap<String, PeerReplicationState> peerStates;
     private ScheduledFuture<?> heartbeatTask;
     private volatile long readLeaseUntilMs = 0L;
+    /** Chunk reassembly buffer for incoming InstallSnapshot chunks. */
+    private final ConcurrentMap<String, ChunkReassembly> pendingChunks = new ConcurrentHashMap<>();
     /**
      * Leader generation counter — incremented each time this node becomes leader.
      * Heartbeat callbacks check this against their captured generation to discard
@@ -98,6 +101,12 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
             transport.setOnInstallSnapshot(msg -> {
                 Long appliedIndex = handleInstallSnapshot(msg);
+                syncRaftMetrics();
+                return appliedIndex;
+            });
+
+            transport.setOnInstallSnapshotChunk(msg -> {
+                Long appliedIndex = handleInstallSnapshotChunk(msg);
                 syncRaftMetrics();
                 return appliedIndex;
             });
@@ -172,11 +181,28 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         }
         long index = raftLog.appendEntry(election.currentTerm(), entry);
         if (peerStates.isEmpty()) {
+            // Single-node: commit and apply immediately
             replication.advanceCommitIndex(new long[]{index}, election.currentTerm());
             replication.applyCommitted();
+        } else {
+            // Multi-node: trigger immediate replication instead of waiting for next heartbeat tick
+            triggerImmediateReplication();
         }
         log.debug("Proposed entry at index {}", index);
         return index;
+    }
+
+    /**
+     * Trigger an immediate replication round by scheduling a heartbeat on the executor.
+     * This reduces replication latency from avg(heartbeatMs/2) to near-zero.
+     */
+    private void triggerImmediateReplication() {
+        try {
+            heartbeatTimer.execute(this::sendHeartbeats);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            // Timer shut down — will be caught by next heartbeat cycle
+            log.debug("Immediate replication trigger rejected (timer shut down)");
+        }
     }
 
     /** Apply committed entries to state machine */
@@ -190,6 +216,8 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
      * Leader: 发送快照给落后过多的 follower。
      * 当 follower 的 nextIndex 低于 WAL 最早可用 index 时（段文件已截断），
      * 必须用快照替代 AppendEntries 来同步。
+     *
+     * 对于大快照（>256KB），使用分块传输避免单次 RPC 内存爆炸。
      */
     public void sendInstallSnapshot(String peerId) {
         PeerReplicationState ps = peerStates.get(peerId);
@@ -206,19 +234,56 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         byte[] snapshotData = encodeStoreSnapshot();
         raftLog.compactThrough(snapshotIndex, snapshotTerm);
 
-        transport.sendInstallSnapshot(peerId, term, nodeId, snapshotIndex, snapshotTerm, snapshotData)
-            .thenAccept(newIndex -> {
-                if (requestGeneration != ps.requestGeneration) {
-                    return;
-                }
-                if (newIndex >= 0) {
-                    ps.nextIndex = newIndex + 1;
-                    ps.matchIndex = newIndex;
-                    log.info("InstallSnapshot accepted by {} (index={})", peerId, newIndex);
+        if (snapshotData.length <= SNAPSHOT_CHUNK_SIZE) {
+            // Small snapshot: single RPC (original behavior)
+            transport.sendInstallSnapshot(peerId, term, nodeId, snapshotIndex, snapshotTerm, snapshotData)
+                .thenAccept(newIndex -> {
+                    if (requestGeneration != ps.requestGeneration) return;
+                    if (newIndex >= 0) {
+                        ps.nextIndex = newIndex + 1;
+                        ps.matchIndex = newIndex;
+                        log.info("InstallSnapshot accepted by {} (index={})", peerId, newIndex);
+                    } else {
+                        log.warn("InstallSnapshot rejected by {}", peerId);
+                    }
+                });
+        } else {
+            // Large snapshot: chunked transfer
+            int totalChunks = (snapshotData.length + SNAPSHOT_CHUNK_SIZE - 1) / SNAPSHOT_CHUNK_SIZE;
+            log.info("Sending chunked snapshot to {}: {} bytes in {} chunks", peerId, snapshotData.length, totalChunks);
+
+            java.util.concurrent.CompletableFuture<Boolean> chain =
+                java.util.concurrent.CompletableFuture.completedFuture(true);
+
+            for (int i = 0; i < totalChunks; i++) {
+                final int chunkIndex = i;
+                int start = i * SNAPSHOT_CHUNK_SIZE;
+                int end = Math.min(start + SNAPSHOT_CHUNK_SIZE, snapshotData.length);
+                byte[] chunk = java.util.Arrays.copyOfRange(snapshotData, start, end);
+
+                chain = chain.thenCompose(ok -> {
+                    if (requestGeneration != ps.requestGeneration) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(false);
+                    }
+                    return transport.sendInstallSnapshotChunk(peerId, term, nodeId,
+                        snapshotIndex, snapshotTerm, chunkIndex, totalChunks, chunk);
+                });
+            }
+
+            chain.thenAccept(success -> {
+                if (requestGeneration != ps.requestGeneration) return;
+                if (success) {
+                    ps.nextIndex = snapshotIndex + 1;
+                    ps.matchIndex = snapshotIndex;
+                    log.info("Chunked snapshot accepted by {} (index={}, chunks={})", peerId, snapshotIndex, totalChunks);
                 } else {
-                    log.warn("InstallSnapshot rejected by {}", peerId);
+                    log.warn("Chunked snapshot rejected by {} (chunks={})", peerId, totalChunks);
                 }
+            }).exceptionally(ex -> {
+                log.error("Chunked snapshot failed for {}: {}", peerId, ex.getMessage(), ex);
+                return null;
             });
+        }
     }
 
     /**
@@ -254,6 +319,49 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             return msg.lastIncludedIndex();
         } catch (Exception e) {
             log.error("Failed to apply InstallSnapshot from {}", msg.leaderId(), e);
+            return -1L;
+        }
+    }
+
+    /**
+     * Follower: handle an incoming InstallSnapshot chunk.
+     * Buffers chunks until all received, then reassembles and applies.
+     */
+    private Long handleInstallSnapshotChunk(RaftTransport.InstallSnapshotChunkMessage msg) {
+        if (msg.term() < election.currentTerm()) {
+            log.debug("Rejecting InstallSnapshot chunk: stale term {} < {}", msg.term(), election.currentTerm());
+            return -1L;
+        }
+        election.onAppendEntries(msg.term(), msg.leaderId());
+
+        String reassemblyKey = msg.leaderId() + ":" + msg.lastIncludedIndex();
+        ChunkReassembly reassembly = pendingChunks.computeIfAbsent(reassemblyKey,
+            k -> new ChunkReassembly(msg.totalChunks(), msg.lastIncludedIndex(), msg.lastIncludedTerm()));
+
+        boolean complete = reassembly.addChunk(msg.chunkIndex(), msg.chunkData());
+        if (!complete) {
+            log.debug("Received chunk {}/{} for snapshot from {}", msg.chunkIndex() + 1, msg.totalChunks(), msg.leaderId());
+            return msg.lastIncludedIndex(); // ack chunk but not yet complete
+        }
+
+        // All chunks received — reassemble and apply
+        pendingChunks.remove(reassemblyKey);
+        try {
+            byte[] fullSnapshot = reassembly.reassemble();
+            java.util.List<com.loomq.domain.intent.Intent> decoded = decodeStoreSnapshot(fullSnapshot);
+
+            store.clear();
+            for (com.loomq.domain.intent.Intent intent : decoded) {
+                store.upsert(intent);
+            }
+
+            raftLog.compactThrough(msg.lastIncludedIndex(), msg.lastIncludedTerm());
+            replication.resetToSnapshot(msg.lastIncludedIndex());
+            log.info("Chunked snapshot applied: {} intents, index={}, term={}",
+                decoded.size(), msg.lastIncludedIndex(), msg.lastIncludedTerm());
+            return msg.lastIncludedIndex();
+        } catch (Exception e) {
+            log.error("Failed to apply chunked snapshot from {}", msg.leaderId(), e);
             return -1L;
         }
     }
@@ -343,102 +451,114 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
     private void startHeartbeat(long term) {
         stopHeartbeat();
-        heartbeatTask = heartbeatTimer.scheduleAtFixedRate(() -> {
-            try {
-                if (!isLeader() || transport == null) {
-                    stopHeartbeat();
-                    return;
-                }
-                syncRaftMetrics();
-                final long myGeneration = leaderGeneration;
-                long currentTerm = election.currentTerm();
-                long commitIdx = replication.commitIndex();
-                long lastIdx = raftLog.lastIndex();
-                int majority = ((peerStates.size() + 1) / 2) + 1;
-                java.util.concurrent.atomic.AtomicInteger quorumAcks = new java.util.concurrent.atomic.AtomicInteger(1);
-                java.util.concurrent.atomic.AtomicBoolean leaseRenewed = new java.util.concurrent.atomic.AtomicBoolean(false);
+        heartbeatTask = heartbeatTimer.scheduleAtFixedRate(this::sendHeartbeats,
+            heartbeatMs, heartbeatMs, TimeUnit.MILLISECONDS);
+    }
 
-                for (PeerReplicationState ps : peerStates.values()) {
-                    // Stop sending if we lost leadership mid-iteration (stepDown via callback)
-                    if (!isLeader()) break;
-
-                    try {
-                        // If follower is too far behind (log already truncated), send snapshot
-                        if (ps.nextIndex < raftLog.firstIndex()) {
-                            sendInstallSnapshot(ps.peerId);
-                            continue;
-                        }
-
-                        if (ps.appendInFlight) {
-                            continue;
-                        }
-
-                        long requestGeneration = ++ps.requestGeneration;
-                        ps.appendInFlight = true;
-
-                        // Read entries the peer is missing (batch-limited)
-                        long nextIdx = ps.nextIndex;
-                        long prevLogIndex = nextIdx - 1;
-                        long prevLogTerm = prevLogIndex > 0 ? raftLog.readEntryTerm(prevLogIndex) : 0;
-                        if (prevLogTerm < 0) prevLogTerm = 0; // entry not yet readable
-
-                        int count = (int) Math.min(lastIdx - nextIdx + 1, MAX_ENTRIES_PER_APPEND);
-                        byte[][] entries = new byte[count][];
-                        for (int i = 0; i < count; i++) {
-                            byte[] entry = raftLog.readEntryRaw(nextIdx + i);
-                            if (entry == null) {
-                                entries[i] = new byte[0];
-                            } else {
-                                entries[i] = entry;
-                            }
-                        }
-
-                        transport.sendAppendEntries(ps.peerId, currentTerm, nodeId,
-                                prevLogIndex, prevLogTerm, entries, commitIdx)
-                            .whenComplete((result, throwable) -> {
-                                ps.appendInFlight = false;
-                                if (throwable != null) {
-                                    log.error("AppendEntries failed for peer {}: {}", ps.peerId,
-                                        throwable.getMessage(), throwable);
-                                    return;
-                                }
-                                if (requestGeneration != ps.requestGeneration) return;
-                                // Bail out if this response belongs to a past leadership term
-                                if (myGeneration != leaderGeneration) return;
-
-                                if (result.success) {
-                                    ps.matchIndex = result.matchIndex;
-                                    ps.nextIndex = result.matchIndex + 1;
-                                    if (quorumAcks.incrementAndGet() >= majority && leaseRenewed.compareAndSet(false, true)) {
-                                        renewReadLease();
-                                    }
-                                    advanceCommitIndexFromAllPeers();
-                                } else if (result.term > currentTerm) {
-                                    election.stepDown(result.term);
-                                } else {
-                                    // Log inconsistency: use conflictIndex for fast backtrack
-                                    if (result.conflictIndex > 0) {
-                                        ps.nextIndex = Math.max(1, result.conflictIndex);
-                                    } else {
-                                        ps.nextIndex = Math.max(1, ps.nextIndex - 1);
-                                    }
-                                    log.debug("AppendEntries rejected by {} (conflictIdx={}), nextIndex={}",
-                                        ps.peerId, result.conflictIndex, ps.nextIndex);
-                                }
-                            });
-                    } catch (Exception peerEx) {
-                        ps.appendInFlight = false;
-                        log.error("Heartbeat failed for peer {}: {}", ps.peerId,
-                            peerEx.getMessage(), peerEx);
-                        // Continue to next peer — don't let one peer failure stop others
-                    }
-                }
-                syncRaftMetrics();
-            } catch (Throwable t) {
-                log.error("Heartbeat task terminated unexpectedly — this is a bug", t);
-                // Do NOT rethrow — ScheduledExecutorService would silently cancel the task
+    /**
+     * Send AppendEntries to all peers. Called both by the periodic heartbeat timer
+     * and by {@link #triggerImmediateReplication()} after a new entry is proposed.
+     */
+    private void sendHeartbeats() {
+        try {
+            if (!isLeader() || transport == null) {
+                stopHeartbeat();
+                return;
             }
-        }, heartbeatMs, heartbeatMs, TimeUnit.MILLISECONDS);
+            syncRaftMetrics();
+            final long myGeneration = leaderGeneration;
+            long currentTerm = election.currentTerm();
+            long commitIdx = replication.commitIndex();
+            long lastIdx = raftLog.lastIndex();
+            int majority = ((peerStates.size() + 1) / 2) + 1;
+            java.util.concurrent.atomic.AtomicInteger quorumAcks = new java.util.concurrent.atomic.AtomicInteger(1);
+            java.util.concurrent.atomic.AtomicBoolean leaseRenewed = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+            for (PeerReplicationState ps : peerStates.values()) {
+                // Stop sending if we lost leadership mid-iteration (stepDown via callback)
+                if (!isLeader()) break;
+
+                try {
+                    // If follower is too far behind (log already truncated), send snapshot
+                    if (ps.nextIndex < raftLog.firstIndex()) {
+                        sendInstallSnapshot(ps.peerId);
+                        continue;
+                    }
+
+                    // Pipeline: skip if all missing entries are already covered by an in-flight RPC
+                    if (ps.inflightMaxIndex > 0 && ps.nextIndex <= ps.inflightMaxIndex) {
+                        continue;
+                    }
+
+                    long requestGeneration = ++ps.requestGeneration;
+
+                    // Read entries the peer is missing (batch-limited)
+                    long nextIdx = ps.nextIndex;
+                    long prevLogIndex = nextIdx - 1;
+                    long prevLogTerm = prevLogIndex > 0 ? raftLog.readEntryTerm(prevLogIndex) : 0;
+                    if (prevLogTerm < 0) prevLogTerm = 0; // entry not yet readable
+
+                    int count = (int) Math.min(lastIdx - nextIdx + 1, MAX_ENTRIES_PER_APPEND);
+                    if (count <= 0) continue;
+
+                    byte[][] entries = new byte[count][];
+                    for (int i = 0; i < count; i++) {
+                        byte[] entry = raftLog.readEntryRaw(nextIdx + i);
+                        if (entry == null) {
+                            entries[i] = new byte[0];
+                        } else {
+                            entries[i] = entry;
+                        }
+                    }
+
+                    // Track the max index covered by this in-flight RPC
+                    ps.inflightMaxIndex = nextIdx + count - 1;
+
+                    transport.sendAppendEntries(ps.peerId, currentTerm, nodeId,
+                            prevLogIndex, prevLogTerm, entries, commitIdx)
+                        .whenComplete((result, throwable) -> {
+                            if (throwable != null) {
+                                log.error("AppendEntries failed for peer {}: {}", ps.peerId,
+                                    throwable.getMessage(), throwable);
+                                return;
+                            }
+                            if (requestGeneration != ps.requestGeneration) return;
+                            // Bail out if this response belongs to a past leadership term
+                            if (myGeneration != leaderGeneration) return;
+
+                            if (result.success) {
+                                ps.matchIndex = result.matchIndex;
+                                ps.nextIndex = result.matchIndex + 1;
+                                if (quorumAcks.incrementAndGet() >= majority && leaseRenewed.compareAndSet(false, true)) {
+                                    renewReadLease();
+                                }
+                                advanceCommitIndexFromAllPeers();
+                            } else if (result.term > currentTerm) {
+                                election.stepDown(result.term);
+                            } else {
+                                // Log inconsistency: use conflictIndex for fast backtrack
+                                if (result.conflictIndex > 0) {
+                                    ps.nextIndex = Math.max(1, result.conflictIndex);
+                                } else {
+                                    ps.nextIndex = Math.max(1, ps.nextIndex - 1);
+                                }
+                                // Reset inflightMaxIndex so next heartbeat can retry
+                                ps.inflightMaxIndex = 0;
+                                log.debug("AppendEntries rejected by {} (conflictIdx={}), nextIndex={}",
+                                    ps.peerId, result.conflictIndex, ps.nextIndex);
+                            }
+                        });
+                } catch (Exception peerEx) {
+                    log.error("Heartbeat failed for peer {}: {}", ps.peerId,
+                        peerEx.getMessage(), peerEx);
+                    // Continue to next peer — don't let one peer failure stop others
+                }
+            }
+            syncRaftMetrics();
+        } catch (Throwable t) {
+            log.error("Heartbeat task terminated unexpectedly — this is a bug", t);
+            // Do NOT rethrow — ScheduledExecutorService would silently cancel the task
+        }
     }
 
     private void advanceCommitIndexFromAllPeers() {
@@ -539,10 +659,70 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         volatile long nextIndex = 1;
         volatile long matchIndex;
         volatile long requestGeneration = 0;
-        volatile boolean appendInFlight = false;
+        /**
+         * Highest index included in an in-flight AppendEntries RPC.
+         * Used for pipelining: a new AE is sent only if nextIndex > inflightMaxIndex,
+         * meaning there are entries not yet covered by any in-flight RPC.
+         */
+        volatile long inflightMaxIndex = 0;
 
         PeerReplicationState(String peerId) {
             this.peerId = peerId;
+        }
+    }
+
+    /**
+     * Reassembly buffer for chunked InstallSnapshot transfer.
+     * Collects chunks by index and reassembles into a full snapshot blob.
+     */
+    static class ChunkReassembly {
+        private final int totalChunks;
+        private final long lastIncludedIndex;
+        private final long lastIncludedTerm;
+        private final byte[][] chunks;
+        private final java.util.concurrent.atomic.AtomicInteger receivedCount = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        ChunkReassembly(int totalChunks, long lastIncludedIndex, long lastIncludedTerm) {
+            this.totalChunks = totalChunks;
+            this.lastIncludedIndex = lastIncludedIndex;
+            this.lastIncludedTerm = lastIncludedTerm;
+            this.chunks = new byte[totalChunks][];
+        }
+
+        /**
+         * Add a chunk. Returns true when all chunks have been received.
+         */
+        synchronized boolean addChunk(int chunkIndex, byte[] data) {
+            if (chunkIndex < 0 || chunkIndex >= totalChunks) {
+                log.warn("Invalid chunk index: {} (total={})", chunkIndex, totalChunks);
+                return false;
+            }
+            if (chunks[chunkIndex] != null) {
+                // Duplicate chunk — ignore
+                return receivedCount.get() >= totalChunks;
+            }
+            chunks[chunkIndex] = data;
+            receivedCount.incrementAndGet();
+            return receivedCount.get() >= totalChunks;
+        }
+
+        /**
+         * Reassemble all chunks into a single byte array.
+         */
+        byte[] reassemble() {
+            int totalSize = 0;
+            for (byte[] chunk : chunks) {
+                totalSize += chunk != null ? chunk.length : 0;
+            }
+            byte[] result = new byte[totalSize];
+            int offset = 0;
+            for (byte[] chunk : chunks) {
+                if (chunk != null) {
+                    System.arraycopy(chunk, 0, result, offset, chunk.length);
+                    offset += chunk.length;
+                }
+            }
+            return result;
         }
     }
 
