@@ -15,9 +15,6 @@ import java.util.Map;
  */
 public class LoomQMetrics {
 
-    // ==================== Intent 指标 ====================
-    private final IntentMetricsRegistry intentMetrics = new IntentMetricsRegistry();
-
     // ==================== 流水线指标 ====================
     private final PipelineMetricsRegistry pipelineMetrics = new PipelineMetricsRegistry();
 
@@ -131,26 +128,8 @@ public class LoomQMetrics {
     private LoomQMetrics() {}
 
     // ==================== Intent 计数方法 ====================
-
-    public void incrementIntentsCreated() {
-        intentMetrics.incrementIntentsCreated();
-    }
-
-    public void incrementIntentsCompleted() {
-        intentMetrics.incrementIntentsCompleted();
-    }
-
-    public void incrementIntentsCancelled() {
-        intentMetrics.incrementIntentsCancelled();
-    }
-
-    public void incrementIntentsExpired() {
-        intentMetrics.incrementIntentsExpired();
-    }
-
-    public void incrementIntentsDeadLettered() {
-        intentMetrics.incrementIntentsDeadLettered();
-    }
+    // 注意: Intent 生命周期计数器已统一到 MetricsCollector (com.loomq.common.MetricsCollector)
+    // 此处通过 MetricsCollector 读取，避免重复计数和数据分叉
 
     // ==================== 投递计数方法 ====================
 
@@ -207,15 +186,16 @@ public class LoomQMetrics {
     // ==================== 指标查询 ====================
 
     public MetricsSnapshot snapshot() {
-        Map<String, Long> statusSnapshot = new LinkedHashMap<>(MetricsCollector.getInstance().getIntentStatusCounts());
-        long pendingIntents = MetricsCollector.getInstance().getPendingIntents();
+        MetricsCollector mc = MetricsCollector.getInstance();
+        Map<String, Long> statusSnapshot = new LinkedHashMap<>(mc.getIntentStatusCounts());
+        long pendingIntents = mc.getPendingIntents();
 
         return new MetricsSnapshot(
-            intentMetrics.getIntentsCreated(),
-            intentMetrics.getIntentsCompleted(),
-            intentMetrics.getIntentsCancelled(),
-            intentMetrics.getIntentsExpired(),
-            intentMetrics.getIntentsDeadLettered(),
+            mc.getIntentsCreatedTotal(),
+            mc.getIntentsAckSuccessTotal(),
+            mc.getIntentsCancelledTotal(),
+            mc.getIntentsExpiredTotal(),
+            mc.getIntentsDeadLetterTotal(),
             Collections.unmodifiableMap(statusSnapshot),
             pipelineMetrics.getDeliveriesTotal(),
             pipelineMetrics.getDeliveriesSuccess(),
@@ -310,7 +290,6 @@ public class LoomQMetrics {
     // ==================== 重置 ====================
 
     public void reset() {
-        intentMetrics.reset();
         pipelineMetrics.reset();
         // WAL 健康指标重置
         walHealthMetrics.reset();

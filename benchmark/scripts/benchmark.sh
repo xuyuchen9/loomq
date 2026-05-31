@@ -114,13 +114,13 @@ extract() { echo "$1" | sed -n "s/.*${2}=\([^|]*\).*/\1/p"; }
 rotate_reports() {
     local keep=10
     local count
-    count=$(ls -1t "$REPORTS_DIR"/*.xlsx "$REPORTS_DIR"/*.md 2>/dev/null | wc -l)
+    count=$(ls -1t "$REPORTS_DIR"/*.xlsx "$REPORTS_DIR"/*.md 2>/dev/null | wc -l || true)
     if [ "$count" -gt "$((keep * 2))" ]; then
-        ls -1t "$REPORTS_DIR"/*.xlsx "$REPORTS_DIR"/*.md 2>/dev/null | tail -n +"$((keep * 2 + 1))" | xargs rm -f --
+        ls -1t "$REPORTS_DIR"/*.xlsx "$REPORTS_DIR"/*.md 2>/dev/null | tail -n +"$((keep * 2 + 1))" | xargs rm -f -- || true
     fi
-    count=$(ls -1t "$LOGS_DIR"/*.log 2>/dev/null | wc -l)
+    count=$(ls -1t "$LOGS_DIR"/*.log 2>/dev/null | wc -l || true)
     if [ "$count" -gt "$keep" ]; then
-        ls -1t "$LOGS_DIR"/*.log 2>/dev/null | tail -n +"$((keep + 1))" | xargs rm -f --
+        ls -1t "$LOGS_DIR"/*.log 2>/dev/null | tail -n +"$((keep + 1))" | xargs rm -f -- || true
     fi
 }
 
@@ -156,6 +156,7 @@ run_scenario() {
         exec:java
         "-Dexec.mainClass=$main_class"
         -Dexec.classpathScope=test
+        "-Dmaven.repo.local=$M2_REPO"
         -q
     )
     if [ "$QUICK_MODE" = true ]; then
@@ -267,15 +268,15 @@ INTERNAL_LOG=""; WAL_LOG=""; STORAGE_LOG=""
 
 if [ "$RUN_INTERNAL" = true ]; then
     TIMEOUT=$(get_timeout "internal" $QUICK_MODE)
-    INTERNAL_LOG="$LOGS_DIR/scenario-InternalBenchmark-$TIMESTAMP.log"
+    INTERNAL_LOG="$LOGS_DIR/scenario-com_loomq_benchmark_InternalBenchmark-$TIMESTAMP.log"
     run_scenario "1) IntentStore & Memory" "com.loomq.benchmark.InternalBenchmark" "$TIMEOUT"
 
     TIMEOUT=$(get_timeout "wal" $QUICK_MODE)
-    WAL_LOG="$LOGS_DIR/scenario-WalThroughputBenchmark-$TIMESTAMP.log"
+    WAL_LOG="$LOGS_DIR/scenario-com_loomq_benchmark_WalThroughputBenchmark-$TIMESTAMP.log"
     run_scenario "1b) WAL Write Throughput" "com.loomq.benchmark.WalThroughputBenchmark" "$TIMEOUT"
 
     TIMEOUT=$(get_timeout "storage" $QUICK_MODE)
-    STORAGE_LOG="$LOGS_DIR/scenario-StorageBenchmark-$TIMESTAMP.log"
+    STORAGE_LOG="$LOGS_DIR/scenario-com_loomq_benchmark_StorageBenchmark-$TIMESTAMP.log"
     run_scenario "1c) Storage Engine Comparison" "com.loomq.benchmark.StorageBenchmark" "$TIMEOUT"
 fi
 
@@ -301,7 +302,7 @@ if [ "$RUN_CREATE" = true ] || [ "$RUN_SCHEDULER" = true ] || [ "$STRESS" = true
     sleep 30
 
     # Find server JAR
-    SERVER_JAR=$(find "$SERVER_DIR/target" -name "loomq-server-*-shaded.jar" -not -name "*-sources.jar" 2>/dev/null | head -1)
+    SERVER_JAR=$(find "$SERVER_DIR/target" -name "loomq-server-*.jar" -not -name "*-sources.jar" -not -name "original-*" 2>/dev/null | head -1)
     if [ -z "$SERVER_JAR" ]; then
         echo "[ERROR] Server JAR not found. Build first: mvn package -DskipTests"
         exit 1
@@ -314,10 +315,11 @@ if [ "$RUN_CREATE" = true ] || [ "$RUN_SCHEDULER" = true ] || [ "$STRESS" = true
     mkdir -p "$DATA_DIR"
 
     echo ">>> Starting server on port $TEMP_PORT (gRPC: $GRPC_PORT)..."
-    java -jar "$SERVER_JAR" \
-        --server.port="$TEMP_PORT" \
-        --grpc.port="$GRPC_PORT" \
-        --data.dir="$DATA_DIR" \
+    java -Dserver.port="$TEMP_PORT" \
+        -Dgrpc.enabled=true \
+        -Dgrpc.port="$GRPC_PORT" \
+        -Ddata.dir="$DATA_DIR" \
+        -jar "$SERVER_JAR" \
         > "$LOGS_DIR/server-$TIMESTAMP.log" 2>&1 &
     SERVER_PID=$!
 
@@ -337,10 +339,10 @@ if [ "$RUN_CREATE" = true ] || [ "$RUN_SCHEDULER" = true ] || [ "$STRESS" = true
 
     BASE_URL="http://127.0.0.1:$TEMP_PORT"
 
-    try {
-        # HTTP Create Path
+    # HTTP Create Path
         if [ "$RUN_CREATE" = true ] && [ -z "$STRESS_ONLY" -o "$STRESS_ONLY" = "http" ]; then
             TIMEOUT=$(get_timeout "http" $QUICK_MODE)
+            HTTP_LOG="$LOGS_DIR/scenario-com_loomq_benchmark_HttpVirtualThreadBenchmark-$TIMESTAMP.log"
             run_scenario "2) HTTP Create Path" "com.loomq.benchmark.HttpVirtualThreadBenchmark" "$TIMEOUT" \
                 "-Dloomq.benchmark.baseUrl=$BASE_URL"
         fi
@@ -354,6 +356,7 @@ if [ "$RUN_CREATE" = true ] || [ "$RUN_SCHEDULER" = true ] || [ "$STRESS" = true
             if [ -n "$GRPC_TIER" ]; then
                 GRPC_ARGS+=("-Dloomq.benchmark.grpc.tier=$GRPC_TIER")
             fi
+            GRPC_LOG="$LOGS_DIR/scenario-com_loomq_benchmark_GrpcVirtualThreadBenchmark-$TIMESTAMP.log"
             run_scenario "2b) gRPC Create Path" "com.loomq.benchmark.GrpcVirtualThreadBenchmark" "$TIMEOUT" "${GRPC_ARGS[@]}"
         fi
 
@@ -362,6 +365,7 @@ if [ "$RUN_CREATE" = true ] || [ "$RUN_SCHEDULER" = true ] || [ "$STRESS" = true
             echo ">>> 冷却 15s..."
             sleep 15
             TIMEOUT=$(get_timeout "scheduler" $QUICK_MODE)
+            SCHEDULER_LOG="$LOGS_DIR/scenario-com_loomq_scheduler_SchedulerTriggerBenchmarkWithMockServer-$TIMESTAMP.log"
             run_scenario "3) Scheduler Trigger" "com.loomq.scheduler.SchedulerTriggerBenchmarkWithMockServer" "$TIMEOUT"
         fi
 
@@ -396,7 +400,6 @@ if [ "$RUN_CREATE" = true ] || [ "$RUN_SCHEDULER" = true ] || [ "$STRESS" = true
                     "-Dloomq.benchmark.grpc.host=127.0.0.1" "-Dloomq.benchmark.grpc.port=$GRPC_PORT" "${STRESS_ARGS[@]}"
             fi
         fi
-    }
 fi
 
 # ============================================================
@@ -490,8 +493,8 @@ for i in range(max_len):
     gr = grpc_rows[i] if i < len(grpc_rows) else {}
     cp_rows.append({
         "threads": hr.get("threads", gr.get("threads")),
-        "http_qps": hr.get("qps"), "http_p50": hr.get("p50"), "http_p90": hr.get("p90"), "http_p99": hr.get("p99"),
-        "grpc_qps": gr.get("qps"), "grpc_p50": gr.get("p50"), "grpc_p90": gr.get("p90"), "grpc_p99": gr.get("p99"),
+        "http_qps": hr.get("qps"), "http_p50": hr.get("p50_ms"), "http_p90": hr.get("p90_ms"), "http_p99": hr.get("p99_ms"),
+        "grpc_qps": gr.get("qps"), "grpc_p50": gr.get("p50_ms"), "grpc_p90": gr.get("p90_ms"), "grpc_p99": gr.get("p99_ms"),
     })
 
 # Summary
@@ -503,7 +506,7 @@ summary = {
     "grpc_inflection_threads": get_val(grpc_res, "inflection_threads"),
     "http_fail_rate": get_val(http_res, "fail_rate"),
     "grpc_fail_rate": get_val(grpc_res, "fail_rate"),
-    "memory_per_intent": get_val(int_res, "bytes_per_intent"),
+    "memory_per_intent": get_val(int_res, "memory_bytes_per_intent"),
 }
 
 # Scheduler tiers
@@ -524,13 +527,33 @@ for row in sched_rows:
 internal_items = []
 if int_res:
     internal_items.append({"benchmark": "IntentStore", "metric": "Write QPS", "value": get_val(int_res, "direct_store_qps")})
-    internal_items.append({"benchmark": "Memory", "metric": "bytes/intent", "value": get_val(int_res, "bytes_per_intent")})
-if wal_res:
-    internal_items.append({"benchmark": "WAL DURABLE", "metric": "ops/s", "value": get_val(wal_res, "durable_ops_per_sec")})
-    internal_items.append({"benchmark": "WAL ASYNC", "metric": "ops/s", "value": get_val(wal_res, "async_ops_per_sec")})
-if sto_res:
-    internal_items.append({"benchmark": "Storage InMem", "metric": "save_ms", "value": get_val(sto_res, "concurrent_save_ms")})
-    internal_items.append({"benchmark": "Storage RocksDB", "metric": "save_ms", "value": get_val(sto_res, "rocksdb_save_ms")})
+    internal_items.append({"benchmark": "Memory", "metric": "bytes/intent", "value": get_val(int_res, "memory_bytes_per_intent")})
+
+# WAL results - parse mode-specific entries
+wal_durable = None
+wal_async = None
+for r in wal_res:
+    if r.get("mode") == "DURABLE":
+        wal_durable = r.get("throughput")
+    elif r.get("mode") == "ASYNC":
+        wal_async = r.get("throughput")
+if wal_durable:
+    internal_items.append({"benchmark": "WAL DURABLE", "metric": "ops/s", "value": wal_durable})
+if wal_async:
+    internal_items.append({"benchmark": "WAL ASYNC", "metric": "ops/s", "value": wal_async})
+
+# Storage results - parse type-specific entries
+sto_concurrent = None
+sto_rocksdb = None
+for r in sto_res:
+    if r.get("type") == "concurrent":
+        sto_concurrent = r.get("save_ms")
+    elif r.get("type") == "rocksdb":
+        sto_rocksdb = r.get("save_ms")
+if sto_concurrent:
+    internal_items.append({"benchmark": "Storage InMem", "metric": "save_ms", "value": sto_concurrent})
+if sto_rocksdb:
+    internal_items.append({"benchmark": "Storage RocksDB", "metric": "save_ms", "value": sto_rocksdb})
 
 data = {
     "timestamp": timestamp, "environment": env_data, "summary": summary,

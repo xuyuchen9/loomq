@@ -545,10 +545,14 @@ public class LoomqServerApplication {
             buildReadinessResponse(raftStatus, LoomQMetrics.getInstance().snapshot()));
         router.add(HttpMethod.GET, "/health/deep", (method, uri, body, headers, pathParams) ->
             buildDeepHealthResponse(engine, raftStatus));
-        router.add(HttpMethod.GET, "/metrics", (method, uri, body, headers, pathParams) ->
-            LoomQMetrics.getInstance().snapshot());
-        router.add(HttpMethod.GET, "/api/v1/metrics", (method, uri, body, headers, pathParams) ->
-            LoomQMetrics.getInstance().snapshot());
+        router.add(HttpMethod.GET, "/metrics", (method, uri, body, headers, pathParams) -> {
+            String accept = headers.getOrDefault("Accept", "application/json");
+            if (accept.contains("text/plain")) {
+                return new com.loomq.http.netty.NettyRequestHandler.TextResponse(
+                    MetricsCollector.getInstance().exportPrometheusMetrics());
+            }
+            return LoomQMetrics.getInstance().snapshot();
+        });
         router.add(HttpMethod.GET, "/v1/system/chronoscope", (method, uri, body, headers, pathParams) ->
             com.loomq.application.scheduler.ChronoscopeSnapshot.from(
                 engine.getScheduler(),
@@ -803,7 +807,6 @@ public class LoomqServerApplication {
                 engine.getScheduler().unschedule(intent);
                 if (intent.getStatus() == IntentStatus.CANCELED) {
                     MetricsCollector.getInstance().incrementIntentsCancelled();
-                    LoomQMetrics.getInstance().incrementIntentsCancelled();
                 }
                 return;
             }
@@ -811,7 +814,6 @@ public class LoomqServerApplication {
             if (isNew) {
                 engine.getScheduler().schedule(intent);
                 MetricsCollector.getInstance().incrementIntentsCreated();
-                LoomQMetrics.getInstance().incrementIntentsCreated();
             } else {
                 engine.getScheduler().restore(intent);
             }
