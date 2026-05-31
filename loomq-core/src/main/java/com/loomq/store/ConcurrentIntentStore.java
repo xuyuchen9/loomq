@@ -6,6 +6,7 @@ import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -31,6 +32,8 @@ public class ConcurrentIntentStore implements IntentStore {
     private final Map<String, IdempotencyRecord> idempotencyRecords = new ConcurrentHashMap<>();
     private final Map<IntentStatus, AtomicLong> statusCounts = new EnumMap<>(IntentStatus.class);
     private final AtomicLong pendingCount = new AtomicLong();
+    /** Tracks intent IDs modified since the last snapshot point (for incremental snapshots). */
+    private final Set<String> dirtyIds = ConcurrentHashMap.newKeySet();
 
     private final ScheduledExecutorService cleanupExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "idempotency-cleanup");
@@ -126,6 +129,21 @@ public class ConcurrentIntentStore implements IntentStore {
     }
 
     @Override
+    public Set<String> getDirtyIntentIds() {
+        return Set.copyOf(dirtyIds);
+    }
+
+    @Override
+    public void markSnapshotPoint() {
+        dirtyIds.clear();
+    }
+
+    @Override
+    public long count() {
+        return intents.size();
+    }
+
+    @Override
     public long countByStatus(IntentStatus status) {
         AtomicLong counter = statusCounts.get(status);
         return counter != null ? counter.get() : 0L;
@@ -195,6 +213,8 @@ public class ConcurrentIntentStore implements IntentStore {
 
             return stored;
         });
+        // Track dirty intent for incremental snapshots
+        dirtyIds.add(intent.getIntentId());
     }
 
     private void incrementStatus(IntentStatus status) {

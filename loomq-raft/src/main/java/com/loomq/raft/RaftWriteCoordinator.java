@@ -15,16 +15,24 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Coordinates Raft writes from the HTTP layer.
  *
- * The coordinator serializes writes on the leader, deduplicates retried
- * requests, applies bounded backpressure, proposes the final intent snapshot
- * to the Raft log, then waits for the committed entry to be applied.
+ * The coordinator deduplicates retried requests, applies bounded backpressure,
+ * proposes the final intent snapshot to the Raft log, then waits for the
+ * committed entry to be applied.
+ *
+ * <p><b>Concurrency model:</b> Create operations ({@link #commitSnapshot}) are lock-free —
+ * multiple creates can be proposed concurrently. Mutations ({@link #commitMutation}) use
+ * per-intent locking so that concurrent mutations on the <em>same</em> intent are serialized,
+ * while mutations on <em>different</em> intents proceed in parallel.
  */
 public final class RaftWriteCoordinator implements WriteCoordinator {
 
+    private static final Logger log = LoggerFactory.getLogger(RaftWriteCoordinator.class);
     private static final long DEFAULT_WRITE_TIMEOUT_MS = 5_000L;
     private static final long DEFAULT_BACKPRESSURE_TIMEOUT_MS = 500L;
     private static final long DEFAULT_REQUEST_CACHE_TTL_MS = TimeUnit.MINUTES.toMillis(15);
@@ -33,9 +41,14 @@ public final class RaftWriteCoordinator implements WriteCoordinator {
     private final RaftNode raftNode;
     private final IntentStore store;
     private final LoomQMetrics metrics = LoomQMetrics.getInstance();
-    private final ReentrantLock writeLock = new ReentrantLock();
     private final Semaphore writePermits;
     private final ConcurrentMap<String, CachedWrite> requestCache = new ConcurrentHashMap<>();
+    /**
+     * Per-intent locks for mutation serialization.
+     * Only mutations (patch/cancel/fire-now) on the same intent are mutually exclusive.
+     * Create operations (commitSnapshot) bypass this lock since the intentId is new.
+     */
+    private final ConcurrentMap<String, ReentrantLock> intentLocks = new ConcurrentHashMap<>();
     private final long acquireTimeoutMs;
     private final long writeTimeoutMs;
     private final long requestCacheTtlMs;
@@ -87,6 +100,7 @@ public final class RaftWriteCoordinator implements WriteCoordinator {
 
     /**
      * Propose a fully materialized intent snapshot and wait for it to be applied.
+     * No per-intent lock is needed since the intentId is new (create operation).
      */
     public Intent commitSnapshot(Intent snapshot, String operation, String requestKey) {
         if (snapshot == null) {
@@ -98,12 +112,13 @@ public final class RaftWriteCoordinator implements WriteCoordinator {
                 snapshot.incrementRevision();
             }
             return snapshot;
-        });
+        }, false);
     }
 
     /**
      * Apply a mutating operation against the current authoritative state and
      * commit the resulting snapshot through Raft.
+     * Uses per-intent locking to prevent concurrent mutations on the same intent.
      */
     public Intent commitMutation(String intentId, String operation, String requestKey,
                                  long expectedRevision, Function<Intent, Intent> mutator) {
@@ -134,10 +149,12 @@ public final class RaftWriteCoordinator implements WriteCoordinator {
             }
             mutated.incrementRevision();
             return mutated;
-        });
+        }, true);
     }
 
-    private Intent commitWrite(String requestKey, String operation, String intentId, java.util.function.Supplier<Intent> snapshotSupplier) {
+    private Intent commitWrite(String requestKey, String operation, String intentId,
+                               java.util.function.Supplier<Intent> snapshotSupplier,
+                               boolean needIntentLock) {
         cleanupExpiredCache();
 
         CachedWrite existing = requestCache.get(requestKey);
@@ -157,6 +174,9 @@ public final class RaftWriteCoordinator implements WriteCoordinator {
 
         boolean permitAcquired = false;
         boolean locked = false;
+        ReentrantLock intentLock = needIntentLock
+            ? intentLocks.computeIfAbsent(intentId, k -> new ReentrantLock())
+            : null;
         updatePendingWrites(1);
         long startNs = System.nanoTime();
         try {
@@ -168,7 +188,9 @@ public final class RaftWriteCoordinator implements WriteCoordinator {
                     TimeUnit.MILLISECONDS.toMillis(acquireTimeoutMs));
             }
 
-            writeLock.lock();
+            if (intentLock != null) {
+                intentLock.lock();
+            }
             locked = true;
 
             if (!raftNode.isLeader()) {
@@ -222,13 +244,17 @@ public final class RaftWriteCoordinator implements WriteCoordinator {
             requestCache.remove(requestKey, inflight);
             throw unavailable;
         } finally {
-            if (locked) {
-                writeLock.unlock();
+            if (locked && intentLock != null) {
+                intentLock.unlock();
             }
             if (permitAcquired) {
                 writePermits.release();
             }
             updatePendingWrites(-1);
+            // Cleanup stale intent locks (unlocked, no waiters)
+            if (needIntentLock && intentLock != null && !intentLock.isLocked() && !intentLock.hasQueuedThreads()) {
+                intentLocks.remove(intentId, intentLock);
+            }
         }
     }
 

@@ -182,6 +182,12 @@ public class RaftTransport implements AutoCloseable {
 
     public void setOnInstallSnapshot(Function<InstallSnapshotMessage, Long> h) { this.onInstallSnapshot = h; }
 
+    // ========== Chunked InstallSnapshot ==========
+
+    private Function<InstallSnapshotChunkMessage, Long> onInstallSnapshotChunk;
+
+    public void setOnInstallSnapshotChunk(Function<InstallSnapshotChunkMessage, Long> h) { this.onInstallSnapshotChunk = h; }
+
     /** Start as server (listen for incoming Raft RPCs) */
     public void listen(String host, int port) {
         server = new ReplicaServer(nodeId, host, port);
@@ -190,6 +196,7 @@ public class RaftTransport implements AutoCloseable {
             if (type == ReplicationRecordType.RAFT_REQUEST_VOTE) return handleRequestVote(record);
             else if (type == ReplicationRecordType.RAFT_APPEND_ENTRIES) return handleAppendEntries(record);
             else if (type == ReplicationRecordType.RAFT_INSTALL_SNAPSHOT) return handleInstallSnapshot(record);
+            else if (type == ReplicationRecordType.RAFT_INSTALL_SNAPSHOT_CHUNK) return handleInstallSnapshotChunk(record);
             return null;
         });
         server.start().join();
@@ -315,6 +322,65 @@ public class RaftTransport implements AutoCloseable {
         });
     }
 
+    /**
+     * Encode: term(8) + leaderIdLen(2) + leaderId + lastIncludedIndex(8) + lastIncludedTerm(8)
+     *       + chunkIndex(4) + totalChunks(4) + chunkLen(4) + chunkData
+     */
+    static byte[] encodeInstallSnapshotChunk(long term, String leaderId, long lastIncludedIndex,
+            long lastIncludedTerm, int chunkIndex, int totalChunks, byte[] chunkData) {
+        byte[] idBytes = leaderId.getBytes(StandardCharsets.UTF_8);
+        int dataLen = chunkData != null ? chunkData.length : 0;
+        ByteBuffer buf = ByteBuffer.allocate(8 + 2 + idBytes.length + 8 + 8 + 4 + 4 + 4 + dataLen);
+        buf.putLong(term);
+        buf.putShort((short) idBytes.length);
+        buf.put(idBytes);
+        buf.putLong(lastIncludedIndex);
+        buf.putLong(lastIncludedTerm);
+        buf.putInt(chunkIndex);
+        buf.putInt(totalChunks);
+        buf.putInt(dataLen);
+        if (dataLen > 0) buf.put(chunkData);
+        return buf.array();
+    }
+
+    static InstallSnapshotChunkMessage decodeInstallSnapshotChunk(byte[] payload) {
+        ByteBuffer buf = ByteBuffer.wrap(payload);
+        long term = buf.getLong();
+        short idLen = buf.getShort();
+        byte[] idBytes = new byte[idLen];
+        buf.get(idBytes);
+        String leaderId = new String(idBytes, StandardCharsets.UTF_8);
+        long lastIncludedIndex = buf.getLong();
+        long lastIncludedTerm = buf.getLong();
+        int chunkIndex = buf.getInt();
+        int totalChunks = buf.getInt();
+        int dataLen = buf.getInt();
+        byte[] chunkData = new byte[dataLen];
+        buf.get(chunkData);
+        return new InstallSnapshotChunkMessage(term, leaderId, lastIncludedIndex, lastIncludedTerm,
+            chunkIndex, totalChunks, chunkData);
+    }
+
+    /**
+     * Send a single InstallSnapshot chunk to a follower.
+     */
+    public CompletableFuture<Boolean> sendInstallSnapshotChunk(String peerId, long term, String leaderId,
+            long lastIncludedIndex, long lastIncludedTerm, int chunkIndex, int totalChunks, byte[] chunkData) {
+        byte[] payload = encodeInstallSnapshotChunk(term, leaderId, lastIncludedIndex, lastIncludedTerm,
+            chunkIndex, totalChunks, chunkData);
+        ReplicationRecord record = ReplicationRecord.builder()
+            .offset(term).type(ReplicationRecordType.RAFT_INSTALL_SNAPSHOT_CHUNK)
+            .sourceNodeId(leaderId).payload(payload).build();
+        ReplicaClient client = clients.get(peerId);
+        if (client == null) return CompletableFuture.completedFuture(false);
+        return client.send(record).thenApply(ack -> {
+            if (!ack.isSuccess()) return false;
+            byte[] resp = ack.getRaftResponse();
+            if (resp == null || resp.length < 1) return false;
+            return resp[0] == 1; // 1 = accepted
+        });
+    }
+
     // ========== Server-side handler ==========
 
     private Ack handleInstallSnapshot(ReplicationRecord record) {
@@ -332,6 +398,21 @@ public class RaftTransport implements AutoCloseable {
         }
     }
 
+    private Ack handleInstallSnapshotChunk(ReplicationRecord record) {
+        if (onInstallSnapshotChunk == null) return Ack.success(record.getOffset());
+        try {
+            InstallSnapshotChunkMessage msg = decodeInstallSnapshotChunk(record.getPayload());
+            Long newIndex = onInstallSnapshotChunk.apply(msg);
+            byte[] resp = new byte[]{ (byte) (newIndex != null && newIndex >= 0 ? 1 : 0) };
+            return Ack.raftResponse(record.getOffset(),
+                newIndex != null && newIndex >= 0 ? com.loomq.replication.AckStatus.REPLICATED : com.loomq.replication.AckStatus.REJECTED,
+                resp);
+        } catch (Exception e) {
+            log.error("Failed to handle InstallSnapshot chunk", e);
+            return Ack.failed(record.getOffset(), e.getMessage());
+        }
+    }
+
     @Override public void close() { clients.values().forEach(ReplicaClient::shutdown); if (server != null) server.shutdown(); }
 
     /** Full RequestVote RPC message */
@@ -344,4 +425,8 @@ public class RaftTransport implements AutoCloseable {
     /** Full InstallSnapshot RPC message */
     public record InstallSnapshotMessage(long term, String leaderId, long lastIncludedIndex,
             long lastIncludedTerm, byte[] snapshotData) {}
+
+    /** Chunked InstallSnapshot RPC message */
+    public record InstallSnapshotChunkMessage(long term, String leaderId, long lastIncludedIndex,
+            long lastIncludedTerm, int chunkIndex, int totalChunks, byte[] chunkData) {}
 }
