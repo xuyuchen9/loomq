@@ -106,7 +106,9 @@ public enum ReplicationRecordType {
     /** Raft AppendEntries 响应 */
     RAFT_APPEND_ENTRIES_RESP((byte) 0x63),
     /** Raft InstallSnapshot RPC */
-    RAFT_INSTALL_SNAPSHOT((byte) 0x64);
+    RAFT_INSTALL_SNAPSHOT((byte) 0x64),
+    /** Raft InstallSnapshot chunked transfer */
+    RAFT_INSTALL_SNAPSHOT_CHUNK((byte) 0x65);
 
     private final byte code;
 

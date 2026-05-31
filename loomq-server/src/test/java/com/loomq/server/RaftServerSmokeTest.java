@@ -63,7 +63,7 @@ class RaftServerSmokeTest {
             assertTrue(raftNode.isLeader(), "single-node Raft should become leader");
 
             RadixRouter router = new RadixRouter();
-            new IntentHandler(engine, raftNode, writeCoordinator).register(router);
+            new IntentHandler(engine, writeCoordinator, raftNode).register(router);
             registerSystemRoutes(router, engine, raftNode);
 
             server = new NettyHttpServer(testConfig(), router);
