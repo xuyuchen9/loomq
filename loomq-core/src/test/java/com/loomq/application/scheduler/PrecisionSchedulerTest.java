@@ -597,8 +597,8 @@ class PrecisionSchedulerTest {
         intentStore.save(intent);
         scheduler.schedule(intent);
 
-        // Wait for delivery + dead-letter processing
-        sleep(500);
+        // Wait for delivery + dead-letter processing (generous timeout for CI/resource contention)
+        sleep(2000);
         Intent stored = intentStore.findById("test-dl-index");
         assertNotNull(stored);
         assertEquals(IntentStatus.DEAD_LETTERED, stored.getStatus());

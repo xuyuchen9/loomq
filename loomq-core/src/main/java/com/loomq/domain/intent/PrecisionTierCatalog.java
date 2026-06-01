@@ -77,6 +77,10 @@ public final class PrecisionTierCatalog {
         return profile(tier).walMode();
     }
 
+    public long scanIntervalMs(PrecisionTier tier) {
+        return profile(tier).scanIntervalMs();
+    }
+
     public boolean isBatchEnabled(PrecisionTier tier) {
         return profile(tier).isBatchEnabled();
     }
@@ -103,15 +107,15 @@ public final class PrecisionTierCatalog {
     private static PrecisionTierCatalog createDefault() {
         EnumMap<PrecisionTier, PrecisionTierProfile> profiles = new EnumMap<>(PrecisionTier.class);
         profiles.put(PrecisionTier.ULTRA, new PrecisionTierProfile(10, 200, 1, 5, 16, 200 * 16,
-            WalMode.DURABLE));
+            WalMode.DURABLE, 10));
         profiles.put(PrecisionTier.FAST, new PrecisionTierProfile(50, 150, 1, 10, 12, 150 * 16,
-            WalMode.DURABLE));
+            WalMode.DURABLE, 50));
         profiles.put(PrecisionTier.HIGH, new PrecisionTierProfile(100, 50, 5, 50, 4, 50 * 16,
-            WalMode.BATCH_DEFERRED));
+            WalMode.BATCH_DEFERRED, 100));
         profiles.put(PrecisionTier.STANDARD, new PrecisionTierProfile(500, 50, 20, 100, 3, 50 * 16,
-            WalMode.DURABLE));
+            WalMode.DURABLE, 500));
         profiles.put(PrecisionTier.ECONOMY, new PrecisionTierProfile(1000, 50, 25, 300, 2, 50 * 16,
-            WalMode.DURABLE));
+            WalMode.DURABLE, 1000));
         return new PrecisionTierCatalog(profiles, PrecisionTier.STANDARD);
     }
 }

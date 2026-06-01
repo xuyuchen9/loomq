@@ -51,9 +51,9 @@ class RaftServerSmokeTest {
         RaftNode raftNode = new RaftNode(
             new RaftConfig("raft-smoke-node", List.of(), walDir.toString(), 50, 100, 50),
             engine.getWalAccessor(),
-            engine.getIntentStore(),
+            engine.getIntentStoreInternal(),
             transport);
-        RaftWriteCoordinator writeCoordinator = new RaftWriteCoordinator(raftNode, engine.getIntentStore());
+        RaftWriteCoordinator writeCoordinator = new RaftWriteCoordinator(raftNode, engine.getIntentStoreInternal());
 
         NettyHttpServer server = null;
         try {

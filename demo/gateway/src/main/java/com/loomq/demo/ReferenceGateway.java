@@ -38,7 +38,7 @@ public class ReferenceGateway {
 
     // 配置
     private static final String DEFAULT_LOOMQ_HOST = "localhost";
-    private static final int DEFAULT_GRPC_PORT = 7929;
+    private static final int DEFAULT_GRPC_PORT = 8928;
     private static final int DEFAULT_WS_PORT = 8080;
 
     private final GrpcDeliveryClient grpcClient;

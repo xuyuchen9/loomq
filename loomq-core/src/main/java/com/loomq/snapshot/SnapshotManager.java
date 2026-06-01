@@ -8,9 +8,12 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -39,6 +42,7 @@ public class SnapshotManager {
     private static final Logger logger = LoggerFactory.getLogger(SnapshotManager.class);
     private static final String SNAPSHOT_PREFIX = "snapshot-";
     private static final String SNAPSHOT_SUFFIX = ".snap.gz";
+    private static final String TMP_SUFFIX = ".tmp";
     private static final int MAX_SNAPSHOTS_TO_KEEP = 3;
     private static final int SNAPSHOT_MAGIC = 0x534E4150; // SNAP
     private static final int SNAPSHOT_VERSION_FULL = 1;
@@ -61,17 +65,20 @@ public class SnapshotManager {
      */
     public SnapshotInfo createSnapshot(IntentStore store, long walOffset) {
         ensureSnapshotDir();
+        cleanupStaleTmpFiles();
 
         String timestamp = SNAPSHOT_TIMESTAMP_FORMAT.format(Instant.now());
         String filename = SNAPSHOT_PREFIX + timestamp + SNAPSHOT_SUFFIX;
         Path snapshotPath = snapshotDir.resolve(filename);
+        Path tmpPath = snapshotDir.resolve(filename + TMP_SUFFIX);
 
         logger.info("Creating snapshot: {}", filename);
 
         try {
             Instant createdAt = Instant.now();
             Map<String, Intent> intents = store.getAllIntents();
-            writeSnapshotData(snapshotPath, intents, walOffset, createdAt);
+            writeSnapshotData(tmpPath, intents, walOffset, createdAt);
+            Files.move(tmpPath, snapshotPath, StandardCopyOption.ATOMIC_MOVE);
 
             long size = Files.size(snapshotPath);
             SnapshotInfo info = new SnapshotInfo(filename, walOffset, size, timestamp);
@@ -84,6 +91,7 @@ public class SnapshotManager {
 
         } catch (IOException e) {
             logger.error("Failed to create snapshot: {}", filename, e);
+            try { Files.deleteIfExists(tmpPath); } catch (IOException ignored) {}
             throw new RuntimeException("Snapshot creation failed", e);
         }
     }
@@ -121,10 +129,12 @@ public class SnapshotManager {
         }
 
         ensureSnapshotDir();
+        cleanupStaleTmpFiles();
 
         String timestamp = SNAPSHOT_TIMESTAMP_FORMAT.format(Instant.now());
         String filename = SNAPSHOT_PREFIX + timestamp + ".inc" + SNAPSHOT_SUFFIX;
         Path snapshotPath = snapshotDir.resolve(filename);
+        Path tmpPath = snapshotDir.resolve(filename + TMP_SUFFIX);
 
         logger.info("Creating incremental snapshot: {} (dirty={})", filename, dirtyIds.size());
 
@@ -132,7 +142,8 @@ public class SnapshotManager {
             Instant createdAt = Instant.now();
             // Only serialize dirty intents
             Map<String, Intent> allIntents = store.getAllIntents();
-            writeIncrementalSnapshotData(snapshotPath, allIntents, dirtyIds, walOffset, createdAt);
+            writeIncrementalSnapshotData(tmpPath, allIntents, dirtyIds, walOffset, createdAt);
+            Files.move(tmpPath, snapshotPath, StandardCopyOption.ATOMIC_MOVE);
 
             long size = Files.size(snapshotPath);
             SnapshotInfo info = new SnapshotInfo(filename, walOffset, size, timestamp);
@@ -147,6 +158,7 @@ public class SnapshotManager {
 
         } catch (IOException e) {
             logger.error("Failed to create incremental snapshot: {}", filename, e);
+            try { Files.deleteIfExists(tmpPath); } catch (IOException ignored) {}
             throw new RuntimeException("Incremental snapshot creation failed", e);
         }
     }
@@ -221,7 +233,8 @@ public class SnapshotManager {
     }
 
     private void writeSnapshotData(Path snapshotPath, Map<String, Intent> intents, long walOffset, Instant createdAt) throws IOException {
-        try (OutputStream fos = Files.newOutputStream(snapshotPath);
+        try (FileChannel fc = FileChannel.open(snapshotPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
+             OutputStream fos = java.nio.channels.Channels.newOutputStream(fc);
              GZIPOutputStream gzos = new GZIPOutputStream(fos);
              DataOutputStream dos = new DataOutputStream(gzos)) {
 
@@ -236,12 +249,17 @@ public class SnapshotManager {
                 dos.writeInt(encodedIntent.length);
                 dos.write(encodedIntent);
             }
+
+            dos.flush();
+            gzos.finish();
+            fc.force(true);
         }
     }
 
     private void writeIncrementalSnapshotData(Path snapshotPath, Map<String, Intent> allIntents,
                                               Set<String> dirtyIds, long walOffset, Instant createdAt) throws IOException {
-        try (OutputStream fos = Files.newOutputStream(snapshotPath);
+        try (FileChannel fc = FileChannel.open(snapshotPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
+             OutputStream fos = java.nio.channels.Channels.newOutputStream(fc);
              GZIPOutputStream gzos = new GZIPOutputStream(fos);
              DataOutputStream dos = new DataOutputStream(gzos)) {
 
@@ -269,6 +287,10 @@ public class SnapshotManager {
                 dos.writeInt(encodedIntent.length);
                 dos.write(encodedIntent);
             }
+
+            dos.flush();
+            gzos.finish();
+            fc.force(true);
         }
     }
 
@@ -422,6 +444,24 @@ public class SnapshotManager {
             }
         } catch (IOException e) {
             logger.warn("Failed to cleanup old snapshots", e);
+        }
+    }
+
+    private void cleanupStaleTmpFiles() {
+        ensureSnapshotDir();
+
+        try (var stream = Files.list(snapshotDir)) {
+            stream.filter(p -> p.getFileName().toString().endsWith(TMP_SUFFIX))
+                .forEach(p -> {
+                    try {
+                        Files.deleteIfExists(p);
+                        logger.info("Deleted stale tmp file: {}", p.getFileName());
+                    } catch (IOException e) {
+                        logger.warn("Failed to delete stale tmp file: {}", p.getFileName(), e);
+                    }
+                });
+        } catch (IOException e) {
+            logger.warn("Failed to cleanup stale tmp files", e);
         }
     }
 

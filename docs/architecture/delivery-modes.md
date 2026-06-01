@@ -159,7 +159,7 @@ loomq:
   grpc:
     enabled: true
     host: 0.0.0.0
-    port: 7929
+    port: 8928
 ```
 
 ---

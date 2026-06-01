@@ -73,7 +73,7 @@ class IntentHandlerRaftReadTest {
             intent.setDeadline(Instant.now().plusSeconds(60));
             intent.setPrecisionTier(PrecisionTier.STANDARD);
             intent.transitionTo(IntentStatus.SCHEDULED);
-            engine.getIntentStore().save(intent);
+            engine.getIntentStoreInternal().save(intent);
 
             IntentHandler handler = new IntentHandler(engine,
                 new FixedRaftStatusProvider(true, RaftRole.LEADER, "node-1", true));
@@ -107,7 +107,7 @@ class IntentHandlerRaftReadTest {
             intent.setDeadline(Instant.now().plusSeconds(60));
             intent.setPrecisionTier(PrecisionTier.STANDARD);
             intent.transitionTo(IntentStatus.SCHEDULED);
-            engine.getIntentStore().save(intent);
+            engine.getIntentStoreInternal().save(intent);
 
             IntentHandler handler = new IntentHandler(engine,
                 new FixedRaftStatusProvider(true, RaftRole.LEADER, "node-1", false));

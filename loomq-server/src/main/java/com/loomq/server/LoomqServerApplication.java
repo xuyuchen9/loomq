@@ -16,6 +16,7 @@ import com.loomq.config.ServerConfig;
 import com.loomq.config.WalConfig;
 import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
+import com.loomq.grpc.gen.DeliveryAckMode;
 import com.loomq.http.netty.HttpErrorResponse;
 import com.loomq.http.netty.IntentHandler;
 import com.loomq.http.netty.NettyHttpServer;
@@ -95,7 +96,7 @@ public class LoomqServerApplication {
             List<String> peers = parseRaftPeerIds(peersStr, raftNodeId);
             List<RaftPeerTarget> peerTargets = parseRaftPeerTargets(peersStr, raftNodeId);
             int raftPort = Integer.parseInt(
-                resolveSetting("LOOMQ_RAFT_PORT", "loomq.raft.port", "7930"));
+                resolveSetting("LOOMQ_RAFT_PORT", "loomq.raft.port", "9928"));
 
             validateRaftStartupConfig(raftNodeId, peers, peerTargets, raftPort, serverConfig);
 
@@ -107,14 +108,14 @@ public class LoomqServerApplication {
             raftTransport.listen("0.0.0.0", raftPort);
 
             raftNode = new com.loomq.raft.RaftNode(raftConfig,
-                engine.getWalAccessor(), engine.getIntentStore(), raftTransport, raftRuntimeListener);
+                engine.getWalAccessor(), engine.getIntentStoreInternal(), raftTransport, raftRuntimeListener);
             if (peerTargets.isEmpty() && peers.size() > 1) {
                 logger.warn("Raft peers were configured without connectable endpoints; use peerId@host:port to enable peer connections");
             }
             connectRaftPeers(raftTransport, peerTargets, raftNodeId);
             writeCoordinator = new RaftWriteCoordinator(
                 raftNode,
-                engine.getIntentStore(),
+                engine.getIntentStoreInternal(),
                 serverConfig.maxConcurrentBusinessRequests(),
                 serverConfig.httpSemaphoreTimeoutMs(),
                 5_000L
@@ -126,7 +127,7 @@ public class LoomqServerApplication {
             raftRuntimeListener = null;
             writeCoordinator = new DirectWriteCoordinator(
                 engine.getCommandService(),
-                engine.getIntentStore(),
+                engine.getIntentStoreInternal(),
                 engine.getRunning()
             );
             logger.info("Single-node mode: DirectWriteCoordinator enabled");
@@ -341,9 +342,9 @@ public class LoomqServerApplication {
         if ("grpc-stream".equalsIgnoreCase(handlerType)) {
             // gRPC 流投递模式
             String ackModeStr = resolveSetting("LOOMQ_DELIVERY_ACK_MODE", "loomq.delivery.ack.mode", "auto");
-            com.loomq.grpc.gen.DeliveryAckMode ackMode = "manual".equalsIgnoreCase(ackModeStr)
-                ? com.loomq.grpc.gen.DeliveryAckMode.MANUAL_ACK
-                : com.loomq.grpc.gen.DeliveryAckMode.AUTO_ACK;
+            DeliveryAckMode ackMode = "manual".equalsIgnoreCase(ackModeStr)
+                ? DeliveryAckMode.MANUAL_ACK
+                : DeliveryAckMode.AUTO_ACK;
 
             logger.info("Using GrpcStreamDeliveryHandler: ackMode={}", ackMode);
             return new com.loomq.channel.grpc.server.GrpcStreamDeliveryHandler(ackMode);

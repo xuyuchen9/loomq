@@ -147,8 +147,8 @@ Environment Variables:
   LOOMQ_NODE_ID        Logical node identifier (default: node-1)
   LOOMQ_RAFT_ENABLED   Enable Raft mode (default: false)
   LOOMQ_RAFT_NODE_ID   Raft node identifier (defaults to LOOMQ_NODE_ID)
-  LOOMQ_RAFT_PEERS     Raft peer list, e.g. node-1@host:7930,...
-  LOOMQ_RAFT_PORT      Raft RPC port (default: 7930)
+  LOOMQ_RAFT_PEERS     Raft peer list, e.g. node-1@host:9928,...
+  LOOMQ_RAFT_PORT      Raft RPC port (default: 9928)
   LOOMQ_PORT / LOOMQ_SERVER_PORT   Server port (default: 7928)
   LOOMQ_HOST / LOOMQ_SERVER_HOST   Server host (default: 0.0.0.0)
   LOOMQ_DATA_DIR       WAL data directory (default: ./data/wal)

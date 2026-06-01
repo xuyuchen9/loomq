@@ -180,7 +180,7 @@ class ColdIntentSwapperTest {
         // (scan interval is 30s, but executeAt is 5s ahead so first scan should catch it)
         long deadline = System.currentTimeMillis() + 40_000;
         while (System.currentTimeMillis() < deadline) {
-            if (intentStore.findById("cold-3") != null) {
+            if (intentStore.findById("cold-3") != null && swapper.coldIntentCount() == 0) {
                 break;
             }
             Thread.sleep(500);
@@ -190,9 +190,8 @@ class ColdIntentSwapperTest {
         assertNotNull(restored, "Intent should be restored by swap-in daemon within 40s");
         assertEquals("cold-3", restored.getIntentId());
         assertEquals(executeAt, restored.getExecuteAt());
-        assertTrue(swapper.getTotalSwappedIn() >= 1 || restored != null,
-            "Intent was restored, counter may lag on Linux CI");
-        assertEquals(0, swapper.coldIntentCount());
+        assertEquals(0, swapper.coldIntentCount(),
+            "Cold index should be empty after swap-in completes");
     }
 
     @Test

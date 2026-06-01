@@ -39,7 +39,7 @@ LoomQ 当前使用两层配置来源：
 | `raft.enabled` / `loomq.raft.enabled` | `false` | 是否启用 Raft 模式 | Raft 部署应显式开启 |
 | `raft.nodeId` / `loomq.raft.nodeId` | `node-1` | Raft 本地节点 ID | 与 `nodeId` 保持一致更简单 |
 | `raft.peers` / `loomq.raft.peers` | 本机节点 ID | Raft peer 列表，单节点可只写本机节点 ID；多节点支持 `peerId@host:port` 或 `peerId=host:port` | 多节点部署必须为每个远端 peer 配置可连接端点 |
-| `raft.port` / `loomq.raft.port` | `7930` | Raft RPC 监听端口 | 与防火墙和 peer 连接规划一致 |
+| `raft.port` / `loomq.raft.port` | `9928` | Raft RPC 监听端口 | 与防火墙和 peer 连接规划一致 |
 
 #### Raft 启动校验
 

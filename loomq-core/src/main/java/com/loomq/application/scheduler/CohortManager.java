@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -35,6 +36,9 @@ public final class CohortManager {
     /** Cohorts keyed by bucket key (floorToBucket(executeAt)). */
     private final ConcurrentSkipListMap<Long, ConcurrentLinkedDeque<Intent>> cohorts;
 
+    /** 反向索引：intentId → cohortKey，用于支持按 ID 从 cohort 中移除。 */
+    private final ConcurrentHashMap<String, Long> intentIdToCohortKey;
+
     private final BucketGroupManager bucketGroupManager;
     private final PrecisionTierCatalog catalog;
     private final Consumer<Collection<Intent>> scanTrigger;
@@ -53,6 +57,7 @@ public final class CohortManager {
         this.catalog = catalog;
         this.scanTrigger = scanTrigger;
         this.cohorts = new ConcurrentSkipListMap<>();
+        this.intentIdToCohortKey = new ConcurrentHashMap<>();
         this.running = new AtomicBoolean(false);
 
         this.wakeThread = Thread.ofPlatform()
@@ -80,6 +85,7 @@ public final class CohortManager {
      */
     void clear() {
         cohorts.clear();
+        intentIdToCohortKey.clear();
     }
 
     /**
@@ -90,9 +96,31 @@ public final class CohortManager {
         long key = cohortKey(intent);
         cohorts.computeIfAbsent(key, k -> new ConcurrentLinkedDeque<>())
                .addLast(intent);
+        intentIdToCohortKey.put(intent.getIntentId(), key);
         totalRegistered.incrementAndGet();
         // Signal: a new cohort may be earlier than the current sleep target
         LockSupport.unpark(wakeThread);
+    }
+
+    /**
+     * 从 cohort 中按 intentId 移除 Intent。
+     *
+     * 当 Intent 被取消或立即触发时调用，
+     * 防止已取消的 Intent 在 cohort flush 时被重新激活。
+     *
+     * @param intentId 要移除的 Intent ID
+     * @return true 如果成功移除
+     */
+    boolean remove(String intentId) {
+        Long key = intentIdToCohortKey.remove(intentId);
+        if (key == null) {
+            return false;
+        }
+        ConcurrentLinkedDeque<Intent> cohort = cohorts.get(key);
+        if (cohort != null) {
+            return cohort.removeIf(i -> intentId.equals(i.getIntentId()));
+        }
+        return false;
     }
 
     public int cohortCount() {
@@ -176,6 +204,7 @@ public final class CohortManager {
 
                 List<Intent> validIntents = new ArrayList<>(cohort.size());
                 for (Intent intent : cohort) {
+                    intentIdToCohortKey.remove(intent.getIntentId());
                     // Only skip terminal intents (cancelled/expired after registration).
                     // Timing-based filtering is handled by BucketGroup.scanDue().
                     if (intent.getStatus().isTerminal()) {
