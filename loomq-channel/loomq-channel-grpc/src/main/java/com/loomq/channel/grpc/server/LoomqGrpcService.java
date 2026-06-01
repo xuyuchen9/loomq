@@ -308,8 +308,10 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
                     snapshot -> applyPatch(snapshot, request, newExecuteAt));
                 response.onNext(ProtoConverter.toProto(committed));
             } else {
-                applyPatch(current.get(), request, newExecuteAt);
-                response.onNext(ProtoConverter.toProto(current.get()));
+                Optional<Intent> updated = engine.updateIntent(intentId, intent -> {
+                    applyPatch(intent, request, newExecuteAt);
+                }, newExecuteAt);
+                response.onNext(ProtoConverter.toProto(updated.orElse(current.get())));
             }
             response.onCompleted();
 
@@ -353,7 +355,10 @@ public class LoomqGrpcService extends LoomQServiceGrpc.LoomQServiceImplBase {
                 if (!engine.cancelIntent(intentId)) {
                     throw GrpcStatusAdapter.internal("Failed to cancel intent");
                 }
-                response.onNext(ProtoConverter.toProto(current.get()));
+                // Re-fetch after cancel: getIntent() returns a copy, so the pre-cancel
+                // snapshot is stale. Read the updated state from the store.
+                Intent cancelled = engine.getIntent(intentId).orElse(current.get());
+                response.onNext(ProtoConverter.toProto(cancelled));
             }
             response.onCompleted();
 

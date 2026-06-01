@@ -137,6 +137,7 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         FileChannel channel;
         MemorySegment mappedRegion;
         volatile boolean closed;
+        volatile long lastFlushedWritePos;  // 上次 flush 时对应的全局 writePosition
 
         Segment(int index, Path path, long startGlobalOffset, long size) {
             this.index = index;
@@ -469,10 +470,19 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
 
                 if (shouldFlush) {
                     long startNs = System.nanoTime();
-                    // Flush current segment (only segment with unflushed data)
-                    Segment seg = currentSegment;
-                    if (seg != null) {
-                        seg.mappedRegion.force();
+                    // Flush ALL segments with unflushed data, not just currentSegment.
+                    // This prevents data loss when a concurrent write lands on a rotated
+                    // old segment after it was already force()-d during rotation.
+                    for (Segment seg : segments) {
+                        if (seg.closed) continue;
+                        // A segment has unflushed data if:
+                        // 1. There are writes beyond this segment's start (currentWritePos > seg.start)
+                        // 2. This segment was flushed at a lower writePosition than current
+                        if (currentWritePos > seg.startGlobalOffset
+                            && seg.lastFlushedWritePos < currentWritePos) {
+                            seg.mappedRegion.force();
+                            seg.lastFlushedWritePos = currentWritePos;
+                        }
                     }
                     long elapsedNs = System.nanoTime() - startNs;
 

@@ -23,7 +23,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import java.util.zip.GZIPInputStream;
@@ -45,12 +44,7 @@ public class SnapshotManager {
     private static final String TMP_SUFFIX = ".tmp";
     private static final int MAX_SNAPSHOTS_TO_KEEP = 3;
     private static final int SNAPSHOT_MAGIC = 0x534E4150; // SNAP
-    private static final int SNAPSHOT_VERSION_FULL = 1;
-    private static final int SNAPSHOT_VERSION_INCREMENTAL = 2;
-    private static final byte SNAPSHOT_TYPE_FULL = 1;
-    private static final byte SNAPSHOT_TYPE_INCREMENTAL = 0;
-    /** If dirty ratio exceeds this threshold, fall back to full snapshot. */
-    private static final double INCREMENTAL_DIRTY_THRESHOLD = 0.5;
+    private static final int SNAPSHOT_VERSION = 1;
     private static final DateTimeFormatter SNAPSHOT_TIMESTAMP_FORMAT =
         DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS").withZone(ZoneOffset.UTC);
 
@@ -101,66 +95,6 @@ public class SnapshotManager {
      */
     public CompletableFuture<SnapshotInfo> createSnapshotAsync(IntentStore store, long walOffset) {
         return CompletableFuture.supplyAsync(() -> createSnapshot(store, walOffset));
-    }
-
-    /**
-     * 创建增量快照。只序列化自上次快照以来变更的 intent。
-     * 如果变更比例超过阈值，自动回退到全量快照。
-     *
-     * @param store     Intent 存储
-     * @param walOffset 当前 WAL 写位置
-     * @return 快照信息，如果无变更则返回 null
-     */
-    public SnapshotInfo createIncrementalSnapshot(IntentStore store, long walOffset) {
-        Set<String> dirtyIds = store.getDirtyIntentIds();
-        if (dirtyIds.isEmpty()) {
-            logger.debug("No dirty intents, skipping incremental snapshot");
-            return null;
-        }
-
-        long totalCount = store.count();
-        // If dirty ratio is too high, fall back to full snapshot
-        if (totalCount > 0 && dirtyIds.size() > totalCount * INCREMENTAL_DIRTY_THRESHOLD) {
-            logger.info("Dirty ratio ({}/{}) exceeds threshold, falling back to full snapshot",
-                dirtyIds.size(), totalCount);
-            SnapshotInfo info = createSnapshot(store, walOffset);
-            store.markSnapshotPoint();
-            return info;
-        }
-
-        ensureSnapshotDir();
-        cleanupStaleTmpFiles();
-
-        String timestamp = SNAPSHOT_TIMESTAMP_FORMAT.format(Instant.now());
-        String filename = SNAPSHOT_PREFIX + timestamp + ".inc" + SNAPSHOT_SUFFIX;
-        Path snapshotPath = snapshotDir.resolve(filename);
-        Path tmpPath = snapshotDir.resolve(filename + TMP_SUFFIX);
-
-        logger.info("Creating incremental snapshot: {} (dirty={})", filename, dirtyIds.size());
-
-        try {
-            Instant createdAt = Instant.now();
-            // Only serialize dirty intents
-            Map<String, Intent> allIntents = store.getAllIntents();
-            writeIncrementalSnapshotData(tmpPath, allIntents, dirtyIds, walOffset, createdAt);
-            Files.move(tmpPath, snapshotPath, StandardCopyOption.ATOMIC_MOVE);
-
-            long size = Files.size(snapshotPath);
-            SnapshotInfo info = new SnapshotInfo(filename, walOffset, size, timestamp);
-
-            logger.info("Incremental snapshot created: {}, size={}, intents={}, offset={}",
-                filename, size, dirtyIds.size(), walOffset);
-
-            // Mark snapshot point after successful creation
-            store.markSnapshotPoint();
-            cleanupOldSnapshots();
-            return info;
-
-        } catch (IOException e) {
-            logger.error("Failed to create incremental snapshot: {}", filename, e);
-            try { Files.deleteIfExists(tmpPath); } catch (IOException ignored) {}
-            throw new RuntimeException("Incremental snapshot creation failed", e);
-        }
     }
 
     /**
@@ -239,51 +173,13 @@ public class SnapshotManager {
              DataOutputStream dos = new DataOutputStream(gzos)) {
 
             dos.writeInt(SNAPSHOT_MAGIC);
-            dos.writeInt(SNAPSHOT_VERSION_FULL);
+            dos.writeInt(SNAPSHOT_VERSION);
             dos.writeLong(createdAt.toEpochMilli());
             dos.writeLong(walOffset);
             dos.writeInt(intents.size());
 
             for (Intent intent : intents.values()) {
                 byte[] encodedIntent = IntentBinaryCodec.encode(intent);
-                dos.writeInt(encodedIntent.length);
-                dos.write(encodedIntent);
-            }
-
-            dos.flush();
-            gzos.finish();
-            fc.force(true);
-        }
-    }
-
-    private void writeIncrementalSnapshotData(Path snapshotPath, Map<String, Intent> allIntents,
-                                              Set<String> dirtyIds, long walOffset, Instant createdAt) throws IOException {
-        try (FileChannel fc = FileChannel.open(snapshotPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
-             OutputStream fos = java.nio.channels.Channels.newOutputStream(fc);
-             GZIPOutputStream gzos = new GZIPOutputStream(fos);
-             DataOutputStream dos = new DataOutputStream(gzos)) {
-
-            dos.writeInt(SNAPSHOT_MAGIC);
-            dos.writeInt(SNAPSHOT_VERSION_INCREMENTAL);
-            dos.writeLong(createdAt.toEpochMilli());
-            dos.writeLong(walOffset);
-            dos.writeByte(SNAPSHOT_TYPE_INCREMENTAL);
-            dos.writeInt(dirtyIds.size());
-
-            for (String intentId : dirtyIds) {
-                Intent intent = allIntents.get(intentId);
-                if (intent == null) {
-                    // Intent was deleted — write a tombstone (empty payload)
-                    byte[] idBytes = intentId.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                    dos.writeShort(idBytes.length);
-                    dos.write(idBytes);
-                    dos.writeInt(0); // zero-length = tombstone
-                    continue;
-                }
-                byte[] idBytes = intentId.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                byte[] encodedIntent = IntentBinaryCodec.encode(intent);
-                dos.writeShort(idBytes.length);
-                dos.write(idBytes);
                 dos.writeInt(encodedIntent.length);
                 dos.write(encodedIntent);
             }
@@ -329,35 +225,15 @@ public class SnapshotManager {
 
             SnapshotHeader header = readSnapshotHeader(dis);
 
-            if (header.snapshotType() == SNAPSHOT_TYPE_INCREMENTAL) {
-                // Incremental format: [idLen(2B) + id(N) + intentLen(4B) + intentBytes(N)]*
-                for (int i = 0; i < header.intentCount(); i++) {
-                    short idLen = dis.readShort();
-                    byte[] idBytes = new byte[idLen];
-                    dis.readFully(idBytes);
-                    //String intentId = new String(idBytes, java.nio.charset.StandardCharsets.UTF_8);
-
-                    int payloadLen = dis.readInt();
-                    if (payloadLen <= 0) {
-                        // Tombstone — skip (intent was deleted)
-                        continue;
-                    }
-                    byte[] encodedIntent = new byte[payloadLen];
-                    dis.readFully(encodedIntent);
-                    consumer.accept(IntentBinaryCodec.decode(encodedIntent));
+            for (int i = 0; i < header.intentCount(); i++) {
+                int length = dis.readInt();
+                if (length <= 0) {
+                    throw new IOException("Invalid snapshot record length: " + length);
                 }
-            } else {
-                // Full format: [intentLen(4B) + intentBytes(N)]*
-                for (int i = 0; i < header.intentCount(); i++) {
-                    int length = dis.readInt();
-                    if (length <= 0) {
-                        throw new IOException("Invalid snapshot record length: " + length);
-                    }
 
-                    byte[] encodedIntent = new byte[length];
-                    dis.readFully(encodedIntent);
-                    consumer.accept(IntentBinaryCodec.decode(encodedIntent));
-                }
+                byte[] encodedIntent = new byte[length];
+                dis.readFully(encodedIntent);
+                consumer.accept(IntentBinaryCodec.decode(encodedIntent));
             }
 
             return header;
@@ -389,21 +265,15 @@ public class SnapshotManager {
         }
 
         int version = dis.readInt();
-        if (version != SNAPSHOT_VERSION_FULL && version != SNAPSHOT_VERSION_INCREMENTAL) {
+        if (version != SNAPSHOT_VERSION) {
             throw new IOException("Unsupported snapshot version: " + version);
         }
 
         long createdAtMillis = dis.readLong();
         long walOffset = dis.readLong();
-
-        byte snapshotType = SNAPSHOT_TYPE_FULL;
-        if (version == SNAPSHOT_VERSION_INCREMENTAL) {
-            snapshotType = dis.readByte();
-        }
-
         int intentCount = dis.readInt();
 
-        return new SnapshotHeader(createdAtMillis, walOffset, intentCount, snapshotType);
+        return new SnapshotHeader(createdAtMillis, walOffset, intentCount);
     }
 
     private Optional<Path> findLatestSnapshot() {
@@ -543,5 +413,5 @@ public class SnapshotManager {
         }
     }
 
-    private record SnapshotHeader(long createdAtMillis, long walOffset, int intentCount, byte snapshotType) {}
+    private record SnapshotHeader(long createdAtMillis, long walOffset, int intentCount) {}
 }
