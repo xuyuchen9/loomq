@@ -9,8 +9,12 @@ import com.loomq.channel.http.HttpCallbackHandler;
 import com.loomq.channel.http.NettyHttpDeliveryHandler;
 import com.loomq.channel.http.batch.BatchDeliveryConfig;
 import com.loomq.channel.http.batch.BatchedHttpDeliveryHandler;
+import com.loomq.common.HealthNarrator;
 import com.loomq.common.MetricsCollector;
+import com.loomq.common.RaftRole;
 import com.loomq.common.RaftStatusSnapshot;
+import com.loomq.common.TimelineService;
+import com.loomq.common.WalReplayService;
 import com.loomq.config.LoomqConfig;
 import com.loomq.config.ServerConfig;
 import com.loomq.config.WalConfig;
@@ -28,6 +32,9 @@ import com.loomq.spi.DirectWriteCoordinator;
 import com.loomq.spi.RaftStatusProvider;
 import com.loomq.spi.WriteCoordinator;
 import io.netty.handler.codec.http.HttpMethod;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -35,8 +42,6 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Standalone Netty service bootstrap.
@@ -545,7 +550,7 @@ public class LoomqServerApplication {
                 var health = buildHealthResponse(engine, raftStatus);
                 return health.get("status") + " — " + health.get("timestamp");
             }
-            return com.loomq.common.HealthNarrator.narrate(engine);
+            return HealthNarrator.narrate(engine);
         });
         router.add(HttpMethod.GET, "/health/live", (method, uri, body, headers, pathParams) ->
             HEALTH_LIVE_RESPONSE);
@@ -593,11 +598,11 @@ public class LoomqServerApplication {
                 return new HttpErrorResponse(400,
                     ErrorResponse.of("40011", "Timeline window exceeds maximum of 24 hours"));
             }
-            return com.loomq.common.TimelineService.build(
+            return TimelineService.build(
                 engine.getScheduler().getCohortManager(), engine.getScheduler(), from, to);
         });
         router.add(HttpMethod.GET, "/v1/system/wal/segments", (method, uri, body, headers, pathParams) ->
-            com.loomq.common.WalReplayService.listSegments(engine.getWalAccessor()));
+            WalReplayService.listSegments(engine.getWalAccessor()));
         router.add(HttpMethod.GET, "/v1/system/wal/replay", (method, uri, body, headers, pathParams) -> {
             String intentId = null;
             int queryStart = uri.indexOf('?');
@@ -615,7 +620,7 @@ public class LoomqServerApplication {
                 return new HttpErrorResponse(400,
                     com.loomq.api.ErrorResponse.of("40004", "Query parameter 'intentId' is required"));
             }
-            return com.loomq.common.WalReplayService.replayByIntentId(engine.getWalAccessor(), intentId);
+            return WalReplayService.replayByIntentId(engine.getWalAccessor(), intentId);
         });
     }
 
@@ -796,8 +801,8 @@ public class LoomqServerApplication {
         }
 
         @Override
-        public void onRoleChanged(com.loomq.common.RaftRole role, long term) {
-            if (role == com.loomq.common.RaftRole.LEADER) {
+        public void onRoleChanged(RaftRole role, long term) {
+            if (role == RaftRole.LEADER) {
                 engine.getScheduler().rebuildFromCommittedState(engine.getIntentStore().getAllIntents().values());
                 engine.getScheduler().resume();
             } else {

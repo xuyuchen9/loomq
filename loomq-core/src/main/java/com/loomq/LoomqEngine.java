@@ -21,6 +21,9 @@ import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IdempotencyResult;
 import com.loomq.store.IntentStore;
 import com.loomq.store.ReadOnlyIntentStoreView;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -35,8 +38,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * LoomQ 核心引擎 - 嵌入式内核
@@ -151,7 +152,7 @@ public class LoomqEngine implements AutoCloseable {
         }
 
         logger.info("╔════════════════════════════════════════════════════════╗");
-            logger.info("║       LoomQ Core Engine Starting...                    ║");
+        logger.info("║       LoomQ Core Engine Starting...                    ║");
         logger.info("║       Mode: Embedded (Zero HTTP dependencies)          ║");
         logger.info("╚════════════════════════════════════════════════════════╝");
 
