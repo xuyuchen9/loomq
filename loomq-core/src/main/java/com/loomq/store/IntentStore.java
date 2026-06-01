@@ -4,7 +4,6 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Intent 存储接口。
@@ -23,8 +22,19 @@ public interface IntentStore extends AutoCloseable {
     /** 更新已存在的 Intent */
     void update(Intent intent);
 
-    /** 按 ID 查找 Intent */
+    /** 按 ID 查找 Intent（返回防御性拷贝，外部只读路径使用） */
     Intent findById(String intentId);
+
+    /**
+     * 按 ID 查找 Intent（返回 store 内部引用，命令服务内部写路径使用）。
+     *
+     * <p>与 {@link #findById(String)} 不同，此方法返回 store 内部持有的可变引用，
+     * 调用方必须在 synchronized(intent) 块内操作，并确保后续写 WAL + update。
+     * 仅限 IntentCommandService 等内部组件使用，不应暴露给外部调用方。</p>
+     */
+    default Intent findByIdInternal(String intentId) {
+        return findById(intentId);
+    }
 
     /** 删除 Intent */
     void delete(String intentId);
@@ -50,24 +60,6 @@ public interface IntentStore extends AutoCloseable {
 
     /** 获取所有 Intent（恢复/快照用，大数据量场景慎用） */
     Map<String, Intent> getAllIntents();
-
-    /**
-     * 获取自上次 {@link #markSnapshotPoint()} 以来变更的 intent ID 集合。
-     * 用于增量快照：只序列化变更的 intent。
-     *
-     * @return 变更的 intent ID 集合（不可变副本）
-     */
-    default Set<String> getDirtyIntentIds() {
-        return Set.of();
-    }
-
-    /**
-     * 标记当前快照点，清空 dirty set。
-     * 调用后 {@link #getDirtyIntentIds()} 将返回空集，直到有新的写入。
-     */
-    default void markSnapshotPoint() {
-        // no-op by default
-    }
 
     /**
      * 获取存储中的 intent 总数。

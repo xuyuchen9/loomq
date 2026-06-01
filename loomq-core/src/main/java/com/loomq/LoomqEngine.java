@@ -208,6 +208,11 @@ public class LoomqEngine implements AutoCloseable {
         // 关闭 WAL
         walWriter.close();
 
+        // 关闭 WAL 写入执行器
+        if (walWriteExecutor instanceof AutoCloseable ac) {
+            ac.close();
+        }
+
         // 关闭回调执行器
         if (callbackExecutor instanceof AutoCloseable) {
             ((AutoCloseable) callbackExecutor).close();

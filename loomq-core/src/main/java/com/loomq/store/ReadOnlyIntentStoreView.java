@@ -4,7 +4,6 @@ import com.loomq.domain.intent.Intent;
 import com.loomq.domain.intent.IntentStatus;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * IntentStore 的只读视图。
@@ -29,13 +28,13 @@ public final class ReadOnlyIntentStoreView implements IntentStore {
     }
 
     @Override
-    public Map<String, Intent> getAllIntents() {
-        return delegate.getAllIntents();
+    public Intent findByIdInternal(String intentId) {
+        return delegate.findByIdInternal(intentId);
     }
 
     @Override
-    public Set<String> getDirtyIntentIds() {
-        return delegate.getDirtyIntentIds();
+    public Map<String, Intent> getAllIntents() {
+        return delegate.getAllIntents();
     }
 
     @Override
@@ -87,11 +86,6 @@ public final class ReadOnlyIntentStoreView implements IntentStore {
 
     @Override
     public void clear() {
-        throw new UnsupportedOperationException("Read-only IntentStore view");
-    }
-
-    @Override
-    public void markSnapshotPoint() {
         throw new UnsupportedOperationException("Read-only IntentStore view");
     }
 

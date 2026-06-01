@@ -6,7 +6,6 @@ import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -32,8 +31,6 @@ public class ConcurrentIntentStore implements IntentStore {
     private final Map<String, IdempotencyRecord> idempotencyRecords = new ConcurrentHashMap<>();
     private final Map<IntentStatus, AtomicLong> statusCounts = new EnumMap<>(IntentStatus.class);
     private final AtomicLong pendingCount = new AtomicLong();
-    /** Tracks intent IDs modified since the last snapshot point (for incremental snapshots). */
-    private final Set<String> dirtyIds = ConcurrentHashMap.newKeySet();
 
     private final ScheduledExecutorService cleanupExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "idempotency-cleanup");
@@ -71,6 +68,12 @@ public class ConcurrentIntentStore implements IntentStore {
     @Override
     public Intent findById(String intentId) {
         StoredIntent stored = intents.get(intentId);
+        return stored != null ? stored.intent().copy() : null;
+    }
+
+    @Override
+    public Intent findByIdInternal(String intentId) {
+        StoredIntent stored = intents.get(intentId);
         return stored != null ? stored.intent() : null;
     }
 
@@ -95,9 +98,9 @@ public class ConcurrentIntentStore implements IntentStore {
 
         Intent intent = stored.intent();
         if (intent.getStatus().isTerminal()) {
-            return IdempotencyResult.duplicateTerminal(intent);
+            return IdempotencyResult.duplicateTerminal(intent.copy());
         } else {
-            return IdempotencyResult.duplicateActive(intent);
+            return IdempotencyResult.duplicateActive(intent.copy());
         }
     }
 
@@ -124,18 +127,8 @@ public class ConcurrentIntentStore implements IntentStore {
     @Override
     public Map<String, Intent> getAllIntents() {
         Map<String, Intent> snapshot = new HashMap<>(intents.size());
-        intents.forEach((id, stored) -> snapshot.put(id, stored.intent()));
+        intents.forEach((id, stored) -> snapshot.put(id, stored.intent().copy()));
         return Map.copyOf(snapshot);
-    }
-
-    @Override
-    public Set<String> getDirtyIntentIds() {
-        return Set.copyOf(dirtyIds);
-    }
-
-    @Override
-    public void markSnapshotPoint() {
-        dirtyIds.clear();
     }
 
     @Override
@@ -213,8 +206,6 @@ public class ConcurrentIntentStore implements IntentStore {
 
             return stored;
         });
-        // Track dirty intent for incremental snapshots
-        dirtyIds.add(intent.getIntentId());
     }
 
     private void incrementStatus(IntentStatus status) {
