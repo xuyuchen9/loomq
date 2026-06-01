@@ -210,7 +210,9 @@ public final class IntentCommandService {
                     Instant actualExecuteAt = intent.getExecuteAt();
                     if (actualExecuteAt != null && !actualExecuteAt.equals(oldExecuteAt)) {
                         reschedule = true;
-                        scheduler.removeFromSchedule(intent);
+                        // 必须在 updater 已修改 executeAt 之后、重新调度之前，
+                        // 用旧的 executeAt 清理索引（removeFromSchedule 内部用的是当前 executeAt）
+                        scheduler.removeFromSchedule(intent, oldExecuteAt);
                     }
                 }
 
