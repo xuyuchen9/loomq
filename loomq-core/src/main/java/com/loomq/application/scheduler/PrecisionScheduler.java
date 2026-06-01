@@ -929,7 +929,7 @@ public class PrecisionScheduler {
         var expiredEntries = intentExpiryIndex.headMap(nowMs, true);
         for (var entry : expiredEntries.entrySet()) {
             for (String intentId : entry.getValue()) {
-                Intent intent = intentStore.findById(intentId);
+                Intent intent = intentStore.findByIdInternal(intentId);
                 if (intent == null) continue;  // 惰性清理：可能已被删除
                 if (intent.getPrecisionTier() != tier) continue;
                 if (!intent.isExpired()) continue;

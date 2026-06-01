@@ -360,7 +360,10 @@ public class IntentHandler {
                 return errorResponse(500, "50002", "Failed to cancel intent");
             }
 
-            return IntentResponse.from(intent);
+            // Re-fetch after cancel: getIntent() returns a copy, so the pre-cancel
+            // snapshot is stale. Read the updated state from the store.
+            Intent cancelled = engine.getIntent(intentId).orElse(intent);
+            return IntentResponse.from(cancelled);
         } catch (RaftWriteUnavailableException e) {
             logger.warn("Raft write unavailable for cancel {}: {}", intentId, e.getMessage());
             return raftWriteUnavailableResponse("cancel", intentId, e.reason());
@@ -415,6 +418,11 @@ public class IntentHandler {
 
             // Fallback: direct engine call (no coordinator)
             if (!engine.fireNow(intentId)) {
+                Optional<Intent> intent = engine.getIntent(intentId);
+                if (intent.isPresent() && intent.get().getStatus().isTerminal()) {
+                    return errorResponse(422, "42201",
+                        "Intent is in terminal state: " + intent.get().getStatus());
+                }
                 return errorResponse(500, "50003", "Failed to trigger intent immediately");
             }
 

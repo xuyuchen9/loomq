@@ -178,7 +178,7 @@ public final class IntentCommandService {
     public Optional<Intent> updateIntent(String intentId, Consumer<Intent> updater, Instant newExecuteAt) {
         ensureRunning();
 
-        Intent intent = intentStore.findById(intentId);
+        Intent intent = intentStore.findByIdInternal(intentId);
         if (intent == null) {
             return Optional.empty();
         }
@@ -220,7 +220,7 @@ public final class IntentCommandService {
     public boolean cancelIntent(String intentId) {
         ensureRunning();
 
-        Intent intent = intentStore.findById(intentId);
+        Intent intent = intentStore.findByIdInternal(intentId);
         if (intent == null) {
             return false;
         }
@@ -250,8 +250,14 @@ public final class IntentCommandService {
     public boolean fireNow(String intentId) {
         ensureRunning();
 
-        Intent intent = intentStore.findById(intentId);
+        Intent intent = intentStore.findByIdInternal(intentId);
         if (intent == null) {
+            return false;
+        }
+
+        if (intent.getStatus().isTerminal()) {
+            logger.warn("Cannot fire intent in terminal state: id={}, status={}",
+                intentId, intent.getStatus());
             return false;
         }
 
