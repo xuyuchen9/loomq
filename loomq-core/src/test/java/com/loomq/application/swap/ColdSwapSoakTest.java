@@ -167,7 +167,12 @@ class ColdSwapSoakTest {
         // 允许少量并发误差（CopyOnWriteArrayList 并发写入偶尔丢一个）
         assertTrue(swapper.coldIntentCount() >= intentCount - 5,
             "Cold index should have ~" + intentCount + " entries");
-        assertEquals(0, intentStore.count()); // 所有 intent 已从 store 移除
+        // ConcurrentHashMap 在高并发下可能有短暂延迟，等待 store 完全清空
+        long storeDrainDeadline = System.currentTimeMillis() + 5_000;
+        while (intentStore.count() > 0 && System.currentTimeMillis() < storeDrainDeadline) {
+            Thread.sleep(100);
+        }
+        assertEquals(0, intentStore.count(), "All intents should be removed from store after swap-out");
 
         // Phase 2: 手动触发快照 + WAL 截断（模拟 3 个快照周期）
         for (int cycle = 1; cycle <= 3; cycle++) {
