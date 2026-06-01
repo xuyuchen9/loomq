@@ -68,7 +68,6 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
     private final Path dataDir;
     private final String shardId;
     private final long segmentSize;        // 每段最大字节
-    private final Arena arena;
 
     // ========== 段文件管理 ==========
     private final List<Segment> segments = new CopyOnWriteArrayList<>();
@@ -143,6 +142,7 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         final long startGlobalOffset;  // 全局偏移起始
         final long size;               // 文件大小（bytes）
         FileChannel channel;
+        Arena arena;                   // 每段独立 Arena，支持单独释放
         MemorySegment mappedRegion;
         volatile boolean closed;
         volatile long lastFlushedWritePos;  // 上次 flush 时对应的全局 writePosition
@@ -177,7 +177,6 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         this.batchFlushIntervalNs = config.batchFlushIntervalMs() * 1_000_000L;
         this.adaptiveFlush = config.memorySegmentAdaptiveFlushEnabled();
         this.lastBatchFlushNs = System.nanoTime();
-        this.arena = Arena.ofShared();
 
         Files.createDirectories(dataDir);
 
@@ -218,10 +217,12 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
             StandardOpenOption.WRITE);
         channel.truncate(segmentSize);
 
-        MemorySegment mapped = channel.map(FileChannel.MapMode.READ_WRITE, 0, segmentSize, arena);
+        Arena segArena = Arena.ofShared();
+        MemorySegment mapped = channel.map(FileChannel.MapMode.READ_WRITE, 0, segmentSize, segArena);
 
         Segment seg = new Segment(nextSegmentIndex, path, startGlobalOffset, segmentSize);
         seg.channel = channel;
+        seg.arena = segArena;
         seg.mappedRegion = mapped;
 
         segments.add(seg);
@@ -254,7 +255,8 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
             long segmentStart = ((long) segmentIndex - 1L) * segmentSize;
             Segment seg = new Segment(segmentIndex, path, segmentStart, segmentSize);
             seg.channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
-            seg.mappedRegion = seg.channel.map(FileChannel.MapMode.READ_WRITE, 0, segmentSize, arena);
+            seg.arena = Arena.ofShared();
+            seg.mappedRegion = seg.channel.map(FileChannel.MapMode.READ_WRITE, 0, segmentSize, seg.arena);
 
             SegmentRecovery recovery = scanSegment(seg);
             segments.add(seg);
@@ -587,6 +589,8 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         for (Segment seg : toRemove) {
             try {
                 seg.mappedRegion.force();
+                seg.arena.close();       // 释放原生内存映射，防止虚拟内存累积
+                seg.closed = true;
                 seg.channel.close();
                 Files.deleteIfExists(seg.path);
                 segments.remove(seg);
@@ -641,6 +645,10 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
                 if (seg.mappedRegion != null) {
                     seg.mappedRegion.force();
                 }
+                if (seg.arena != null) {
+                    seg.arena.close();       // 释放原生内存映射，防止虚拟内存累积
+                }
+                seg.closed = true;
                 if (seg.channel != null && seg.channel.isOpen()) {
                     seg.channel.close();
                 }
@@ -937,6 +945,11 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
             Thread.currentThread().interrupt();
         }
 
+        // 标记所有段为已关闭，防止并发 flushLoop 访问
+        for (Segment seg : segments) {
+            seg.closed = true;
+        }
+
         // 最终刷盘所有段
         for (Segment seg : segments) {
             try {
@@ -948,9 +961,12 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
             }
         }
 
-        // 关闭所有段
+        // 关闭所有段的 Arena 和 FileChannel
         for (Segment seg : segments) {
             try {
+                if (seg.arena != null) {
+                    seg.arena.close();
+                }
                 if (seg.channel != null && seg.channel.isOpen()) {
                     seg.channel.close();
                 }
@@ -958,8 +974,6 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
                 logger.error("Close channel failed for segment {}", seg.path, e);
             }
         }
-
-        arena.close();
 
         // 最后同步保存 Raft 元数据保证最新状态落盘
         saveRaftMeta();
