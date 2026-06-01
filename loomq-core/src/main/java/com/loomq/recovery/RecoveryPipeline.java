@@ -79,6 +79,23 @@ public final class RecoveryPipeline implements AutoCloseable {
      * @param walAccessorSupplier 获取 WalAccessor（用于截断）
      */
     public void startSnapshots(IntentStore store, LongSupplier walOffsetSupplier, Supplier<WalAccessor> walAccessorSupplier) {
+        startSnapshots(store, walOffsetSupplier, walAccessorSupplier, () -> Long.MAX_VALUE);
+    }
+
+    /**
+     * 启动定期快照，并在快照完成后截断旧 WAL 段，同时保护冷 Intent 的 WAL 段不被截断。
+     *
+     * @param store                      Intent 存储
+     * @param walOffsetSupplier          获取当前 WAL 写位置
+     * @param walAccessorSupplier        获取 WalAccessor（用于截断）
+     * @param minTruncationOffsetSupplier 获取冷 Intent 需要的最小 WAL 位置，
+     *                                   截断点取 min(snapshotOffset, 此值)，
+     *                                   返回 Long.MAX_VALUE 表示不额外约束
+     */
+    public void startSnapshots(IntentStore store,
+                               LongSupplier walOffsetSupplier,
+                               Supplier<WalAccessor> walAccessorSupplier,
+                               LongSupplier minTruncationOffsetSupplier) {
         if (!running.compareAndSet(false, true)) {
             return;
         }
@@ -93,7 +110,12 @@ public final class RecoveryPipeline implements AutoCloseable {
                         logger.debug("Snapshot checkpoint written: {}", info);
                         WalAccessor wal = walAccessorSupplier.get();
                         if (wal != null) {
-                            wal.truncateBefore(info.walOffset);
+                            long safeTruncateOffset = Math.min(info.walOffset, minTruncationOffsetSupplier.getAsLong());
+                            if (safeTruncateOffset < info.walOffset) {
+                                logger.info("WAL truncation limited by cold intents: snapshotOffset={}, safeTruncateOffset={}",
+                                    info.walOffset, safeTruncateOffset);
+                            }
+                            wal.truncateBefore(safeTruncateOffset);
                         }
                     }, snapshotExecutor)
                     .exceptionally(ex -> {

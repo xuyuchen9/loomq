@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit;
 public class AsyncWalGrpcBenchmark extends ProtocolBenchmark {
 
     private static final String GRPC_HOST = System.getProperty("loomq.benchmark.grpc.host", "localhost");
-    private static final int GRPC_PORT = Integer.getInteger("loomq.benchmark.grpc.port", 7929);
+    private static final int GRPC_PORT = Integer.getInteger("loomq.benchmark.grpc.port", 8928);
     private static final String STUB_TYPE = System.getProperty("loomq.benchmark.grpc.stub", "blocking");
     private static final String PRECISION_TIER = System.getProperty("loomq.benchmark.grpc.tier", "STANDARD");
 

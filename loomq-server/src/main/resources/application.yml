@@ -39,7 +39,7 @@ netty:
 grpc:
   enabled: ${LOOMQ_GRPC_ENABLED:false}
   host: "${LOOMQ_GRPC_HOST:0.0.0.0}"
-  port: ${LOOMQ_GRPC_PORT:7929}
+  port: ${LOOMQ_GRPC_PORT:8928}
   max_inbound_message_size: ${LOOMQ_GRPC_MAX_INBOUND_MESSAGE_SIZE:4194304}
   boss_threads: 1
   worker_threads: 0

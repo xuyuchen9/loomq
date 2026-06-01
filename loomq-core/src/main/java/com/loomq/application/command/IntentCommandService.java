@@ -41,6 +41,7 @@ public final class IntentCommandService {
     private final SimpleWalWriter walWriter;
     private final MetricsCollector metricsCollector;
     private final Executor callbackExecutor;
+    private final Executor walWriteExecutor;
     private final AtomicBoolean running;
     private final AtomicLong sequenceNumber;
 
@@ -54,6 +55,7 @@ public final class IntentCommandService {
         SimpleWalWriter walWriter,
         MetricsCollector metricsCollector,
         Executor callbackExecutor,
+        Executor walWriteExecutor,
         AtomicBoolean running,
         AtomicLong sequenceNumber,
         CallbackHandler callbackHandler,
@@ -65,6 +67,7 @@ public final class IntentCommandService {
         this.walWriter = walWriter;
         this.metricsCollector = metricsCollector;
         this.callbackExecutor = callbackExecutor;
+        this.walWriteExecutor = walWriteExecutor;
         this.running = running;
         this.sequenceNumber = sequenceNumber;
         this.callbackHandler = callbackHandler;
@@ -186,7 +189,7 @@ public final class IntentCommandService {
                 boolean reschedule = newExecuteAt != null && !newExecuteAt.equals(oldExecuteAt);
 
                 if (reschedule) {
-                    scheduler.getBucketGroupManager().remove(intent);
+                    scheduler.removeFromSchedule(intent);
                 }
 
                 updater.accept(intent);
@@ -225,7 +228,7 @@ public final class IntentCommandService {
         try {
             synchronized (intent) {
                 intent.transitionTo(IntentStatus.CANCELED);
-                scheduler.getBucketGroupManager().remove(intent);
+                scheduler.removeFromSchedule(intent);
                 intent.incrementRevision();
                 persistIntentState(intent, AckMode.DURABLE);
                 intentStore.update(intent);
@@ -254,7 +257,7 @@ public final class IntentCommandService {
 
         try {
             synchronized (intent) {
-                scheduler.getBucketGroupManager().remove(intent);
+                scheduler.removeFromSchedule(intent);
                 intent.setExecuteAt(Instant.now());
                 intent.incrementRevision();
                 persistIntentState(intent, AckMode.DURABLE);
@@ -310,7 +313,7 @@ public final class IntentCommandService {
                 yield CompletableFuture.completedFuture(-1L);
             }
             case DURABLE -> CompletableFuture.supplyAsync(
-                () -> walWriter.writeDurable(walPayload).join(), callbackExecutor);
+                () -> walWriter.writeDurable(walPayload).join(), walWriteExecutor);
         };
     }
 

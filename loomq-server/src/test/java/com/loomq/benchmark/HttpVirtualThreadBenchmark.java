@@ -18,7 +18,7 @@ import java.util.concurrent.ThreadLocalRandom;
  */
 public class HttpVirtualThreadBenchmark extends ProtocolBenchmark {
 
-    private static final String BASE_URL = System.getProperty("loomq.benchmark.baseUrl", "http://localhost:8080");
+    private static final String BASE_URL = System.getProperty("loomq.benchmark.baseUrl", "http://localhost:7928");
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(5);
     private static final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))

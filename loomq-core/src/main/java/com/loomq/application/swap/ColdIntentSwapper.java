@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
@@ -26,8 +27,9 @@ import org.slf4j.LoggerFactory;
  * 适用场景：大量延迟 > 1 小时的 Intent（如定时通知、批量调度），
  * 可节省 90%+ 内存占用。
  *
- * 线程安全：swap-out 由调用方保证单线程（createIntent 路径），
- * swap-in 由内部 daemon 单线程执行，索引操作无需额外同步。
+ * 线程安全：swap-out 由多虚拟线程并发调用（createIntent 路径），
+ * swap-in 由内部 daemon 单线程执行。
+ * coldIndex 使用 CopyOnWriteArrayList 保证并发安全。
  */
 public final class ColdIntentSwapper implements AutoCloseable {
 
@@ -138,7 +140,7 @@ public final class ColdIntentSwapper implements AutoCloseable {
         intentStore.delete(intent.getIntentId());
 
         // 加入冷索引
-        coldIndex.computeIfAbsent(entry.executeAtEpochMs(), k -> new ArrayList<>())
+        coldIndex.computeIfAbsent(entry.executeAtEpochMs(), k -> new CopyOnWriteArrayList<>())
                  .add(entry);
 
         totalSwappedOut.incrementAndGet();
@@ -240,6 +242,25 @@ public final class ColdIntentSwapper implements AutoCloseable {
     }
 
     // ========== 观测 ==========
+
+    /**
+     * 返回当前冷索引中所有 Intent 需要的最小 WAL 位置。
+     *
+     * 用于通知 RecoveryPipeline 在截断 WAL 时保留冷 Intent 对应的段，
+     * 防止 swapIn() 时 WAL 记录已被截断导致数据丢失。
+     *
+     * 无冷 Intent 时返回 Long.MAX_VALUE（不约束截断）。
+     * 每 5 分钟由快照线程调用一次，遍历开销可忽略。
+     */
+    public long getMinRequiredWalPosition() {
+        long min = Long.MAX_VALUE;
+        for (List<ColdIntentEntry> entries : coldIndex.values()) {
+            for (ColdIntentEntry entry : entries) {
+                min = Math.min(min, entry.walPosition());
+            }
+        }
+        return min;
+    }
 
     public int coldIntentCount() {
         return coldIndex.values().stream().mapToInt(List::size).sum();

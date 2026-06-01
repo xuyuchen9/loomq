@@ -15,7 +15,7 @@ class GrpcConfigTest {
         GrpcConfig config = GrpcConfig.defaultConfig();
         assertFalse(config.enabled());
         assertEquals("0.0.0.0", config.host());
-        assertEquals(7929, config.port());
+        assertEquals(8928, config.port());
         assertEquals(4 * 1024 * 1024, config.maxInboundMessageSize());
         assertEquals(1, config.bossThreads());
         assertEquals(0, config.workerThreads());
@@ -57,7 +57,7 @@ class GrpcConfigTest {
     void fromPropertiesNullReturnsDefaults() {
         GrpcConfig config = GrpcConfig.fromProperties(null);
         assertFalse(config.enabled());
-        assertEquals(7929, config.port());
+        assertEquals(8928, config.port());
     }
 
     @Test

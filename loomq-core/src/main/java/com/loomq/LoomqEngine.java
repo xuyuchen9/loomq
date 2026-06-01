@@ -20,6 +20,7 @@ import com.loomq.spi.WalAccessor;
 import com.loomq.store.ConcurrentIntentStore;
 import com.loomq.store.IdempotencyResult;
 import com.loomq.store.IntentStore;
+import com.loomq.store.ReadOnlyIntentStoreView;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -63,6 +64,7 @@ public class LoomqEngine implements AutoCloseable {
 
     // ========== 回调机制 ==========
     private final Executor callbackExecutor;
+    private final Executor walWriteExecutor;
     private final java.util.concurrent.ExecutorService operationExecutor;
 
     // ========== 状态 ==========
@@ -84,6 +86,7 @@ public class LoomqEngine implements AutoCloseable {
         this.callbackExecutor = builder.callbackExecutor != null
             ? builder.callbackExecutor
             : Executors.newVirtualThreadPerTaskExecutor();
+        this.walWriteExecutor = Executors.newVirtualThreadPerTaskExecutor();
         this.operationExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
         try {
@@ -114,6 +117,7 @@ public class LoomqEngine implements AutoCloseable {
                 walWriter,
                 metricsCollector,
                 callbackExecutor,
+                walWriteExecutor,
                 running,
                 sequenceNumber,
                 builder.callbackHandler,
@@ -170,8 +174,9 @@ public class LoomqEngine implements AutoCloseable {
         // 启动冷热交换器（长延迟 Intent 内存换出/换入）
         coldSwapper.start();
 
-        // 启动定期快照（快照完成后自动截断旧 WAL 段）
-        recoveryPipeline.startSnapshots(intentStore, walWriter::getWritePosition, () -> walWriter);
+        // 启动定期快照（快照完成后自动截断旧 WAL 段，冷 Intent 的 WAL 段受保护不被截断）
+        recoveryPipeline.startSnapshots(intentStore, walWriter::getWritePosition, () -> walWriter,
+            coldSwapper::getMinRequiredWalPosition);
 
         logger.info("Engine started successfully");
     }
@@ -332,9 +337,21 @@ public class LoomqEngine implements AutoCloseable {
     }
 
     /**
-     * 获取 Intent 存储（供服务层读写）
+     * 获取 Intent 存储只读视图。
+     *
+     * 返回的视图仅暴露读操作，写操作抛出 UnsupportedOperationException。
+     * 需要写入 Intent 请通过 {@link #getCommandService()}。
      */
     public IntentStore getIntentStore() {
+        return new ReadOnlyIntentStoreView(intentStore);
+    }
+
+    /**
+     * 获取原始 Intent 存储（内部/Raft 使用，可读写）。
+     *
+     * 外部调用方应使用 {@link #getIntentStore()} 只读视图。
+     */
+    public IntentStore getIntentStoreInternal() {
         return intentStore;
     }
 

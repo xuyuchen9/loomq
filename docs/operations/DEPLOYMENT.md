@@ -134,8 +134,8 @@ The leader only serves reads while its quorum freshness lease is valid, so a nod
 ```bash
 export LOOMQ_RAFT_ENABLED=true
 export LOOMQ_RAFT_NODE_ID=node-1
-export LOOMQ_RAFT_PEERS="node-1@10.0.0.11:7930,node-2@10.0.0.12:7930,node-3@10.0.0.13:7930"
-export LOOMQ_RAFT_PORT=7930
+export LOOMQ_RAFT_PEERS="node-1@10.0.0.11:9928,node-2@10.0.0.12:9928,node-3@10.0.0.13:9928"
+export LOOMQ_RAFT_PORT=9928
 ./scripts/start.sh
 ```
 
@@ -215,7 +215,7 @@ spec:
           image: loomq:0.9.2
           ports:
             - containerPort: 7928
-            - containerPort: 7930
+            - containerPort: 9928
           env:
             - name: LOOMQ_NODE_ID
               valueFrom:
@@ -228,9 +228,9 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
             - name: LOOMQ_RAFT_PORT
-              value: "7930"
+              value: "9928"
             - name: LOOMQ_RAFT_PEERS
-              value: "loomq-0@loomq-0.loomq-headless:7930,loomq-1@loomq-1.loomq-headless:7930,loomq-2@loomq-2.loomq-headless:7930"
+              value: "loomq-0@loomq-0.loomq-headless:9928,loomq-1@loomq-1.loomq-headless:9928,loomq-2@loomq-2.loomq-headless:9928"
             - name: LOOMQ_DATA_DIR
               value: /data/wal
             - name: LOOMQ_SCHEDULER_MAX_PENDING_INTENTS

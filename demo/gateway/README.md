@@ -70,7 +70,7 @@ curl -X POST http://localhost:7928/v1/intents \
 | 变量 | 默认值 | 说明 |
 |:---|:---|:---|
 | `LOOMQ_HOST` | `localhost` | LoomQ Server 地址 |
-| `LOOMQ_GRPC_PORT` | `7929` | LoomQ gRPC 端口 |
+| `LOOMQ_GRPC_PORT` | `8928` | LoomQ gRPC 端口 |
 | `GATEWAY_WS_PORT` | `8080` | Gateway WebSocket 端口 |
 
 ### LoomQ Server 配置
@@ -132,7 +132,7 @@ curl -X POST http://localhost:7928/v1/intents \
 ### Gateway 无法连接 LoomQ
 
 检查：
-1. LoomQ Server 是否启动且 gRPC 端口（7929）可访问
+1. LoomQ Server 是否启动且 gRPC 端口（8928）可访问
 2. 是否启用了 gRPC：`-Dloomq.grpc.enabled=true`
 3. 是否启用了 gRPC 流投递：`-Dloomq.delivery.handler=grpc-stream`
 

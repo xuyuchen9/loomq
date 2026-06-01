@@ -58,7 +58,7 @@ public record GrpcConfig(
         return new GrpcConfig(
             ConfigSupport.booleanValue(source, false, "grpc.enabled", "grpcEnabled"),
             ConfigSupport.string(source, "0.0.0.0", "grpc.host", "grpcHost"),
-            ConfigSupport.intValue(source, 7929, "grpc.port", "grpcPort"),
+            ConfigSupport.intValue(source, 8928, "grpc.port", "grpcPort"),
             ConfigSupport.intValue(source, 4 * 1024 * 1024, "grpc.max_inbound_message_size", "grpc.maxInboundMessageSize", "grpcMaxInboundMessageSize"),
             ConfigSupport.intValue(source, 1, "grpc.boss_threads", "grpc.bossThreads", "grpcBossThreads"),
             ConfigSupport.intValue(source, 0, "grpc.worker_threads", "grpc.workerThreads", "grpcWorkerThreads"),

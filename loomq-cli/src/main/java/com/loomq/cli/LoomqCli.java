@@ -47,7 +47,7 @@ public final class LoomqCli {
     private final String baseUrl;
 
     public static void main(String[] args) {
-        String url = System.getenv().getOrDefault("LOOMQ_URL", "http://localhost:8080");
+        String url = System.getenv().getOrDefault("LOOMQ_URL", "http://localhost:7928");
         new LoomqCli(url).run(args);
     }
 
