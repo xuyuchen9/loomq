@@ -299,6 +299,52 @@ class IntentStateTransitionTest {
         assertThrows(IllegalStateException.class, () -> restored.transitionTo(IntentStatus.DUE));
     }
 
+    // ========== rollbackStatus ==========
+
+    @Test
+    void shouldRollbackFromCanceledToScheduled() {
+        Intent intent = new Intent("intent-rollback-1");
+        intent.transitionTo(IntentStatus.SCHEDULED);
+        Instant originalUpdatedAt = intent.getUpdatedAt();
+
+        // 模拟 cancelIntent 中 transitionTo 成功但持久化失败
+        intent.transitionTo(IntentStatus.CANCELED);
+        assertEquals(IntentStatus.CANCELED, intent.getStatus());
+
+        // 回滚
+        intent.rollbackStatus(IntentStatus.SCHEDULED, originalUpdatedAt);
+        assertEquals(IntentStatus.SCHEDULED, intent.getStatus());
+        assertEquals(originalUpdatedAt, intent.getUpdatedAt());
+    }
+
+    @Test
+    void shouldRollbackFromCanceledToDue() {
+        Intent intent = new Intent("intent-rollback-2");
+        intent.transitionTo(IntentStatus.SCHEDULED);
+        intent.transitionTo(IntentStatus.DUE);
+        Instant originalUpdatedAt = intent.getUpdatedAt();
+
+        intent.transitionTo(IntentStatus.CANCELED);
+        assertEquals(IntentStatus.CANCELED, intent.getStatus());
+
+        intent.rollbackStatus(IntentStatus.DUE, originalUpdatedAt);
+        assertEquals(IntentStatus.DUE, intent.getStatus());
+    }
+
+    @Test
+    void shouldAllowTransitionAfterRollback() {
+        Intent intent = new Intent("intent-rollback-4");
+        intent.transitionTo(IntentStatus.SCHEDULED);
+        Instant originalUpdatedAt = intent.getUpdatedAt();
+
+        intent.transitionTo(IntentStatus.CANCELED);
+        intent.rollbackStatus(IntentStatus.SCHEDULED, originalUpdatedAt);
+
+        // 回滚后应能正常进行状态转换
+        assertDoesNotThrow(() -> intent.transitionTo(IntentStatus.DUE));
+        assertEquals(IntentStatus.DUE, intent.getStatus());
+    }
+
     // ========== helpers ==========
 
     private static Intent ackedIntent() {

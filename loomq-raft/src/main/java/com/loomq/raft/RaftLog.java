@@ -102,7 +102,7 @@ public class RaftLog {
             try (FileChannel channel = FileChannel.open(seg.path(), StandardOpenOption.READ)) {
                 while (localPos + wal.getRecordOverhead() <= seg.size()) {
                     ByteBuffer headerBuf = ByteBuffer.allocate(Integer.BYTES)
-                        .order(ByteOrder.nativeOrder());
+                        .order(ByteOrder.BIG_ENDIAN);
                     int headerBytes = readFully(channel, localPos, headerBuf);
                     if (headerBytes != Integer.BYTES) {
                         break;
@@ -128,7 +128,7 @@ public class RaftLog {
                     payloadBuf.get(payload);
 
                     ByteBuffer crcBuf = ByteBuffer.allocate(Integer.BYTES)
-                        .order(ByteOrder.nativeOrder());
+                        .order(ByteOrder.BIG_ENDIAN);
                     int crcBytes = readFully(channel, localPos + Integer.BYTES + payloadLen, crcBuf);
                     if (crcBytes != Integer.BYTES) {
                         break;

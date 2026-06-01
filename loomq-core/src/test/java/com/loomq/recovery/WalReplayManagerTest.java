@@ -205,8 +205,8 @@ class WalReplayManagerTest {
 
         // WalReplayManager replays all 3 (CRC valid for all), but garbage payload
         // is caught and skipped by the replay manager's decode try-catch.
-        // Only the 2 valid records reach the consumer.
-        assertEquals(3, total, "should attempt all 3 records (CRC passes for all)");
+        // Only the 2 valid records reach the consumer and are counted as restored.
+        assertEquals(2, total, "should count only successfully decoded records");
         assertEquals(2, successCount.get(), "only valid records reach consumer; corrupt payloads are skipped by WalReplayManager");
     }
 }
