@@ -134,4 +134,66 @@ class SnapshotManagerTest {
     void getLatestSnapshotInfoShouldReturnEmptyWhenNone() {
         assertFalse(snapshotManager.getLatestSnapshotInfo().isPresent());
     }
+
+    @Test
+    void shouldCleanupStaleTmpFilesOnCreateSnapshot() throws IOException {
+        // Given: simulate a previous crash leaving a stale .tmp file
+        Path snapshotDir = dataDir.resolve("snapshots");
+        Files.createDirectories(snapshotDir);
+        Path staleTmp = snapshotDir.resolve("snapshot-20260101-000000-000.snap.gz.tmp");
+        Files.writeString(staleTmp, "partial data");
+        assertTrue(Files.exists(staleTmp));
+
+        // When: create a new snapshot
+        store.save(makeIntent("tmp-cleanup"));
+        snapshotManager.createSnapshot(store, 42L);
+
+        // Then: stale .tmp file should be cleaned up
+        assertFalse(Files.exists(staleTmp), "Stale .tmp file should be deleted");
+
+        // And: new snapshot should be valid
+        SnapshotRestoreResult result = snapshotManager.restoreFromSnapshot(intent -> {});
+        assertEquals(1, result.restoredCount());
+        assertEquals(42L, result.walOffset());
+    }
+
+    @Test
+    void shouldNotLeaveTmpFileAfterSuccessfulSnapshot() {
+        // Given
+        store.save(makeIntent("no-tmp-check"));
+
+        // When
+        snapshotManager.createSnapshot(store, 10L);
+
+        // Then: no .tmp files should remain in snapshot dir
+        Path snapshotDir = dataDir.resolve("snapshots");
+        try (var stream = Files.list(snapshotDir)) {
+            long tmpCount = stream
+                .filter(p -> p.getFileName().toString().endsWith(".tmp"))
+                .count();
+            assertEquals(0, tmpCount, "No .tmp files should remain after successful snapshot");
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Test
+    void shouldRecoverFromPreviousGoodSnapshotWhenTmpExists() throws IOException {
+        // Given: create a good snapshot first
+        store.save(makeIntent("good-snap"));
+        SnapshotInfo goodInfo = snapshotManager.createSnapshot(store, 100L);
+        assertNotNull(goodInfo);
+
+        // Simulate crash: create a stale .tmp file (as if next snapshot crashed mid-write)
+        Path snapshotDir = dataDir.resolve("snapshots");
+        Path staleTmp = snapshotDir.resolve("snapshot-20990101-000000-000.snap.gz.tmp");
+        Files.writeString(staleTmp, "corrupted partial data");
+
+        // When: restore from snapshot
+        SnapshotRestoreResult result = snapshotManager.restoreFromSnapshot(intent -> {});
+
+        // Then: should restore from the good snapshot, not the .tmp file
+        assertEquals(1, result.restoredCount());
+        assertEquals(100L, result.walOffset());
+    }
 }

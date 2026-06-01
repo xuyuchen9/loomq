@@ -17,18 +17,13 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 /**
- * gRPC 层性能测试。
+ * P1: ASYNC WAL 模式下的 gRPC 创建路径性能测试。
  *
- * <p>支持三种 stub 模式对比：
- * <ul>
- *   <li>{@code blocking}（默认）——虚拟线程 + 同步阻塞调用</li>
- *   <li>{@code future}——ListenableFuture，测量纯 gRPC 协议延迟</li>
- *   <li>{@code async}——StreamObserver 回调，最高吞吐</li>
- * </ul>
- *
- * <p>通过 {@code -Dloomq.benchmark.grpc.stub=blocking|future|async} 切换。
+ * 与标准 GrpcVirtualThreadBenchmark 对比，唯一变量是 wal_mode=ASYNC。
+ * 预期：ASYNC 模式下 gRPC QPS 应高于 DURABLE 模式，
+ * 因为不再受 fsync 瓶颈限制。
  */
-public class GrpcVirtualThreadBenchmark extends ProtocolBenchmark {
+public class AsyncWalGrpcBenchmark extends ProtocolBenchmark {
 
     private static final String GRPC_HOST = System.getProperty("loomq.benchmark.grpc.host", "localhost");
     private static final int GRPC_PORT = Integer.getInteger("loomq.benchmark.grpc.port", 8928);
@@ -48,8 +43,9 @@ public class GrpcVirtualThreadBenchmark extends ProtocolBenchmark {
     private static final LoomQServiceGrpc.LoomQServiceStub asyncStub =
         LoomQServiceGrpc.newStub(channel);
 
-    public GrpcVirtualThreadBenchmark() {
-        super("gRPC / Protobuf (" + STUB_TYPE + ", " + PRECISION_TIER + ")", GRPC_HOST + ":" + GRPC_PORT);
+    public AsyncWalGrpcBenchmark() {
+        super("gRPC / Protobuf (ASYNC WAL, " + STUB_TYPE + ", " + PRECISION_TIER + ")",
+            GRPC_HOST + ":" + GRPC_PORT);
     }
 
     @Override
@@ -85,6 +81,7 @@ public class GrpcVirtualThreadBenchmark extends ProtocolBenchmark {
             .setExecuteAt(ProtoConverter.toProto(executeAt))
             .setDeadline(ProtoConverter.toProto(deadline))
             .setPrecisionTier(PRECISION_TIER)
+            .setWalMode("ASYNC")
             .setShardKey(shardKey)
             .setCallback(CallbackMessage.newBuilder()
                 .setUrl("http://localhost:9999/webhook")
@@ -103,6 +100,6 @@ public class GrpcVirtualThreadBenchmark extends ProtocolBenchmark {
     }
 
     public static void main(String[] args) throws Exception {
-        new GrpcVirtualThreadBenchmark().run(args);
+        new AsyncWalGrpcBenchmark().run(args);
     }
 }

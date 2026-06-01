@@ -427,8 +427,8 @@ docker-compose --profile full up -d
 | Service | Port | Dashboard |
 |---------|------|-----------|
 | LoomQ server | 7928 | REST API + `/metrics` |
-| Prometheus | 9090 | Metrics collection (30d retention) |
-| Grafana | 3000 | Pre-built dashboards (admin / loomq123) |
+| Prometheus | 10928 | Metrics collection (30d retention) |
+| Grafana | 11928 | Pre-built dashboards (admin / loomq123) |
 
 ### Makefile Shortcuts
 

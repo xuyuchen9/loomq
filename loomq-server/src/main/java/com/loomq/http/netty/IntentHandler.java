@@ -60,6 +60,7 @@ public class IntentHandler {
     private final LoomqEngine engine;
     private final WriteCoordinator writeCoordinator;
     private final RaftStatusProvider raftStatus;
+    private final boolean raftEnabled;
     private final JsonCodec jsonCodec;
 
     public IntentHandler(LoomqEngine engine) {
@@ -76,6 +77,7 @@ public class IntentHandler {
         this.engine = engine;
         this.writeCoordinator = writeCoordinator;
         this.raftStatus = raftStatus;
+        this.raftEnabled = raftStatus != null && raftStatus.isRaftEnabled();
         this.jsonCodec = JsonCodec.instance();
     }
 
@@ -149,7 +151,7 @@ public class IntentHandler {
         try {
             Intent intent = buildCreateIntentDraft(request, intentId);
 
-            if (writeCoordinator != null) {
+            if (writeCoordinator != null && raftEnabled) {
                 Intent snapshot = intent.copy();
                 snapshot.transitionTo(IntentStatus.SCHEDULED);
                 String requestKey = requestKey("create", intentId, body, headers, null, request.idempotencyKey());
@@ -245,7 +247,7 @@ public class IntentHandler {
         }
 
         try {
-            if (writeCoordinator != null) {
+            if (writeCoordinator != null && raftEnabled) {
                 String requestKey = requestKey("patch", intentId, body, headers, expectedRevision, null);
                 Intent committed = writeCoordinator.commitMutation(
                     intentId,
@@ -339,7 +341,7 @@ public class IntentHandler {
         }
 
         try {
-            if (writeCoordinator != null) {
+            if (writeCoordinator != null && raftEnabled) {
                 String requestKey = requestKey("cancel", intentId, body, headers, expectedRevision, null);
                 Intent committed = writeCoordinator.commitMutation(
                     intentId,
@@ -397,7 +399,7 @@ public class IntentHandler {
         }
 
         try {
-            if (writeCoordinator != null) {
+            if (writeCoordinator != null && raftEnabled) {
                 String requestKey = requestKey("fire-now", intentId, body, headers, expectedRevision, null);
                 writeCoordinator.commitMutation(
                     intentId,
@@ -541,7 +543,7 @@ public class IntentHandler {
         }
 
         try {
-            if (writeCoordinator != null) {
+            if (writeCoordinator != null && raftEnabled) {
                 Intent snapshot = intent.copy();
                 snapshot.transitionTo(IntentStatus.SCHEDULED);
                 String requestKey = requestKey("revive", intentId, body, headers, null, null);

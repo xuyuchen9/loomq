@@ -12,11 +12,13 @@ import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * HTTP 层性能测试。
+ * P1: ASYNC WAL 模式下的 HTTP 创建路径性能测试。
  *
- * <p>只报告真实观察值，不给硬编码目标。
+ * 与标准 HttpVirtualThreadBenchmark 对比，唯一变量是 walMode=ASYNC。
+ * 预期：ASYNC 模式下 HTTP QPS 应显著高于 DURABLE 模式的 ~5,899 QPS，
+ * 因为不再受 fsync 162µs/record 的瓶颈限制。
  */
-public class HttpVirtualThreadBenchmark extends ProtocolBenchmark {
+public class AsyncWalHttpBenchmark extends ProtocolBenchmark {
 
     private static final String BASE_URL = System.getProperty("loomq.benchmark.baseUrl", "http://localhost:7928");
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(5);
@@ -25,8 +27,8 @@ public class HttpVirtualThreadBenchmark extends ProtocolBenchmark {
         .version(HttpClient.Version.HTTP_1_1)
         .build();
 
-    public HttpVirtualThreadBenchmark() {
-        super("HTTP / JSON", BASE_URL);
+    public AsyncWalHttpBenchmark() {
+        super("HTTP / JSON (ASYNC WAL)", BASE_URL);
     }
 
     @Override
@@ -36,8 +38,11 @@ public class HttpVirtualThreadBenchmark extends ProtocolBenchmark {
         String id = UUID.randomUUID().toString();
         String shardKey = "bench-" + ThreadLocalRandom.current().nextInt(64);
 
+        // 关键区别：walMode=ASYNC
         String body = String.format(
-            "{\"intentId\":\"%s\",\"executeAt\":\"%s\",\"deadline\":\"%s\",\"precisionTier\":\"STANDARD\",\"shardKey\":\"%s\",\"callback\":{\"url\":\"http://localhost:9999/webhook\"}}",
+            "{\"intentId\":\"%s\",\"executeAt\":\"%s\",\"deadline\":\"%s\","
+                + "\"precisionTier\":\"STANDARD\",\"walMode\":\"ASYNC\","
+                + "\"shardKey\":\"%s\",\"callback\":{\"url\":\"http://localhost:9999/webhook\"}}",
             id, executeAt.toString(), deadline.toString(), shardKey);
 
         HttpRequest request = HttpRequest.newBuilder()
@@ -54,6 +59,6 @@ public class HttpVirtualThreadBenchmark extends ProtocolBenchmark {
     }
 
     public static void main(String[] args) throws Exception {
-        new HttpVirtualThreadBenchmark().run(args);
+        new AsyncWalHttpBenchmark().run(args);
     }
 }

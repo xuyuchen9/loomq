@@ -14,6 +14,7 @@ import com.loomq.store.IntentStore;
 import com.loomq.tracing.IntentTraceStore;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumMap;
 import java.util.EnumSet;
@@ -22,8 +23,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
@@ -69,8 +72,8 @@ public class PrecisionScheduler {
     // 档位级并发控制（可动态调整上限）
     private final Map<PrecisionTier, ResizableSemaphore> tierSemaphores;
 
-    // 档位级无锁队列（fire-and-forget 模式下 semaphore 硬限并发，队列自然受控）
-    private final Map<PrecisionTier, ConcurrentLinkedDeque<Intent>> tierDispatchQueues;
+    // 档位级有界队列（容量 = maxConcurrency × 4，满时触发 backpressure）
+    private final Map<PrecisionTier, BlockingQueue<Intent>> tierDispatchQueues;
 
     // 按精度档位的扫描调度器
     private final Map<PrecisionTier, ScheduledExecutorService> scanSchedulers;
@@ -236,7 +239,8 @@ public class PrecisionScheduler {
 
         for (PrecisionTier tier : this.precisionTierCatalog.supportedTiers()) {
             tierSemaphores.put(tier, new ResizableSemaphore(this.precisionTierCatalog.maxConcurrency(tier)));
-            tierDispatchQueues.put(tier, new ConcurrentLinkedDeque<>());
+            int queueCapacity = this.precisionTierCatalog.dispatchQueueCapacity(tier);
+            tierDispatchQueues.put(tier, new ArrayBlockingQueue<>(queueCapacity));
             expiredCheckCounters.put(tier, new AtomicLong(0));
         }
 
@@ -291,7 +295,7 @@ public class PrecisionScheduler {
      * 启动指定精度档位的扫描任务
      */
     private void startScanCycle(PrecisionTier tier) {
-        long intervalMs = precisionTierCatalog.precisionWindowMs(tier);
+        long intervalMs = precisionTierCatalog.scanIntervalMs(tier);
 
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "scan-" + tier.name().toLowerCase());
@@ -452,17 +456,39 @@ public class PrecisionScheduler {
     }
 
     /**
-     * 恢复 Intent 到调度桶。
+     * 恢复 Intent 到调度器。
      *
-     * 恢复路径会直接重建桶状态，不走创建时的状态机约束。
+     * 恢复路径不走创建时的状态机约束，但保留 delay-based 路由：
+     * 长延迟 Intent 进入 CohortManager（批量唤醒），短延迟直接入桶。
      */
     public void restore(Intent intent) {
         if (intent == null || intent.getExecuteAt() == null || intent.getStatus().isTerminal()) {
             return;
         }
 
-        bucketGroupManager.add(intent);
+        long delayMs = Duration.between(Instant.now(), intent.getExecuteAt()).toMillis();
+        PrecisionTier tier = intent.getPrecisionTier();
+        long precisionWindowMs = precisionTierCatalog.precisionWindowMs(tier);
+
+        if (delayMs > precisionWindowMs) {
+            cohortManager.register(intent);
+        } else {
+            bucketGroupManager.add(intent);
+        }
         indexIntent(intent);
+    }
+
+    /**
+     * 从调度器中完全移除 Intent（包括 bucket 和 cohort）。
+     *
+     * @param intent 要移除的 Intent
+     * @return true 如果从任一位置成功移除
+     */
+    public boolean removeFromSchedule(Intent intent) {
+        if (intent == null) return false;
+        boolean removedFromBucket = bucketGroupManager.remove(intent);
+        boolean removedFromCohort = cohortManager.remove(intent.getIntentId());
+        return removedFromBucket || removedFromCohort;
     }
 
     /**
@@ -522,11 +548,11 @@ public class PrecisionScheduler {
                     IntentTraceStore.getInstance().recordEnqueued(intent.getIntentId());
 
                     // 提交到档位队列（有界，带短重试）
-                    ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
+                    BlockingQueue<Intent> queue = tierDispatchQueues.get(tier);
                     boolean offered = false;
                     int offerRetries = 0;
                     while (!offered && offerRetries < 3) {
-                        offered = queue.offerLast(intent);
+                        offered = queue.offer(intent);
                         if (!offered) {
                             offerRetries++;
                             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
@@ -552,7 +578,7 @@ public class PrecisionScheduler {
             metrics.updateBucketSizeByTier(tier, group.getPendingCount());
 
             // 更新队列深度指标
-            ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
+            BlockingQueue<Intent> queue = tierDispatchQueues.get(tier);
             metrics.updateDispatchQueueSizeByTier(tier, queue.size());
 
             // 检查过期任务（分频）
@@ -607,8 +633,24 @@ public class PrecisionScheduler {
      * permit 在 Netty/异步回调中释放。消费者线程与 HTTP 往返完全解耦。
      */
     private void runBatchConsumer(PrecisionTier tier) {
-        ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
+        BlockingQueue<Intent> queue = tierDispatchQueues.get(tier);
+        int batchSize = precisionTierCatalog.batchSize(tier);
+        int batchWindowMs = precisionTierCatalog.batchWindowMs(tier);
 
+        if (batchSize <= 1) {
+            // Single-intent mode (ULTRA, FAST)
+            runSingleIntentConsumer(tier, queue);
+        } else {
+            // Batch mode (HIGH, STANDARD, ECONOMY)
+            runBatchDrainConsumer(tier, queue, batchSize, batchWindowMs);
+        }
+    }
+
+    /**
+     * 单 Intent 消费循环（batchSize == 1）。
+     * 与原始实现完全一致：acquire → poll(1) → deliver → release in callback。
+     */
+    private void runSingleIntentConsumer(PrecisionTier tier, BlockingQueue<Intent> queue) {
         while (running) {
             long acquireStartNs = System.nanoTime();
             ResizableSemaphore acquired;
@@ -620,7 +662,7 @@ public class PrecisionScheduler {
             }
             long acquireEndNs = System.nanoTime();
 
-            Intent intent = queue.pollFirst();
+            Intent intent = queue.poll();
             if (intent == null) {
                 acquired.release();
                 long parkNanos = switch (tier) {
@@ -634,7 +676,6 @@ public class PrecisionScheduler {
 
             // Trace: record dequeued (right after pollFirst, before any other processing)
             IntentTraceStore.getInstance().recordDequeued(intent.getIntentId());
-
             recordDispatchQueueLag(intent, tier);
 
             // Only accumulate acquire wait for actual deliveries so the average
@@ -667,6 +708,111 @@ public class PrecisionScheduler {
                             }
                         } catch (Exception e) {
                             logger.error("Error in delivery callback for intent {}", intent.getIntentId(), e);
+                        }
+                    });
+                });
+            permitTimingStats.totalDeliverAsyncNanos.addAndGet(System.nanoTime() - deliverStartNs);
+        }
+    }
+
+    /**
+     * 批量消费循环（batchSize > 1）。
+     *
+     * 流程：
+     * 1. drainTo(batch, batchSize) — 一次性取出最多 batchSize 个 intent
+     * 2. 若队列为空，timed poll(batchWindowMs) 等首个 intent，再 drain 剩余
+     * 3. 为每个 intent acquire 一个信号量 permit
+     * 4. 调用 deliverBatchAsync(batch)
+     * 5. 在回调中释放所有 permit + finalize
+     */
+    private void runBatchDrainConsumer(PrecisionTier tier, BlockingQueue<Intent> queue,
+                                       int batchSize, int batchWindowMs) {
+        while (running) {
+            List<Intent> batch = new ArrayList<>(batchSize);
+
+            // Phase 1: drain what's immediately available
+            queue.drainTo(batch, batchSize);
+
+            if (batch.isEmpty()) {
+                // Phase 2: non-blocking poll for first intent
+                Intent first = queue.poll();
+                if (first == null) {
+                    // Queue is truly empty — park briefly and retry
+                    long parkNanos = switch (tier) {
+                        case ULTRA -> 100_000L;    // 100μs
+                        case FAST  -> 200_000L;    // 200μs
+                        default    -> 1_000_000L;  // 1ms
+                    };
+                    LockSupport.parkNanos(parkNanos);
+                    continue;
+                }
+                batch.add(first);
+                // Drain remaining (non-blocking) up to batchSize
+                queue.drainTo(batch, batchSize - batch.size());
+            }
+
+            // Phase 3: acquire permits for the batch
+            List<ResizableSemaphore> acquiredPermits = new ArrayList<>(batch.size());
+            long acquireStartNs = System.nanoTime();
+            try {
+                for (int i = 0; i < batch.size(); i++) {
+                    acquiredPermits.add(acquireWithBorrow(tier));
+                }
+            } catch (InterruptedException e) {
+                // Release any already-acquired permits
+                for (ResizableSemaphore s : acquiredPermits) {
+                    s.release();
+                }
+                Thread.currentThread().interrupt();
+                break;
+            }
+            long acquireEndNs = System.nanoTime();
+
+            // Trace: record dequeued for each intent
+            for (Intent intent : batch) {
+                IntentTraceStore.getInstance().recordDequeued(intent.getIntentId());
+                recordDispatchQueueLag(intent, tier);
+            }
+
+            permitTimingStats.totalAcquireWaitNanos.addAndGet(acquireEndNs - acquireStartNs);
+            final long permitAcquiredNs = acquireEndNs;
+
+            // Phase 4: batch delivery
+            long deliverStartNs = System.nanoTime();
+            List<CompletableFuture<DeliveryHandler.DeliveryResult>> futures =
+                deliveryHandler.deliverBatchAsync(batch);
+
+            // Wait for all futures to complete (with timeout)
+            CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
+                .orTimeout(30, TimeUnit.SECONDS)
+                .whenComplete((v, ex) -> {
+                    long releaseNs = System.nanoTime();
+                    permitTimingStats.totalPermitHoldNanos.addAndGet(releaseNs - permitAcquiredNs);
+                    permitTimingStats.deliverySampleCount.addAndGet(batch.size());
+
+                    // Release all permits
+                    for (ResizableSemaphore s : acquiredPermits) {
+                        if (s != tierSemaphores.get(tier)) {
+                            s.decrementBorrowed();
+                        }
+                        s.release();
+                    }
+
+                    // Finalize each intent
+                    sharedExecutor.submit(() -> {
+                        for (int i = 0; i < batch.size(); i++) {
+                            Intent intent = batch.get(i);
+                            try {
+                                if (ex != null) {
+                                    handleDeliveryException(intent, tier, ex);
+                                } else {
+                                    DeliveryHandler.DeliveryResult result = futures.get(i).join();
+                                    finalizeIntent(intent, tier, result);
+                                }
+                            } catch (Exception e) {
+                                logger.error("Error in batch delivery callback for intent {}",
+                                    intent.getIntentId(), e);
+                            }
                         }
                     });
                 });
@@ -946,7 +1092,7 @@ public class PrecisionScheduler {
      */
     public boolean isTierUnderBackpressure(PrecisionTier tier) {
         ResizableSemaphore semaphore = tierSemaphores.get(tier);
-        ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
+        BlockingQueue<Intent> queue = tierDispatchQueues.get(tier);
 
         boolean semaphoreExhausted = semaphore.availablePermits() == 0;
         boolean queueBackedUp = queue.size() >= precisionTierCatalog.maxConcurrency(tier) * 2;
@@ -962,7 +1108,7 @@ public class PrecisionScheduler {
 
         for (PrecisionTier tier : precisionTierCatalog.supportedTiers()) {
             ResizableSemaphore semaphore = tierSemaphores.get(tier);
-            ConcurrentLinkedDeque<Intent> queue = tierDispatchQueues.get(tier);
+            BlockingQueue<Intent> queue = tierDispatchQueues.get(tier);
 
             int availablePermits = semaphore.availablePermits();
             int queueSize = queue.size();

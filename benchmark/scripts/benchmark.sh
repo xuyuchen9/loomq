@@ -309,8 +309,8 @@ if [ "$RUN_CREATE" = true ] || [ "$RUN_SCHEDULER" = true ] || [ "$STRESS" = true
     fi
 
     # Find free port
-    TEMP_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()" 2>/dev/null || echo 8080)
-    GRPC_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()" 2>/dev/null || echo 7929)
+    TEMP_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()" 2>/dev/null || echo 7928)
+    GRPC_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()" 2>/dev/null || echo 8928)
     DATA_DIR="$RESULTS_DIR/runtime/data-$TIMESTAMP"
     mkdir -p "$DATA_DIR"
 

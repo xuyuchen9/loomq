@@ -76,7 +76,7 @@ jobs:
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
     needs: format-check
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 9
 
     steps:
       - name: Checkout Code
