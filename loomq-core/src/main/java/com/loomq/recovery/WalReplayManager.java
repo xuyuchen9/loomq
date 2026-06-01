@@ -61,7 +61,7 @@ public final class WalReplayManager {
                 long localPos = segStart - seg.startOffset();
 
                 while (localPos + RECORD_OVERHEAD <= segEnd - seg.startOffset()) {
-                    ByteBuffer lengthBuffer = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.nativeOrder());
+                    ByteBuffer lengthBuffer = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.BIG_ENDIAN);
                     if (!readFully(channel, localPos, lengthBuffer)) break;
                     lengthBuffer.flip();
                     int payloadLength = lengthBuffer.getInt();
@@ -73,7 +73,7 @@ public final class WalReplayManager {
                     ByteBuffer payloadBuffer = ByteBuffer.allocate(payloadLength);
                     if (!readFully(channel, localPos + Integer.BYTES, payloadBuffer)) break;
 
-                    ByteBuffer crcBuffer = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.nativeOrder());
+                    ByteBuffer crcBuffer = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.BIG_ENDIAN);
                     if (!readFully(channel, localPos + Integer.BYTES + payloadLength, crcBuffer)) break;
                     crcBuffer.flip();
                     int expectedCrc = crcBuffer.getInt();
@@ -87,11 +87,11 @@ public final class WalReplayManager {
 
                     try {
                         consumer.accept(IntentBinaryCodec.decode(payload));
+                        restored++;
                     } catch (Exception e) {
                         logger.warn("Skipping corrupt payload during WAL replay at segment {}, offset {}: {}",
                             seg.index(), seg.startOffset() + localPos, e.getMessage());
                     }
-                    restored++;
                     localPos += recordSize;
                     position = seg.startOffset() + localPos;
                 }
@@ -135,7 +135,7 @@ public final class WalReplayManager {
             long position = Math.max(0, startOffset);
 
             while (position + RECORD_OVERHEAD <= fileSize) {
-                ByteBuffer lengthBuffer = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.nativeOrder());
+                ByteBuffer lengthBuffer = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.BIG_ENDIAN);
                 if (!readFully(channel, position, lengthBuffer)) break;
                 lengthBuffer.flip();
                 int payloadLength = lengthBuffer.getInt();
@@ -147,7 +147,7 @@ public final class WalReplayManager {
                 ByteBuffer payloadBuffer = ByteBuffer.allocate(payloadLength);
                 if (!readFully(channel, position + Integer.BYTES, payloadBuffer)) break;
 
-                ByteBuffer crcBuffer = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.nativeOrder());
+                ByteBuffer crcBuffer = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.BIG_ENDIAN);
                 if (!readFully(channel, position + Integer.BYTES + payloadLength, crcBuffer)) break;
                 crcBuffer.flip();
                 int expectedCrc = crcBuffer.getInt();
@@ -161,11 +161,11 @@ public final class WalReplayManager {
 
                 try {
                     consumer.accept(IntentBinaryCodec.decode(payload));
+                    restored++;
                 } catch (Exception e) {
                     logger.warn("Skipping corrupt payload during WAL replay at offset {}: {}",
                         position, e.getMessage());
                 }
-                restored++;
                 position += recordSize;
             }
         } catch (IOException e) {

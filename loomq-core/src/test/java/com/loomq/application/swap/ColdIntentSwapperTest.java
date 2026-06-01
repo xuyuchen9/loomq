@@ -227,10 +227,10 @@ class ColdIntentSwapperTest {
         int crcOffset = (int) walPos + 4 + payload.length; // header(4) + payload(N)
         Path walFile = dataDir.resolve("swap-test").resolve("wal-000001.bin");
 
-        // Write bad CRC bytes (use native byte order to match WAL format)
+        // Write bad CRC bytes (use big-endian byte order to match WAL format)
         try (var ch = java.nio.channels.FileChannel.open(walFile, java.nio.file.StandardOpenOption.WRITE)) {
             java.nio.ByteBuffer badCrc = java.nio.ByteBuffer.allocate(4)
-                .order(java.nio.ByteOrder.nativeOrder());
+                .order(java.nio.ByteOrder.BIG_ENDIAN);
             badCrc.putInt(0xDEADBEEF);
             badCrc.flip();
             ch.write(badCrc, crcOffset);

@@ -160,6 +160,16 @@ public final class IntentCommandService {
             return seq;
         } catch (Exception e) {
             logger.error("Failed to create intent: id={}", intent.getIntentId(), e);
+            // 回滚：从调度器和 store 中移除（异常可能发生在 schedule 之后）
+            try {
+                scheduler.removeFromSchedule(intent);
+            } catch (Exception ignored) {}
+            try {
+                intentStore.delete(intent.getIntentId());
+            } catch (Exception rollbackEx) {
+                logger.error("Rollback failed for intent {}: store.delete",
+                    intent.getIntentId(), rollbackEx);
+            }
             throw new RuntimeException("Failed to create intent", e);
         }
     }
@@ -194,6 +204,16 @@ public final class IntentCommandService {
 
                 updater.accept(intent);
 
+                // 安全网：updater 可能直接通过 intent.setExecuteAt() 修改了执行时间，
+                // 此时 newExecuteAt 为 null 导致 reschedule 初始为 false，需要补检。
+                if (!reschedule) {
+                    Instant actualExecuteAt = intent.getExecuteAt();
+                    if (actualExecuteAt != null && !actualExecuteAt.equals(oldExecuteAt)) {
+                        reschedule = true;
+                        scheduler.removeFromSchedule(intent);
+                    }
+                }
+
                 if (newExecuteAt != null) {
                     intent.setExecuteAt(newExecuteAt);
                 }
@@ -225,24 +245,44 @@ public final class IntentCommandService {
             return false;
         }
 
+        IntentStatus oldStatus = null;
+        Instant oldUpdatedAt = null;
+        long oldRevision = 0;
         try {
             synchronized (intent) {
-                intent.transitionTo(IntentStatus.CANCELED);
+                // 在 transitionTo 之前记录原始状态，用于回滚。
+                oldStatus = intent.getStatus();
+                oldUpdatedAt = intent.getUpdatedAt();
+                oldRevision = intent.getRevision();
+
+                // transitionTo 单独 try-catch：仅捕获状态机校验失败，
+                // 不会误吞 persistIntentState / intentStore.update 抛出的 ISE。
+                try {
+                    intent.transitionTo(IntentStatus.CANCELED);
+                } catch (IllegalStateException e) {
+                    logger.warn("Cannot cancel intent {}: {}", intentId, e.getMessage());
+                    return false;
+                }
                 scheduler.removeFromSchedule(intent);
                 intent.incrementRevision();
                 persistIntentState(intent, AckMode.DURABLE);
                 intentStore.update(intent);
-                dispatchCallback(intent, CallbackHandler.EventType.CANCELLED, null);
             }
+
+            // 在 synchronized 块外派发回调——回滚窗口已关闭，
+            // callback 异常（如 RejectedExecutionException）不会触发状态回滚。
+            dispatchCallback(intent, CallbackHandler.EventType.CANCELLED, null);
 
             metricsCollector.incrementIntentsCancelled();
             logger.info("Intent cancelled: id={}", intentId);
             return true;
-        } catch (IllegalStateException e) {
-            logger.warn("Cannot cancel intent {}: {}", intentId, e.getMessage());
-            return false;
         } catch (RuntimeException e) {
             logger.error("Failed to cancel intent: id={}", intentId, e);
+            // 回滚：transitionTo 已成功但持久化失败，恢复原状态并重新加入调度
+            if (oldStatus != null && intent.getStatus() != oldStatus) {
+                intent.rollbackStatus(oldStatus, oldUpdatedAt, oldRevision);
+                scheduler.restore(intent);
+            }
             throw e;
         }
     }
@@ -261,8 +301,12 @@ public final class IntentCommandService {
             return false;
         }
 
+        Instant oldExecuteAt = null;
+        long oldRevision = 0;
         try {
             synchronized (intent) {
+                oldExecuteAt = intent.getExecuteAt();
+                oldRevision = intent.getRevision();
                 scheduler.removeFromSchedule(intent);
                 intent.setExecuteAt(Instant.now());
                 intent.incrementRevision();
@@ -275,6 +319,12 @@ public final class IntentCommandService {
             return true;
         } catch (RuntimeException e) {
             logger.error("Failed to fire intent: id={}", intentId, e);
+            // 回滚：恢复 executeAt 和 revision，重新加入调度
+            if (oldExecuteAt != null) {
+                intent.setExecuteAt(oldExecuteAt);
+                intent.rollbackRevision(oldRevision);
+                scheduler.restore(intent);
+            }
             return false;
         }
     }
@@ -313,13 +363,10 @@ public final class IntentCommandService {
     private CompletableFuture<Long> startWalWrite(byte[] walPayload,
                                                    WalMode mode) {
         return switch (mode) {
-            case ASYNC -> walWriter.writeAsync(walPayload);
-            case BATCH_DEFERRED -> {
-                walWriter.writeAsync(walPayload);
-                yield CompletableFuture.completedFuture(-1L);
-            }
+            case ASYNC -> CompletableFuture.completedFuture(walWriter.write(walPayload));
+            case BATCH_DEFERRED -> CompletableFuture.completedFuture(walWriter.writeBatched(walPayload));
             case DURABLE -> CompletableFuture.supplyAsync(
-                () -> walWriter.writeDurable(walPayload).join(), walWriteExecutor);
+                () -> walWriter.writeSync(walPayload), walWriteExecutor);
         };
     }
 
@@ -329,12 +376,9 @@ public final class IntentCommandService {
         WalMode effectiveMode = resolveWalMode(intent, ackMode);
 
         return switch (effectiveMode) {
-            case ASYNC -> walWriter.writeAsync(data).join();
-            case BATCH_DEFERRED -> {
-                walWriter.writeAsync(data);
-                yield -1;
-            }
-            case DURABLE -> walWriter.writeDurable(data).join();
+            case ASYNC -> walWriter.write(data);
+            case BATCH_DEFERRED -> walWriter.writeBatched(data);
+            case DURABLE -> walWriter.writeSync(data);
         };
     }
 

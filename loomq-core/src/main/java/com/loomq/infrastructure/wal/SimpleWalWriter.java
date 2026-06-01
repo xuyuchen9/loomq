@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.zip.CRC32;
@@ -97,6 +98,13 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
     private final long flushIntervalNs;
     private volatile boolean flushRequested = false;
 
+    // ========== BATCH_DEFERRED 攒批 ==========
+    private final int minBatchSize;
+    private final long batchFlushIntervalNs;
+    private final boolean adaptiveFlush;
+    private final AtomicInteger pendingBatchWrites = new AtomicInteger(0);
+    private volatile long lastBatchFlushNs = 0;
+
 
     // ========== 统计 ==========
     private final Stats stats = new Stats();
@@ -165,6 +173,10 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         this.flushIntervalNs = config.memorySegmentFlushIntervalMs() * 1_000_000L;
 
         this.flushConditions = new StripedCondition(config.memorySegmentStripeCount());
+        this.minBatchSize = config.memorySegmentMinBatchSize();
+        this.batchFlushIntervalNs = config.batchFlushIntervalMs() * 1_000_000L;
+        this.adaptiveFlush = config.memorySegmentAdaptiveFlushEnabled();
+        this.lastBatchFlushNs = System.nanoTime();
         this.arena = Arena.ofShared();
 
         Files.createDirectories(dataDir);
@@ -269,7 +281,7 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         long lastTerm = 0;
         while (localPos + RECORD_OVERHEAD <= seg.size) {
             ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE)
-                .order(java.nio.ByteOrder.nativeOrder());
+                .order(java.nio.ByteOrder.BIG_ENDIAN);
             int headerBytes = seg.channel.read(headerBuf, localPos);
             if (headerBytes != HEADER_SIZE) {
                 break;
@@ -295,7 +307,7 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
             payloadBuf.get(payload);
 
             ByteBuffer crcBuf = ByteBuffer.allocate(CHECKSUM_SIZE)
-                .order(java.nio.ByteOrder.nativeOrder());
+                .order(java.nio.ByteOrder.BIG_ENDIAN);
             int crcBytes = seg.channel.read(crcBuf, localPos + HEADER_SIZE + payloadLen);
             if (crcBytes != CHECKSUM_SIZE) {
                 break;
@@ -352,7 +364,8 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         long localPos = seg.toLocal(startPos);
 
         MemorySegment region = seg.mappedRegion;
-        var INT_UNALIGNED = java.lang.foreign.ValueLayout.JAVA_INT.withByteAlignment(1);
+        var INT_UNALIGNED = java.lang.foreign.ValueLayout.JAVA_INT
+            .withOrder(java.nio.ByteOrder.BIG_ENDIAN).withByteAlignment(1);
 
         region.set(INT_UNALIGNED, localPos, payloadLen);
 
@@ -401,15 +414,51 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         }
     }
 
-    public CompletableFuture<Long> writeAsync(byte[] payload) {
-        long position = writeInternal(payload);
-        return CompletableFuture.completedFuture(position);
+    /**
+     * 写入 WAL（mmap memcpy，立即返回 position）。
+     *
+     * <p>数据写入内存映射区域后立即返回，fsync 由后台 flush 线程周期执行
+     * （阈值 64KB 或间隔 10ms）。崩溃时可能丢失最近写入的数据。</p>
+     */
+    public long write(byte[] payload) {
+        return writeInternal(payload);
     }
 
-    public CompletableFuture<Long> writeDurable(byte[] payload) {
+    /**
+     * 写入 WAL 并等待 fsync 完成（阻塞直到数据落盘）。
+     *
+     * <p>数据写入内存映射区域后，阻塞等待后台 flush 线程执行 force() 将数据刷到磁盘。
+     * 适合需要持久性保证的场景。</p>
+     */
+    public long writeSync(byte[] payload) {
         long position = writeInternal(payload);
         awaitFlush(position);
-        return CompletableFuture.completedFuture(position);
+        return position;
+    }
+
+    /**
+     * 写入 WAL（攒批模式）。
+     *
+     * <p>与 {@link #write(byte[])} 相同地执行同步 mmap memcpy，但 fsync 由攒批策略控制：
+     * 当累计写入达到 {@code minBatchSize} 条或距上次 fsync 超过 {@code batchFlushIntervalNs} 时，
+     * 后台 flush 线程才会执行 force()。适合高吞吐、可容忍短暂数据丢失的场景。</p>
+     */
+    public long writeBatched(byte[] payload) {
+        long position = writeInternal(payload);
+        pendingBatchWrites.incrementAndGet();
+        return position;
+    }
+
+    /** @deprecated 使用 {@link #write(byte[])} 替代 */
+    @Deprecated(forRemoval = true, since = "0.9.3")
+    public CompletableFuture<Long> writeAsync(byte[] payload) {
+        return CompletableFuture.completedFuture(write(payload));
+    }
+
+    /** @deprecated 使用 {@link #writeSync(byte[])} 替代 */
+    @Deprecated(forRemoval = true, since = "0.9.3")
+    public CompletableFuture<Long> writeDurable(byte[] payload) {
+        return CompletableFuture.completedFuture(writeSync(payload));
     }
 
     private void awaitFlush(long position) {
@@ -465,8 +514,17 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
                 long currentFlushPos = flushedPosition;
                 long pendingBytes = currentWritePos - currentFlushPos;
 
-                boolean shouldFlush = pendingBytes >= flushThreshold ||
-                                      (pendingBytes > 0 && flushRequested);
+                // BATCH_DEFERRED 攒批：达到条数阈值或时间阈值时触发
+                boolean batchReady = false;
+                if (adaptiveFlush && pendingBytes > 0) {
+                    int batchCount = pendingBatchWrites.get();
+                    batchReady = batchCount >= minBatchSize
+                        || (System.nanoTime() - lastBatchFlushNs) >= batchFlushIntervalNs;
+                }
+
+                boolean shouldFlush = pendingBytes >= flushThreshold
+                    || batchReady
+                    || (pendingBytes > 0 && flushRequested);
 
                 if (shouldFlush) {
                     long startNs = System.nanoTime();
@@ -489,6 +547,8 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
                     flushedPosition = currentWritePos;
                     lastFsyncTimestampMs = System.currentTimeMillis();
                     flushRequested = false;
+                    pendingBatchWrites.set(0);
+                    lastBatchFlushNs = System.nanoTime();
 
                     stats.recordFlush(elapsedNs);
                     flushConditions.signalRange(currentFlushPos, currentWritePos);
@@ -679,7 +739,7 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         FileChannel channel = seg.channel;
 
         ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE)
-            .order(java.nio.ByteOrder.nativeOrder());
+            .order(java.nio.ByteOrder.BIG_ENDIAN);
         int headerBytes = channel.read(headerBuf, localPos);
         if (headerBytes != HEADER_SIZE) {
             throw new IOException("Failed to read header at position " + position);
@@ -702,7 +762,7 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         payloadBuf.get(payload);
 
         ByteBuffer crcBuf = ByteBuffer.allocate(CHECKSUM_SIZE)
-            .order(java.nio.ByteOrder.nativeOrder());
+            .order(java.nio.ByteOrder.BIG_ENDIAN);
         int crcBytes = channel.read(crcBuf, localPos + HEADER_SIZE + payloadLen);
         if (crcBytes != CHECKSUM_SIZE) {
             throw new IOException("Failed to read CRC at position " + position);
@@ -806,7 +866,7 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
 
     @Override
     public long writeEntry(byte[] data) {
-        long startPos = writeAsync(data).join();
+        long startPos = write(data);
         int recordLen = RECORD_FIXED_OVERHEAD + data.length;
         // Extract term from the Raft-framed data (first 8 bytes = term as big-endian long)
         if (data.length >= 8) {
