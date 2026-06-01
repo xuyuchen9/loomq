@@ -32,9 +32,6 @@ import com.loomq.spi.DirectWriteCoordinator;
 import com.loomq.spi.RaftStatusProvider;
 import com.loomq.spi.WriteCoordinator;
 import io.netty.handler.codec.http.HttpMethod;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -42,6 +39,8 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Standalone Netty service bootstrap.
