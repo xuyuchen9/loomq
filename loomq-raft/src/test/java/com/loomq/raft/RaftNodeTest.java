@@ -281,7 +281,7 @@ class RaftNodeTest {
 
     @Test
     void staleAppendEntriesResponsesShouldNotRegressPeerState() throws Exception {
-        ControlledRaftTransport transport = new ControlledRaftTransport("node-1");
+        ControlledRaftTransport transport = new ControlledRaftTransport();
         RaftConfig config = new RaftConfig(
             "node-1",
             List.of("node-1", "node-2"),
@@ -313,44 +313,67 @@ class RaftNodeTest {
         }
     }
 
-    private static final class ControlledRaftTransport extends RaftTransport {
+    private static final class ControlledRaftTransport implements RaftTransport {
         private final CountDownLatch appendRequested = new CountDownLatch(1);
-        private final CompletableFuture<AppendEntriesResult> appendResult = new CompletableFuture<>();
+        private final CompletableFuture<RaftTransport.AppendEntriesResponse> appendResult = new CompletableFuture<>();
 
-        ControlledRaftTransport(String nodeId) {
-            super(nodeId);
+        @Override
+        public void start() { /* no-op */ }
+
+        @Override
+        public CompletableFuture<Void> connect(String peerId, String host, int port) {
+            return CompletableFuture.completedFuture(null);
         }
 
         @Override
-        public void listen(String host, int port) {
-            // No-op for tests.
-        }
+        public void disconnect(String peerId) { /* no-op */ }
 
         @Override
-        public CompletableFuture<Boolean> sendRequestVote(String peerId, long term, String candidateId,
-                long lastLogIndex, long lastLogEpoch) {
-            return CompletableFuture.completedFuture(false);
-        }
-
-        @Override
-        public CompletableFuture<AppendEntriesResult> sendAppendEntries(String peerId, long term,
-                String leaderId, long prevLogIndex, long prevLogTerm, byte[][] entries, long leaderCommit) {
+        public CompletableFuture<RaftTransport.AppendEntriesResponse> sendAppendEntries(
+                String peerId, RaftTransport.AppendEntriesRequest request) {
             appendRequested.countDown();
             return appendResult;
         }
 
         @Override
-        public CompletableFuture<Long> sendInstallSnapshot(String peerId, long term, String leaderId,
-                long lastIncludedIndex, long lastIncludedTerm, byte[] snapshotData) {
-            return CompletableFuture.completedFuture(-1L);
+        public CompletableFuture<RaftTransport.InstallSnapshotResponse> sendInstallSnapshot(
+                String peerId, RaftTransport.InstallSnapshotRequest request) {
+            return CompletableFuture.completedFuture(
+                new RaftTransport.InstallSnapshotResponse(request.epoch(), -1));
         }
+
+        @Override
+        public void setOnAppendEntries(
+                java.util.function.Function<RaftTransport.AppendEntriesRequest, RaftTransport.AppendEntriesResponse> handler) {
+            // no-op for tests
+        }
+
+        @Override
+        public void setOnInstallSnapshot(
+                java.util.function.Function<RaftTransport.InstallSnapshotRequest, RaftTransport.InstallSnapshotResponse> handler) {
+            // no-op for tests
+        }
+
+        @Override
+        public boolean isPeerConnected(String peerId) {
+            return true;
+        }
+
+        @Override
+        public int connectedPeerCount() {
+            return 0;
+        }
+
+        @Override
+        public void close() { /* no-op */ }
 
         boolean awaitAppendRequest(long timeout, TimeUnit unit) throws InterruptedException {
             return appendRequested.await(timeout, unit);
         }
 
         void completeAppend(AppendEntriesResult result) {
-            appendResult.complete(result);
+            appendResult.complete(new RaftTransport.AppendEntriesResponse(
+                result.epoch, result.success, result.matchIndex, result.conflictIndex));
         }
     }
 }
