@@ -81,4 +81,9 @@ public class StandaloneElection implements LeaderElection {
     public void addBecomeFollowerListener(Consumer<Long> listener) {
         // No-op: standalone never becomes follower
     }
+
+    @Override
+    public void stepDown(long newEpoch) {
+        // 单机模式永不退位
+    }
 }

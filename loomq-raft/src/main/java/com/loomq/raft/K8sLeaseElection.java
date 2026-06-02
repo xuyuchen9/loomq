@@ -318,10 +318,11 @@ public class K8sLeaseElection implements LeaderElection {
     }
 
     /**
-     * Force step-down to follower with a new epoch.
+     * Step-down to follower with a new epoch.
      * Called when a heartbeat response reveals a higher epoch on a follower.
      */
-    public void forceStepDown(long newEpoch) {
+    @Override
+    public void stepDown(long newEpoch) {
         becomeFollower(null, newEpoch);
     }
 

@@ -44,4 +44,7 @@ public interface LeaderElection {
 
     /** 注册成为 Follower 的回调 */
     void addBecomeFollowerListener(Consumer<Long> listener);
+
+    /** 退位为 Follower，更新 epoch */
+    void stepDown(long newEpoch);
 }

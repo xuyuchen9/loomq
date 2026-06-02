@@ -180,6 +180,7 @@ public class RaftElection implements LeaderElection {
         if (onBecomeLeader != null) onBecomeLeader.accept(epoch);
     }
 
+    @Override
     public void stepDown(long epoch) {
         role = RaftRole.FOLLOWER;
         currentLeader = null;
