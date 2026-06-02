@@ -1,11 +1,7 @@
 package com.loomq.raft;
 
 import com.google.protobuf.ByteString;
-import com.loomq.raft.grpc.AppendEntriesRequest;
-import com.loomq.raft.grpc.AppendEntriesResponse;
 import com.loomq.raft.grpc.RaftServiceGrpc;
-import com.loomq.raft.grpc.RequestVoteRequest;
-import com.loomq.raft.grpc.RequestVoteResponse;
 import com.loomq.raft.grpc.SnapshotChunk;
 import com.loomq.raft.grpc.SnapshotResponse;
 import io.grpc.ManagedChannel;
@@ -13,6 +9,7 @@ import io.grpc.ManagedChannelBuilder;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 import io.grpc.stub.StreamObserver;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -27,10 +24,15 @@ import org.slf4j.LoggerFactory;
 /**
  * gRPC-based Raft RPC Transport。
  *
- * <p>替换自定义 Netty TCP transport，使用 gRPC HTTP/2 通信。
+ * <p>实现 {@link RaftTransport} 接口，使用 gRPC HTTP/2 通信。
  * 保留分块 InstallSnapshot 逻辑。
+ *
+ * <p>注意：protobuf 生成的 {@code AppendEntriesRequest} / {@code AppendEntriesResponse}
+ * 与 {@link RaftTransport} 接口中的 DTO record 同名。
+ * 由于本类实现 RaftTransport，内部类型会遮蔽 import，
+ * 因此 protobuf 类型使用完全限定名。
  */
-public class GrpcRaftTransport implements AutoCloseable {
+public class GrpcRaftTransport implements RaftTransport {
     private static final Logger log = LoggerFactory.getLogger(GrpcRaftTransport.class);
     private static final int SNAPSHOT_CHUNK_SIZE = 256 * 1024; // 256KB per chunk
 
@@ -45,46 +47,54 @@ public class GrpcRaftTransport implements AutoCloseable {
     });
     private Server grpcServer;
 
-    // Server-side handlers
-    private Function<RaftTransport.RequestVoteMessage, Boolean> onRequestVote;
-    private Function<RaftTransport.AppendEntriesMessage, AppendEntriesResult> onAppendEntries;
-    private Function<RaftTransport.InstallSnapshotMessage, Long> onInstallSnapshot;
-    private Function<RaftTransport.InstallSnapshotChunkMessage, Long> onInstallSnapshotChunk;
+    // Server-side handlers (DTO-based)
+    private Function<RaftTransport.AppendEntriesRequest, RaftTransport.AppendEntriesResponse> appendEntriesHandler;
+    private Function<RaftTransport.InstallSnapshotRequest, RaftTransport.InstallSnapshotResponse> installSnapshotHandler;
+
+    private String listenHost;
+    private int listenPort;
 
     public GrpcRaftTransport(String nodeId) {
         this.nodeId = nodeId;
     }
 
-    public void setOnRequestVote(Function<RaftTransport.RequestVoteMessage, Boolean> h) {
-        this.onRequestVote = h;
+    // ========== RaftTransport interface implementation ==========
+
+    @Override
+    public void setOnAppendEntries(
+            Function<RaftTransport.AppendEntriesRequest, RaftTransport.AppendEntriesResponse> handler) {
+        this.appendEntriesHandler = handler;
     }
 
-    public void setOnAppendEntries(Function<RaftTransport.AppendEntriesMessage, AppendEntriesResult> h) {
-        this.onAppendEntries = h;
-    }
-
-    public void setOnInstallSnapshot(Function<RaftTransport.InstallSnapshotMessage, Long> h) {
-        this.onInstallSnapshot = h;
-    }
-
-    public void setOnInstallSnapshotChunk(Function<RaftTransport.InstallSnapshotChunkMessage, Long> h) {
-        this.onInstallSnapshotChunk = h;
+    @Override
+    public void setOnInstallSnapshot(
+            Function<RaftTransport.InstallSnapshotRequest, RaftTransport.InstallSnapshotResponse> handler) {
+        this.installSnapshotHandler = handler;
     }
 
     /** Start gRPC server to listen for incoming Raft RPCs */
-    public void listen(String host, int port) {
-        try {
-            grpcServer = ServerBuilder.forPort(port)
-                .addService(new RaftServiceImpl())
-                .build()
-                .start();
-            log.info("GrpcRaftTransport listening on {}:{}", host, port);
-        } catch (Exception e) {
-            throw new IllegalStateException("Failed to start gRPC server on " + host + ":" + port, e);
+    @Override
+    public void start() throws Exception {
+        if (listenPort <= 0) {
+            throw new IllegalStateException("listenHost and listenPort must be set via setListenAddress() before start()");
         }
+        grpcServer = ServerBuilder.forPort(listenPort)
+            .addService(new RaftServiceImpl())
+            .build()
+            .start();
+        log.info("GrpcRaftTransport listening on {}:{}", listenHost, listenPort);
+    }
+
+    /**
+     * 设置监听地址。必须在 {@link #start()} 之前调用。
+     */
+    public void setListenAddress(String host, int port) {
+        this.listenHost = host;
+        this.listenPort = port;
     }
 
     /** Connect to a peer via gRPC */
+    @Override
     public CompletableFuture<Void> connect(String peerId, String host, int port) {
         return CompletableFuture.runAsync(() -> {
             ManagedChannel existing = channels.get(peerId);
@@ -101,13 +111,25 @@ public class GrpcRaftTransport implements AutoCloseable {
         }, rpcExecutor);
     }
 
+    @Override
+    public void disconnect(String peerId) {
+        ManagedChannel channel = channels.remove(peerId);
+        if (channel != null) {
+            channel.shutdown();
+            blockingStubs.remove(peerId);
+            asyncStubs.remove(peerId);
+        }
+    }
+
     /** Whether the outbound connection to a peer is currently active */
+    @Override
     public boolean isPeerConnected(String peerId) {
         ManagedChannel channel = channels.get(peerId);
         return channel != null && !channel.isShutdown();
     }
 
     /** Number of currently connected peers */
+    @Override
     public int connectedPeerCount() {
         int connected = 0;
         for (ManagedChannel channel : channels.values()) {
@@ -120,74 +142,56 @@ public class GrpcRaftTransport implements AutoCloseable {
 
     // ========== Client-side RPCs ==========
 
-    /** Send RequestVote to a peer */
-    public CompletableFuture<Boolean> sendRequestVote(String peerId, long epoch, String candidateId,
-            long lastLogIndex, long lastLogEpoch) {
-        return CompletableFuture.supplyAsync(() -> {
-            RaftServiceGrpc.RaftServiceBlockingStub stub = blockingStubs.get(peerId);
-            if (stub == null) return false;
-            try {
-                RequestVoteRequest request = RequestVoteRequest.newBuilder()
-                    .setEpoch(epoch)
-                    .setCandidateId(candidateId)
-                    .setLastLogIndex(lastLogIndex)
-                    .setLastLogEpoch(lastLogEpoch)
-                    .build();
-                RequestVoteResponse response = stub.withDeadlineAfter(5, TimeUnit.SECONDS)
-                    .requestVote(request);
-                return response.getVoteGranted();
-            } catch (Exception e) {
-                log.warn("RequestVote to {} failed: {}", peerId, e.getMessage());
-                return false;
-            }
-        }, rpcExecutor);
-    }
-
     /** Send AppendEntries to a peer */
-    public CompletableFuture<AppendEntriesResult> sendAppendEntries(String peerId, long epoch,
-            String leaderId, long prevLogIndex, long prevLogEpoch, byte[][] entries, long leaderCommit) {
+    @Override
+    public CompletableFuture<RaftTransport.AppendEntriesResponse> sendAppendEntries(
+            String peerId, RaftTransport.AppendEntriesRequest request) {
         return CompletableFuture.supplyAsync(() -> {
             RaftServiceGrpc.RaftServiceBlockingStub stub = blockingStubs.get(peerId);
-            if (stub == null) return AppendEntriesResult.fail(epoch);
+            if (stub == null) {
+                return new RaftTransport.AppendEntriesResponse(request.epoch(), false, -1, -1);
+            }
             try {
-                AppendEntriesRequest.Builder builder = AppendEntriesRequest.newBuilder()
-                    .setEpoch(epoch)
-                    .setLeaderId(leaderId)
-                    .setPrevLogIndex(prevLogIndex)
-                    .setPrevLogEpoch(prevLogEpoch)
-                    .setLeaderCommit(leaderCommit);
-                if (entries != null) {
-                    for (byte[] entry : entries) {
+                // DTO -> protobuf (use fully-qualified name to avoid collision with RaftTransport inner types)
+                com.loomq.raft.grpc.AppendEntriesRequest.Builder builder =
+                    com.loomq.raft.grpc.AppendEntriesRequest.newBuilder()
+                        .setEpoch(request.epoch())
+                        .setLeaderId(request.leaderId())
+                        .setPrevLogIndex(request.prevLogIndex())
+                        .setPrevLogEpoch(request.prevLogEpoch())
+                        .setLeaderCommit(request.leaderCommit());
+                if (request.entries() != null) {
+                    for (byte[] entry : request.entries()) {
                         if (entry != null) {
                             builder.addEntries(ByteString.copyFrom(entry));
                         }
                     }
                 }
-                AppendEntriesResponse response = stub.withDeadlineAfter(5, TimeUnit.SECONDS)
-                    .appendEntries(builder.build());
-                if (response.getSuccess()) {
-                    return AppendEntriesResult.success(response.getEpoch(), response.getMatchIndex());
-                } else {
-                    return response.getConflictIndex() > 0
-                        ? AppendEntriesResult.fail(response.getEpoch(), response.getConflictIndex())
-                        : AppendEntriesResult.fail(response.getEpoch());
-                }
+                com.loomq.raft.grpc.AppendEntriesResponse protoResp =
+                    stub.withDeadlineAfter(5, TimeUnit.SECONDS).appendEntries(builder.build());
+                // protobuf -> DTO
+                return new RaftTransport.AppendEntriesResponse(
+                    protoResp.getEpoch(),
+                    protoResp.getSuccess(),
+                    protoResp.getMatchIndex(),
+                    protoResp.getConflictIndex());
             } catch (Exception e) {
                 log.warn("AppendEntries to {} failed: {}", peerId, e.getMessage());
-                return AppendEntriesResult.fail(epoch);
+                return new RaftTransport.AppendEntriesResponse(request.epoch(), false, -1, -1);
             }
         }, rpcExecutor);
     }
 
-    /** Send InstallSnapshot to a lagging follower (streaming chunks) */
-    public CompletableFuture<Long> sendInstallSnapshot(String peerId, long epoch, String leaderId,
-            long lastIncludedIndex, long lastIncludedEpoch, byte[] snapshotData) {
+    /** Send InstallSnapshot to a lagging follower (single-shot or chunked) */
+    @Override
+    public CompletableFuture<RaftTransport.InstallSnapshotResponse> sendInstallSnapshot(
+            String peerId, RaftTransport.InstallSnapshotRequest request) {
         return CompletableFuture.supplyAsync(() -> {
             RaftServiceGrpc.RaftServiceStub asyncStub = asyncStubs.get(peerId);
-            if (asyncStub == null) return -1L;
+            if (asyncStub == null) {
+                return new RaftTransport.InstallSnapshotResponse(request.epoch(), -1);
+            }
             try {
-                // Split into chunks
-                int totalChunks = (snapshotData.length + SNAPSHOT_CHUNK_SIZE - 1) / SNAPSHOT_CHUNK_SIZE;
                 CountDownLatch latch = new CountDownLatch(1);
                 final long[] result = {-1L};
 
@@ -213,71 +217,23 @@ public class GrpcRaftTransport implements AutoCloseable {
                     .withDeadlineAfter(60, TimeUnit.SECONDS)
                     .installSnapshot(responseObserver);
 
-                for (int i = 0; i < totalChunks; i++) {
-                    int start = i * SNAPSHOT_CHUNK_SIZE;
-                    int end = Math.min(start + SNAPSHOT_CHUNK_SIZE, snapshotData.length);
-                    byte[] chunkData = new byte[end - start];
-                    System.arraycopy(snapshotData, start, chunkData, 0, chunkData.length);
-
-                    SnapshotChunk chunk = SnapshotChunk.newBuilder()
-                        .setEpoch(epoch)
-                        .setLeaderId(leaderId)
-                        .setLastIncludedIndex(lastIncludedIndex)
-                        .setLastIncludedEpoch(lastIncludedEpoch)
-                        .setChunkIndex(i)
-                        .setTotalChunks(totalChunks)
-                        .setData(ByteString.copyFrom(chunkData))
-                        .build();
-                    requestObserver.onNext(chunk);
-                }
-                requestObserver.onCompleted();
-
-                latch.await(60, TimeUnit.SECONDS);
-                return result[0];
-            } catch (Exception e) {
-                log.warn("InstallSnapshot to {} failed: {}", peerId, e.getMessage());
-                return -1L;
-            }
-        }, rpcExecutor);
-    }
-
-    /** Send a single InstallSnapshot chunk (for incremental chunk sending) */
-    public CompletableFuture<Boolean> sendInstallSnapshotChunk(String peerId, long epoch, String leaderId,
-            long lastIncludedIndex, long lastIncludedEpoch, int chunkIndex, int totalChunks, byte[] chunkData) {
-        return CompletableFuture.supplyAsync(() -> {
-            RaftServiceGrpc.RaftServiceStub asyncStub = asyncStubs.get(peerId);
-            if (asyncStub == null) return false;
-            try {
                 SnapshotChunk chunk = SnapshotChunk.newBuilder()
-                    .setEpoch(epoch)
-                    .setLeaderId(leaderId)
-                    .setLastIncludedIndex(lastIncludedIndex)
-                    .setLastIncludedEpoch(lastIncludedEpoch)
-                    .setChunkIndex(chunkIndex)
-                    .setTotalChunks(totalChunks)
-                    .setData(ByteString.copyFrom(chunkData))
+                    .setEpoch(request.epoch())
+                    .setLeaderId(request.leaderId())
+                    .setLastIncludedIndex(request.lastIncludedIndex())
+                    .setLastIncludedEpoch(request.lastIncludedEpoch())
+                    .setChunkIndex(request.chunkIndex())
+                    .setTotalChunks(request.totalChunks())
+                    .setData(ByteString.copyFrom(request.data()))
                     .build();
-
-                CountDownLatch latch = new CountDownLatch(1);
-                final boolean[] result = {false};
-
-                StreamObserver<SnapshotResponse> responseObserver = new StreamObserver<>() {
-                    @Override public void onNext(SnapshotResponse r) { result[0] = r.getLastIncludedIndex() >= 0; }
-                    @Override public void onError(Throwable t) { log.warn("Chunk {} failed: {}", chunkIndex, t.getMessage()); latch.countDown(); }
-                    @Override public void onCompleted() { latch.countDown(); }
-                };
-
-                StreamObserver<SnapshotChunk> requestObserver = asyncStub
-                    .withDeadlineAfter(30, TimeUnit.SECONDS)
-                    .installSnapshot(responseObserver);
                 requestObserver.onNext(chunk);
                 requestObserver.onCompleted();
 
-                latch.await(30, TimeUnit.SECONDS);
-                return result[0];
+                latch.await(60, TimeUnit.SECONDS);
+                return new RaftTransport.InstallSnapshotResponse(request.epoch(), result[0]);
             } catch (Exception e) {
-                log.warn("sendInstallSnapshotChunk failed: {}", e.getMessage());
-                return false;
+                log.warn("InstallSnapshot to {} failed: {}", peerId, e.getMessage());
+                return new RaftTransport.InstallSnapshotResponse(request.epoch(), -1);
             }
         }, rpcExecutor);
     }
@@ -319,51 +275,40 @@ public class GrpcRaftTransport implements AutoCloseable {
 
     // ========== gRPC Service Implementation ==========
 
+    /**
+     * gRPC 服务实现。所有 protobuf 类型使用完全限定名，
+     * 因为 RaftTransport 接口的 DTO record 同名会遮蔽 import。
+     */
     private class RaftServiceImpl extends RaftServiceGrpc.RaftServiceImplBase {
-        @Override
-        public void requestVote(RequestVoteRequest request, StreamObserver<RequestVoteResponse> responseObserver) {
-            try {
-                if (onRequestVote == null) {
-                    responseObserver.onNext(RequestVoteResponse.newBuilder().build());
-                    responseObserver.onCompleted();
-                    return;
-                }
-                RaftTransport.RequestVoteMessage msg = new RaftTransport.RequestVoteMessage(
-                    request.getEpoch(), request.getCandidateId(),
-                    request.getLastLogIndex(), request.getLastLogEpoch());
-                Boolean granted = onRequestVote.apply(msg);
-                responseObserver.onNext(RequestVoteResponse.newBuilder()
-                    .setVoteGranted(granted != null && granted)
-                    .build());
-                responseObserver.onCompleted();
-            } catch (Exception e) {
-                log.error("RequestVote handler error", e);
-                responseObserver.onError(e);
-            }
-        }
 
         @Override
-        public void appendEntries(AppendEntriesRequest request, StreamObserver<AppendEntriesResponse> responseObserver) {
+        public void appendEntries(
+                com.loomq.raft.grpc.AppendEntriesRequest protoReq,
+                StreamObserver<com.loomq.raft.grpc.AppendEntriesResponse> responseObserver) {
             try {
-                if (onAppendEntries == null) {
-                    responseObserver.onNext(AppendEntriesResponse.newBuilder().build());
+                if (appendEntriesHandler == null) {
+                    responseObserver.onNext(com.loomq.raft.grpc.AppendEntriesResponse.newBuilder().build());
                     responseObserver.onCompleted();
                     return;
                 }
-                byte[][] entries = new byte[request.getEntriesList().size()][];
-                for (int i = 0; i < entries.length; i++) {
-                    entries[i] = request.getEntriesList().get(i).toByteArray();
-                }
-                RaftTransport.AppendEntriesMessage msg = new RaftTransport.AppendEntriesMessage(
-                    request.getEpoch(), request.getLeaderId(),
-                    request.getPrevLogIndex(), request.getPrevLogEpoch(),
-                    entries, request.getLeaderCommit());
-                AppendEntriesResult result = onAppendEntries.apply(msg);
-                responseObserver.onNext(AppendEntriesResponse.newBuilder()
-                    .setSuccess(result.success)
-                    .setMatchIndex(result.matchIndex)
-                    .setConflictIndex(result.conflictIndex)
-                    .setEpoch(result.epoch)
+                // protobuf -> DTO
+                List<byte[]> entries = protoReq.getEntriesList().stream()
+                    .map(ByteString::toByteArray)
+                    .toList();
+                RaftTransport.AppendEntriesRequest dtoReq = new RaftTransport.AppendEntriesRequest(
+                    protoReq.getEpoch(), protoReq.getLeaderId(),
+                    protoReq.getPrevLogIndex(), protoReq.getPrevLogEpoch(),
+                    entries, protoReq.getLeaderCommit());
+
+                // 调用 handler
+                RaftTransport.AppendEntriesResponse dtoResp = appendEntriesHandler.apply(dtoReq);
+
+                // DTO -> protobuf
+                responseObserver.onNext(com.loomq.raft.grpc.AppendEntriesResponse.newBuilder()
+                    .setSuccess(dtoResp.success())
+                    .setMatchIndex(dtoResp.matchIndex())
+                    .setConflictIndex(dtoResp.conflictIndex())
+                    .setEpoch(dtoResp.epoch())
                     .build());
                 responseObserver.onCompleted();
             } catch (Exception e) {
@@ -380,25 +325,18 @@ public class GrpcRaftTransport implements AutoCloseable {
                 @Override
                 public void onNext(SnapshotChunk chunk) {
                     try {
-                        if (onInstallSnapshotChunk != null) {
-                            RaftTransport.InstallSnapshotChunkMessage msg = new RaftTransport.InstallSnapshotChunkMessage(
+                        if (installSnapshotHandler != null) {
+                            // protobuf -> DTO
+                            RaftTransport.InstallSnapshotRequest dtoReq = new RaftTransport.InstallSnapshotRequest(
                                 chunk.getEpoch(), chunk.getLeaderId(),
                                 chunk.getLastIncludedIndex(), chunk.getLastIncludedEpoch(),
                                 chunk.getChunkIndex(), chunk.getTotalChunks(),
                                 chunk.getData().toByteArray());
-                            Long result = onInstallSnapshotChunk.apply(msg);
-                            if (result != null && result >= 0) {
-                                lastIndex = result;
-                            }
-                        } else if (onInstallSnapshot != null && chunk.getChunkIndex() == 0) {
-                            // Single-chunk fallback
-                            RaftTransport.InstallSnapshotMessage msg = new RaftTransport.InstallSnapshotMessage(
-                                chunk.getEpoch(), chunk.getLeaderId(),
-                                chunk.getLastIncludedIndex(), chunk.getLastIncludedEpoch(),
-                                chunk.getData().toByteArray());
-                            Long result = onInstallSnapshot.apply(msg);
-                            if (result != null) {
-                                lastIndex = result;
+
+                            RaftTransport.InstallSnapshotResponse dtoResp =
+                                installSnapshotHandler.apply(dtoReq);
+                            if (dtoResp.bytesReceived() >= 0) {
+                                lastIndex = dtoResp.bytesReceived();
                             }
                         }
                     } catch (Exception e) {
