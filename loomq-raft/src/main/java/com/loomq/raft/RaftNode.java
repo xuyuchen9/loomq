@@ -103,16 +103,6 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
         // Server-side RPC handlers (transport may be null for single-node/no-network tests)
         if (transport != null) {
-            // RequestVote handler — only for Raft election mode
-            if (election instanceof RaftElection raftElection) {
-                transport.setOnRequestVote(msg -> {
-                    boolean granted = raftElection.handleRequestVote(msg.epoch(), msg.candidateId(),
-                        msg.lastLogIndex(), msg.lastLogEpoch());
-                    syncRaftMetrics();
-                    return granted;
-                });
-            }
-
             transport.setOnAppendEntries(msg -> {
                 AppendEntriesResult result = replication.handleAppendEntries(msg.epoch(), msg.leaderId(),
                     msg.prevLogIndex(), msg.prevLogEpoch(), msg.entries(), msg.leaderCommit());
@@ -134,14 +124,11 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         }
 
         // Election lifecycle callbacks
+        election.addBecomeLeaderListener(this::onBecomeLeader);
+        election.addBecomeFollowerListener(this::onBecomeFollower);
+        // RaftElection 特有的选举开始回调 — 构造时类型判断，不是运行时分发
         if (election instanceof RaftElection raftElection) {
             raftElection.setOnElectionStarted(this::onElectionStarted);
-            raftElection.setOnBecomeLeader(this::onBecomeLeader);
-            raftElection.setOnBecomeFollower(this::onBecomeFollower);
-        } else {
-            // K8s Lease mode — register listeners via interface
-            election.addBecomeLeaderListener(this::onBecomeLeader);
-            election.addBecomeFollowerListener(this::onBecomeFollower);
         }
     }
 
@@ -503,7 +490,6 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private void onElectionStarted(long epoch) {
         syncRaftMetrics();
         if (peers.isEmpty() || transport == null) return;
-        if (!(election instanceof RaftElection raftElection)) return; // K8s mode: no RequestVote
         log.info("Sending RequestVote to {} peers for epoch {}", peers.size(), epoch);
         long lastIdx = raftLog.lastIndex();
         long lastEpoch = raftLog.lastEpoch();
@@ -517,8 +503,8 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                     if (granted) {
                         int total = votesGranted.incrementAndGet();
                         log.debug("Vote granted by {} (total={}/{})", peerId, total, majority);
-                        if (total >= majority && raftElection.role() == RaftRole.CANDIDATE) {
-                            raftElection.becomeLeader(epoch);
+                        if (total >= majority && election.role() == RaftRole.CANDIDATE) {
+                            ((RaftElection) election).becomeLeader(epoch);
                         }
                     }
                 });
