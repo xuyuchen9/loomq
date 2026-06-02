@@ -654,13 +654,9 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                                 }
                                 advanceCommitIndexFromAllPeers();
                             } else if (result.epoch > currentEpoch) {
-                                if (election instanceof RaftElection raftElection) {
-                                    raftElection.stepDown(result.epoch);
-                                } else if (election instanceof K8sLeaseElection k8sElection) {
-                                    log.warn("AppendEntries rejected: follower {} has higher epoch {} > {}, stepping down",
-                                        ps.peerId, result.epoch, currentEpoch);
-                                    k8sElection.forceStepDown(result.epoch);
-                                }
+                                log.warn("AppendEntries rejected: follower {} has higher epoch {} > {}, stepping down",
+                                    ps.peerId, result.epoch, currentEpoch);
+                                election.stepDown(result.epoch);
                             } else {
                                 // Log inconsistency: use conflictIndex for fast backtrack
                                 if (result.conflictIndex > 0) {
