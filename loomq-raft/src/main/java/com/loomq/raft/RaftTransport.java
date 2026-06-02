@@ -1,432 +1,60 @@
 package com.loomq.raft;
 
-import com.loomq.replication.Ack;
-import com.loomq.replication.ReplicationRecord;
-import com.loomq.replication.ReplicationRecordType;
-import com.loomq.replication.client.ReplicaClient;
-import com.loomq.replication.server.ReplicaServer;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.util.Map;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-/** Raft RPC Transport. Wraps existing ReplicaClient/ReplicaServer for Raft messages. */
-public class RaftTransport implements AutoCloseable {
-    private static final Logger log = LoggerFactory.getLogger(RaftTransport.class);
-    private final String nodeId;
-    private final Map<String, ReplicaClient> clients = new ConcurrentHashMap<>();
-    private ReplicaServer server;
+/**
+ * Raft 节点间传输抽象。
+ * DTO 为纯 POJO record，不依赖 protobuf 或 gRPC。
+ */
+public interface RaftTransport extends AutoCloseable {
 
-    // Server-side handlers: decode payload → call function → encode response
-    private Function<RequestVoteMessage, Boolean> onRequestVote;
-    private Function<AppendEntriesMessage, AppendEntriesResult> onAppendEntries;
-    private Function<InstallSnapshotMessage, Long> onInstallSnapshot;
+    // --- DTO 定义 ---
 
-    public RaftTransport(String nodeId) { this.nodeId = nodeId; }
+    record AppendEntriesRequest(
+        long epoch, String leaderId, long prevLogIndex, long prevLogEpoch,
+        List<byte[]> entries, long leaderCommit
+    ) {}
 
-    /** Encode: epoch(8) + candidateIdLen(2) + candidateId + lastLogIndex(8) + lastLogEpoch(8) */
-    static byte[] encodeRequestVote(long epoch, String candidateId, long lastLogIndex, long lastLogEpoch) {
-        byte[] idBytes = candidateId.getBytes(StandardCharsets.UTF_8);
-        ByteBuffer buf = ByteBuffer.allocate(8 + 2 + idBytes.length + 8 + 8);
-        buf.putLong(epoch);
-        buf.putShort((short) idBytes.length);
-        buf.put(idBytes);
-        buf.putLong(lastLogIndex);
-        buf.putLong(lastLogEpoch);
-        return buf.array();
-    }
+    record AppendEntriesResponse(
+        long epoch, boolean success, long matchIndex, long conflictIndex
+    ) {}
 
-    /** Decode RequestVote from payload into a message record */
-    static RequestVoteMessage decodeRequestVote(byte[] payload) {
-        ByteBuffer buf = ByteBuffer.wrap(payload);
-        long epoch = buf.getLong();
-        short idLen = buf.getShort();
-        byte[] idBytes = new byte[idLen];
-        buf.get(idBytes);
-        String candidateId = new String(idBytes, StandardCharsets.UTF_8);
-        long lastLogIndex = buf.getLong();
-        long lastLogEpoch = buf.getLong();
-        return new RequestVoteMessage(epoch, candidateId, lastLogIndex, lastLogEpoch);
-    }
+    record InstallSnapshotRequest(
+        long epoch, String leaderId, long lastIncludedIndex,
+        long lastIncludedEpoch, int chunkIndex, int totalChunks, byte[] data
+    ) {}
 
-    /** Encode response: epoch(8) + voteGranted(1) */
-    static byte[] encodeRequestVoteResponse(long epoch, boolean voteGranted) {
-        ByteBuffer buf = ByteBuffer.allocate(9);
-        buf.putLong(epoch);
-        buf.put(voteGranted ? (byte) 1 : (byte) 0);
-        return buf.array();
-    }
+    record InstallSnapshotResponse(long epoch, long bytesReceived) {}
 
-    /** Decode response */
-    static boolean decodeRequestVoteResponse(byte[] payload) {
-        ByteBuffer buf = ByteBuffer.wrap(payload);
-        buf.getLong(); // epoch
-        return buf.get() == 1;
-    }
+    // --- 生命周期 ---
 
-    /** Encode: epoch(8) + leaderIdLen(2) + leaderId + prevLogIndex(8) + prevLogEpoch(8) + entryCount(4) + [entryLen(4)+entry]* + leaderCommit(8) */
-    static byte[] encodeAppendEntries(long epoch, String leaderId, long prevLogIndex,
-            long prevLogEpoch, byte[][] entries, long leaderCommit) {
-        byte[] idBytes = leaderId.getBytes(StandardCharsets.UTF_8);
-        int entryCount = entries != null ? entries.length : 0;
-        int entriesSize = 0;
-        if (entryCount > 0) {
-            for (byte[] e : entries) if (e != null) entriesSize += 4 + e.length;
-        }
-        ByteBuffer buf = ByteBuffer.allocate(8 + 2 + idBytes.length + 8 + 8 + 4 + entriesSize + 8);
-        buf.putLong(epoch);
-        buf.putShort((short) idBytes.length);
-        buf.put(idBytes);
-        buf.putLong(prevLogIndex);
-        buf.putLong(prevLogEpoch);
-        buf.putInt(entryCount);
-        if (entryCount > 0) {
-            for (byte[] e : entries) {
-                if (e == null) { buf.putInt(0); continue; }
-                buf.putInt(e.length);
-                buf.put(e);
-            }
-        }
-        buf.putLong(leaderCommit);
-        return buf.array();
-    }
+    void start() throws Exception;
+    CompletableFuture<Void> connect(String peerId, String host, int port);
+    void disconnect(String peerId);
 
-    /** Decode AppendEntries from payload */
-    static AppendEntriesMessage decodeAppendEntries(byte[] payload) {
-        ByteBuffer buf = ByteBuffer.wrap(payload);
-        long epoch = buf.getLong();
-        short idLen = buf.getShort();
-        byte[] idBytes = new byte[idLen];
-        buf.get(idBytes);
-        String leaderId = new String(idBytes, StandardCharsets.UTF_8);
-        long prevLogIndex = buf.getLong();
-        long prevLogEpoch = buf.getLong();
-        int entryCount = buf.getInt();
-        byte[][] entries = new byte[entryCount][];
-        for (int i = 0; i < entryCount; i++) {
-            int len = buf.getInt();
-            entries[i] = new byte[len];
-            buf.get(entries[i]);
-        }
-        long leaderCommit = buf.getLong();
-        return new AppendEntriesMessage(epoch, leaderId, prevLogIndex, prevLogEpoch, entries, leaderCommit);
-    }
+    // --- RPC 方法 ---
 
-    /** Encode response: epoch(8) + success(1) + matchIndex(8) + conflictIndex(8) */
-    static byte[] encodeAppendEntriesResponse(long epoch, boolean success, long matchIndex, long conflictIndex) {
-        ByteBuffer buf = ByteBuffer.allocate(25);
-        buf.putLong(epoch);
-        buf.put(success ? (byte) 1 : (byte) 0);
-        buf.putLong(matchIndex);
-        buf.putLong(conflictIndex);
-        return buf.array();
-    }
+    CompletableFuture<AppendEntriesResponse> sendAppendEntries(
+        String peerId, AppendEntriesRequest request);
+    CompletableFuture<InstallSnapshotResponse> sendInstallSnapshot(
+        String peerId, InstallSnapshotRequest request);
 
-    // ========== RequestVote payload codec ==========
+    // --- 回调注册 ---
 
-    /** Decode response */
-    static AppendEntriesResult decodeAppendEntriesResponse(byte[] payload) {
-        ByteBuffer buf = ByteBuffer.wrap(payload);
-        long epoch = buf.getLong();
-        boolean success = buf.get() == 1;
-        long matchIndex = buf.getLong();
-        long conflictIndex = buf.remaining() >= 8 ? buf.getLong() : -1;
-        if (success) {
-            return AppendEntriesResult.success(epoch, matchIndex);
-        } else {
-            return conflictIndex >= 0 ? AppendEntriesResult.fail(epoch, conflictIndex) : AppendEntriesResult.fail(epoch);
-        }
-    }
+    void setOnAppendEntries(
+        Function<AppendEntriesRequest, AppendEntriesResponse> handler);
+    void setOnInstallSnapshot(
+        Function<InstallSnapshotRequest, InstallSnapshotResponse> handler);
 
-    /** Encode: epoch(8) + leaderIdLen(2) + leaderId + lastIncludedIndex(8) + lastIncludedEpoch(8) + dataLen(4) + data */
-    static byte[] encodeInstallSnapshot(long epoch, String leaderId, long lastIncludedIndex,
-            long lastIncludedEpoch, byte[] snapshotData) {
-        byte[] idBytes = leaderId.getBytes(StandardCharsets.UTF_8);
-        int dataLen = snapshotData != null ? snapshotData.length : 0;
-        ByteBuffer buf = ByteBuffer.allocate(8 + 2 + idBytes.length + 8 + 8 + 4 + dataLen);
-        buf.putLong(epoch);
-        buf.putShort((short) idBytes.length);
-        buf.put(idBytes);
-        buf.putLong(lastIncludedIndex);
-        buf.putLong(lastIncludedEpoch);
-        buf.putInt(dataLen);
-        if (dataLen > 0) buf.put(snapshotData);
-        return buf.array();
-    }
+    // --- 连接状态查询 ---
 
-    /** Decode InstallSnapshot from payload */
-    static InstallSnapshotMessage decodeInstallSnapshot(byte[] payload) {
-        ByteBuffer buf = ByteBuffer.wrap(payload);
-        long epoch = buf.getLong();
-        short idLen = buf.getShort();
-        byte[] idBytes = new byte[idLen];
-        buf.get(idBytes);
-        String leaderId = new String(idBytes, StandardCharsets.UTF_8);
-        long lastIncludedIndex = buf.getLong();
-        long lastIncludedEpoch = buf.getLong();
-        int dataLen = buf.getInt();
-        byte[] snapshotData = new byte[dataLen];
-        buf.get(snapshotData);
-        return new InstallSnapshotMessage(epoch, leaderId, lastIncludedIndex, lastIncludedEpoch, snapshotData);
-    }
+    boolean isPeerConnected(String peerId);
+    int connectedPeerCount();
 
-    public void setOnRequestVote(Function<RequestVoteMessage, Boolean> h) { this.onRequestVote = h; }
+    // --- 关闭 ---
 
-    // ========== AppendEntries payload codec ==========
-
-    public void setOnAppendEntries(Function<AppendEntriesMessage, AppendEntriesResult> h) { this.onAppendEntries = h; }
-
-    public void setOnInstallSnapshot(Function<InstallSnapshotMessage, Long> h) { this.onInstallSnapshot = h; }
-
-    // ========== Chunked InstallSnapshot ==========
-
-    private Function<InstallSnapshotChunkMessage, Long> onInstallSnapshotChunk;
-
-    public void setOnInstallSnapshotChunk(Function<InstallSnapshotChunkMessage, Long> h) { this.onInstallSnapshotChunk = h; }
-
-    /** Start as server (listen for incoming Raft RPCs) */
-    public void listen(String host, int port) {
-        server = new ReplicaServer(nodeId, host, port);
-        server.setAckHandler(record -> {
-            ReplicationRecordType type = record.getType();
-            if (type == ReplicationRecordType.RAFT_REQUEST_VOTE) return handleRequestVote(record);
-            else if (type == ReplicationRecordType.RAFT_APPEND_ENTRIES) return handleAppendEntries(record);
-            else if (type == ReplicationRecordType.RAFT_INSTALL_SNAPSHOT) return handleInstallSnapshot(record);
-            else if (type == ReplicationRecordType.RAFT_INSTALL_SNAPSHOT_CHUNK) return handleInstallSnapshotChunk(record);
-            return null;
-        });
-        server.start().join();
-        log.info("RaftTransport listening on {}:{}", host, port);
-    }
-
-    /** Connect to a peer for outgoing Raft RPCs */
-    public CompletableFuture<Void> connect(String peerId, String host, int port) {
-        ReplicaClient existing = clients.remove(peerId);
-        if (existing != null) {
-            existing.shutdown();
-        }
-        ReplicaClient client = new ReplicaClient(nodeId, host, port);
-        clients.put(peerId, client);
-        return client.connect().whenComplete((ignored, ex) -> {
-            if (ex != null) {
-                clients.remove(peerId, client);
-                client.shutdown();
-            }
-        });
-    }
-
-    /** Whether the outbound connection to a peer is currently active. */
-    public boolean isPeerConnected(String peerId) {
-        ReplicaClient client = clients.get(peerId);
-        return client != null && client.isConnected();
-    }
-
-    /** Number of currently connected peers. */
-    public int connectedPeerCount() {
-        int connected = 0;
-        for (ReplicaClient client : clients.values()) {
-            if (client != null && client.isConnected()) {
-                connected++;
-            }
-        }
-        return connected;
-    }
-
-    // ========== Server-side handlers (called from Ack handler) ==========
-
-    /** Send RequestVote to a peer */
-    public CompletableFuture<Boolean> sendRequestVote(String peerId, long epoch, String candidateId,
-            long lastLogIndex, long lastLogEpoch) {
-        byte[] payload = encodeRequestVote(epoch, candidateId, lastLogIndex, lastLogEpoch);
-        ReplicationRecord record = ReplicationRecord.builder()
-            .offset(epoch).type(ReplicationRecordType.RAFT_REQUEST_VOTE)
-            .sourceNodeId(candidateId).payload(payload).build();
-        ReplicaClient client = clients.get(peerId);
-        if (client == null) return CompletableFuture.completedFuture(false);
-        return client.send(record).thenApply(ack -> {
-            if (!ack.isSuccess()) return false;
-            byte[] resp = ack.getRaftResponse();
-            if (resp == null || resp.length < 9) return false;
-            return decodeRequestVoteResponse(resp);
-        });
-    }
-
-    /** Send AppendEntries to a peer */
-    public CompletableFuture<AppendEntriesResult> sendAppendEntries(String peerId, long epoch,
-            String leaderId, long prevLogIndex, long prevLogEpoch, byte[][] entries, long leaderCommit) {
-        byte[] payload = encodeAppendEntries(epoch, leaderId, prevLogIndex, prevLogEpoch, entries, leaderCommit);
-        ReplicationRecord record = ReplicationRecord.builder()
-            .offset(epoch).type(ReplicationRecordType.RAFT_APPEND_ENTRIES)
-            .sourceNodeId(leaderId).payload(payload).build();
-        ReplicaClient client = clients.get(peerId);
-        if (client == null) return CompletableFuture.completedFuture(AppendEntriesResult.fail(epoch));
-        return client.send(record).thenApply(ack -> {
-            if (!ack.isSuccess()) return AppendEntriesResult.fail(epoch);
-            byte[] resp = ack.getRaftResponse();
-            if (resp == null || resp.length < 9) return AppendEntriesResult.fail(epoch);
-            return decodeAppendEntriesResponse(resp);
-        });
-    }
-
-    // ========== InstallSnapshot payload codec ==========
-
-    private Ack handleRequestVote(ReplicationRecord record) {
-        if (onRequestVote == null) return Ack.success(record.getOffset());
-        try {
-            RequestVoteMessage msg = decodeRequestVote(record.getPayload());
-            boolean voteGranted = onRequestVote.apply(msg);
-            byte[] resp = encodeRequestVoteResponse(msg.epoch(), voteGranted);
-            return Ack.raftResponse(record.getOffset(),
-                voteGranted ? com.loomq.replication.AckStatus.REPLICATED : com.loomq.replication.AckStatus.REJECTED,
-                resp);
-        } catch (Exception e) {
-            log.error("Failed to handle RequestVote", e);
-            return Ack.failed(record.getOffset(), e.getMessage());
-        }
-    }
-
-    private Ack handleAppendEntries(ReplicationRecord record) {
-        if (onAppendEntries == null) return Ack.success(record.getOffset());
-        try {
-            AppendEntriesMessage msg = decodeAppendEntries(record.getPayload());
-            AppendEntriesResult result = onAppendEntries.apply(msg);
-            byte[] resp = encodeAppendEntriesResponse(result.epoch, result.success, result.matchIndex, result.conflictIndex);
-            return Ack.raftResponse(record.getOffset(),
-                result.success ? com.loomq.replication.AckStatus.REPLICATED : com.loomq.replication.AckStatus.REJECTED,
-                resp);
-        } catch (Exception e) {
-            log.error("Failed to handle AppendEntries", e);
-            return Ack.failed(record.getOffset(), e.getMessage());
-        }
-    }
-
-    /** Send InstallSnapshot to a lagging follower */
-    public CompletableFuture<Long> sendInstallSnapshot(String peerId, long epoch, String leaderId,
-            long lastIncludedIndex, long lastIncludedEpoch, byte[] snapshotData) {
-        byte[] payload = encodeInstallSnapshot(epoch, leaderId, lastIncludedIndex, lastIncludedEpoch, snapshotData);
-        ReplicationRecord record = ReplicationRecord.builder()
-            .offset(epoch).type(ReplicationRecordType.RAFT_INSTALL_SNAPSHOT)
-            .sourceNodeId(leaderId).payload(payload).build();
-        ReplicaClient client = clients.get(peerId);
-        if (client == null) return CompletableFuture.completedFuture(-1L);
-        return client.send(record).thenApply(ack -> {
-            if (!ack.isSuccess()) return -1L;
-            byte[] resp = ack.getRaftResponse();
-            if (resp == null || resp.length < 8) return -1L;
-            ByteBuffer buf = ByteBuffer.wrap(resp);
-            return buf.getLong(); // follower's new lastIncludedIndex
-        });
-    }
-
-    /**
-     * Encode: epoch(8) + leaderIdLen(2) + leaderId + lastIncludedIndex(8) + lastIncludedEpoch(8)
-     *       + chunkIndex(4) + totalChunks(4) + chunkLen(4) + chunkData
-     */
-    static byte[] encodeInstallSnapshotChunk(long epoch, String leaderId, long lastIncludedIndex,
-            long lastIncludedEpoch, int chunkIndex, int totalChunks, byte[] chunkData) {
-        byte[] idBytes = leaderId.getBytes(StandardCharsets.UTF_8);
-        int dataLen = chunkData != null ? chunkData.length : 0;
-        ByteBuffer buf = ByteBuffer.allocate(8 + 2 + idBytes.length + 8 + 8 + 4 + 4 + 4 + dataLen);
-        buf.putLong(epoch);
-        buf.putShort((short) idBytes.length);
-        buf.put(idBytes);
-        buf.putLong(lastIncludedIndex);
-        buf.putLong(lastIncludedEpoch);
-        buf.putInt(chunkIndex);
-        buf.putInt(totalChunks);
-        buf.putInt(dataLen);
-        if (dataLen > 0) buf.put(chunkData);
-        return buf.array();
-    }
-
-    static InstallSnapshotChunkMessage decodeInstallSnapshotChunk(byte[] payload) {
-        ByteBuffer buf = ByteBuffer.wrap(payload);
-        long epoch = buf.getLong();
-        short idLen = buf.getShort();
-        byte[] idBytes = new byte[idLen];
-        buf.get(idBytes);
-        String leaderId = new String(idBytes, StandardCharsets.UTF_8);
-        long lastIncludedIndex = buf.getLong();
-        long lastIncludedEpoch = buf.getLong();
-        int chunkIndex = buf.getInt();
-        int totalChunks = buf.getInt();
-        int dataLen = buf.getInt();
-        byte[] chunkData = new byte[dataLen];
-        buf.get(chunkData);
-        return new InstallSnapshotChunkMessage(epoch, leaderId, lastIncludedIndex, lastIncludedEpoch,
-            chunkIndex, totalChunks, chunkData);
-    }
-
-    /**
-     * Send a single InstallSnapshot chunk to a follower.
-     */
-    public CompletableFuture<Boolean> sendInstallSnapshotChunk(String peerId, long epoch, String leaderId,
-            long lastIncludedIndex, long lastIncludedEpoch, int chunkIndex, int totalChunks, byte[] chunkData) {
-        byte[] payload = encodeInstallSnapshotChunk(epoch, leaderId, lastIncludedIndex, lastIncludedEpoch,
-            chunkIndex, totalChunks, chunkData);
-        ReplicationRecord record = ReplicationRecord.builder()
-            .offset(epoch).type(ReplicationRecordType.RAFT_INSTALL_SNAPSHOT_CHUNK)
-            .sourceNodeId(leaderId).payload(payload).build();
-        ReplicaClient client = clients.get(peerId);
-        if (client == null) return CompletableFuture.completedFuture(false);
-        return client.send(record).thenApply(ack -> {
-            if (!ack.isSuccess()) return false;
-            byte[] resp = ack.getRaftResponse();
-            if (resp == null || resp.length < 1) return false;
-            return resp[0] == 1; // 1 = accepted
-        });
-    }
-
-    // ========== Server-side handler ==========
-
-    private Ack handleInstallSnapshot(ReplicationRecord record) {
-        if (onInstallSnapshot == null) return Ack.success(record.getOffset());
-        try {
-            InstallSnapshotMessage msg = decodeInstallSnapshot(record.getPayload());
-            Long newIndex = onInstallSnapshot.apply(msg);
-            byte[] resp = ByteBuffer.allocate(8).putLong(newIndex != null ? newIndex : -1).array();
-            return Ack.raftResponse(record.getOffset(),
-                newIndex != null && newIndex >= 0 ? com.loomq.replication.AckStatus.REPLICATED : com.loomq.replication.AckStatus.REJECTED,
-                resp);
-        } catch (Exception e) {
-            log.error("Failed to handle InstallSnapshot", e);
-            return Ack.failed(record.getOffset(), e.getMessage());
-        }
-    }
-
-    private Ack handleInstallSnapshotChunk(ReplicationRecord record) {
-        if (onInstallSnapshotChunk == null) return Ack.success(record.getOffset());
-        try {
-            InstallSnapshotChunkMessage msg = decodeInstallSnapshotChunk(record.getPayload());
-            Long newIndex = onInstallSnapshotChunk.apply(msg);
-            byte[] resp = new byte[]{ (byte) (newIndex != null && newIndex >= 0 ? 1 : 0) };
-            return Ack.raftResponse(record.getOffset(),
-                newIndex != null && newIndex >= 0 ? com.loomq.replication.AckStatus.REPLICATED : com.loomq.replication.AckStatus.REJECTED,
-                resp);
-        } catch (Exception e) {
-            log.error("Failed to handle InstallSnapshot chunk", e);
-            return Ack.failed(record.getOffset(), e.getMessage());
-        }
-    }
-
-    @Override public void close() { clients.values().forEach(ReplicaClient::shutdown); if (server != null) server.shutdown(); }
-
-    /** Full RequestVote RPC message */
-    public record RequestVoteMessage(long epoch, String candidateId, long lastLogIndex, long lastLogEpoch) {}
-
-    /** Full AppendEntries RPC message */
-    public record AppendEntriesMessage(long epoch, String leaderId, long prevLogIndex, long prevLogEpoch,
-            byte[][] entries, long leaderCommit) {}
-
-    /** Full InstallSnapshot RPC message */
-    public record InstallSnapshotMessage(long epoch, String leaderId, long lastIncludedIndex,
-            long lastIncludedEpoch, byte[] snapshotData) {}
-
-    /** Chunked InstallSnapshot RPC message */
-    public record InstallSnapshotChunkMessage(long epoch, String leaderId, long lastIncludedIndex,
-            long lastIncludedEpoch, int chunkIndex, int totalChunks, byte[] chunkData) {}
+    @Override
+    void close();
 }
