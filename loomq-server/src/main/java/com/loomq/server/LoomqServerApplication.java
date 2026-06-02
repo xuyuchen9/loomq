@@ -119,8 +119,13 @@ public class LoomqServerApplication {
 
             com.loomq.raft.RaftConfig raftConfig = new com.loomq.raft.RaftConfig(
                 podName, peers, dataDir, 150, 300, 50);
-            com.loomq.raft.RaftTransport raftTransport = new com.loomq.raft.RaftTransport(podName);
-            raftTransport.listen("0.0.0.0", raftPort);
+            com.loomq.raft.GrpcRaftTransport raftTransport = new com.loomq.raft.GrpcRaftTransport(podName);
+            raftTransport.setListenAddress("0.0.0.0", raftPort);
+            try {
+                raftTransport.start();
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to start Raft gRPC transport", e);
+            }
 
             raftNode = new com.loomq.raft.RaftNode(raftConfig,
                 engine.getWalAccessor(), engine.getIntentStoreInternal(),
@@ -161,8 +166,13 @@ public class LoomqServerApplication {
             com.loomq.raft.RaftConfig raftConfig = new com.loomq.raft.RaftConfig(
                 raftNodeId, peers, dataDir, 150, 300, 50);
 
-            com.loomq.raft.RaftTransport raftTransport = new com.loomq.raft.RaftTransport(raftNodeId);
-            raftTransport.listen("0.0.0.0", raftPort);
+            com.loomq.raft.GrpcRaftTransport raftTransport = new com.loomq.raft.GrpcRaftTransport(raftNodeId);
+            raftTransport.setListenAddress("0.0.0.0", raftPort);
+            try {
+                raftTransport.start();
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to start Raft gRPC transport", e);
+            }
 
             raftNode = new com.loomq.raft.RaftNode(raftConfig,
                 engine.getWalAccessor(), engine.getIntentStoreInternal(), raftTransport, raftRuntimeListener);
