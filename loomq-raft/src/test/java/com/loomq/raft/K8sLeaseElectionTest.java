@@ -1,13 +1,18 @@
 package com.loomq.raft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.loomq.common.RaftRole;
 import com.loomq.config.WalConfig;
 import com.loomq.infrastructure.wal.SimpleWalWriter;
+import io.kubernetes.client.openapi.ApiClient;
+import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -121,5 +126,44 @@ class K8sLeaseElectionTest {
         assertEquals("standalone", election.currentLeader());
         election.onAppendEntries(1L, "other"); // no-op for standalone
         election.stop();
+    }
+
+    @Test
+    void configValidationShouldRejectInvalidClockSkewBuffer() {
+        // leaseDuration=10, renewInterval=3, buffer=8 → 10 <= 3+8 → should throw
+        assertThrows(IllegalArgumentException.class, () ->
+            new K8sLeaseConfig(10, 3, "default", "loomq-leader", "pod-1", 8));
+    }
+
+    @Test
+    void defaultClockSkewBufferShouldBeFive() {
+        K8sLeaseConfig config = new K8sLeaseConfig(15, 4, "default", "loomq-leader", "pod-1");
+        assertEquals(5, config.clockSkewBufferSeconds());
+    }
+
+    @Test
+    void isLeaderShouldReturnFalseWhenMonotonicClockExpired() throws Exception {
+        K8sLeaseConfig config = new K8sLeaseConfig(15, 4, "default", "loomq-leader", "pod-1");
+        ApiClient dummyClient = new ApiClient();
+        K8sLeaseElection election = new K8sLeaseElection(config, wal, dummyClient);
+
+        // Use reflection to force the election into LEADER state with stale renewal time
+        Field roleField = K8sLeaseElection.class.getDeclaredField("role");
+        roleField.setAccessible(true);
+        roleField.set(election, RaftRole.LEADER);
+
+        Field epochField = K8sLeaseElection.class.getDeclaredField("currentEpoch");
+        epochField.setAccessible(true);
+        epochField.set(election, 1L);
+
+        Field nanoField = K8sLeaseElection.class.getDeclaredField("lastRenewNanoTime");
+        nanoField.setAccessible(true);
+        // Set last renewal to 60 seconds ago — far beyond the 15s lease duration
+        nanoField.set(election, System.nanoTime() - TimeUnit.SECONDS.toNanos(60));
+
+        // isLeader() should detect monotonic clock expiration and step down
+        assertFalse(election.isLeader());
+        assertEquals(RaftRole.FOLLOWER, election.role(),
+            "should step down to FOLLOWER after monotonic clock expiration");
     }
 }
