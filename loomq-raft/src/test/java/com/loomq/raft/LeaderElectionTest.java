@@ -22,7 +22,7 @@ class LeaderElectionTest {
     private SimpleWalWriter wal;
 
     /** Wait for election to complete, polling every 20ms up to maxWaitMs */
-    private static void waitForElection(LeaderElection election, long maxWaitMs) {
+    private static void waitForElection(RaftElection election, long maxWaitMs) {
         long deadline = System.currentTimeMillis() + maxWaitMs;
         while (System.currentTimeMillis() < deadline) {
             if (election.role() == RaftRole.LEADER) return;
@@ -42,29 +42,29 @@ class LeaderElectionTest {
 
     @Test
     void singleNodeShouldElectSelf() {
-        LeaderElection election = new LeaderElection("node-1", wal, List.of(), 150, 300);
+        RaftElection election = new RaftElection("node-1", wal, List.of(), 150, 300);
         election.start();
         waitForElection(election, 2000);
         assertEquals(RaftRole.LEADER, election.role(), "single node should elect itself");
-        assertTrue(election.currentTerm() >= 1);
+        assertTrue(election.currentEpoch() >= 1);
         election.stop();
     }
 
     @Test
     void shouldPersistTermAndVotedFor() {
-        LeaderElection e1 = new LeaderElection("node-1", wal, List.of(), 150, 300);
+        RaftElection e1 = new RaftElection("node-1", wal, List.of(), 150, 300);
         e1.start();
         waitForElection(e1, 2000);
-        long term = e1.currentTerm();
+        long epoch = e1.currentEpoch();
         e1.stop();
-        LeaderElection e2 = new LeaderElection("node-1", wal, List.of(), 150, 300);
-        assertEquals(term, e2.currentTerm(), "term should persist across restarts");
+        RaftElection e2 = new RaftElection("node-1", wal, List.of(), 150, 300);
+        assertEquals(epoch, e2.currentEpoch(), "epoch should persist across restarts");
         e2.stop();
     }
 
     @Test
     void shouldVoteForSelf() {
-        LeaderElection election = new LeaderElection("node-1", wal, List.of(), 150, 300);
+        RaftElection election = new RaftElection("node-1", wal, List.of(), 150, 300);
         election.start();
         waitForElection(election, 2000);
         assertEquals("node-1", wal.getVotedFor(), "should vote for self in single-node cluster");
@@ -73,7 +73,7 @@ class LeaderElectionTest {
 
     @Test
     void shouldStepDownOnHigherTerm() {
-        LeaderElection election = new LeaderElection("node-1", wal, List.of("node-2"), 150, 300);
+        RaftElection election = new RaftElection("node-1", wal, List.of("node-2"), 150, 300);
         election.start();
         election.onAppendEntries(10L, "node-2");
         assertEquals(RaftRole.FOLLOWER, election.role(), "should step down on higher term");
@@ -83,21 +83,21 @@ class LeaderElectionTest {
 
     @Test
     void shouldRejectLowerTermVote() {
-        LeaderElection election = new LeaderElection("node-1", wal, List.of("node-2"), 150, 300);
+        RaftElection election = new RaftElection("node-1", wal, List.of("node-2"), 150, 300);
         election.start();
         waitForElection(election, 2000);
-        long currentTerm = election.currentTerm();
-        assertFalse(election.handleRequestVote(currentTerm - 1, "node-2", 0, 0));
+        long currentEpoch = election.currentEpoch();
+        assertFalse(election.handleRequestVote(currentEpoch - 1, "node-2", 0, 0));
         election.stop();
     }
 
     @Test
     void shouldAcceptHigherTermVote() {
-        LeaderElection election = new LeaderElection("node-1", wal, List.of("node-2"), 150, 300);
+        RaftElection election = new RaftElection("node-1", wal, List.of("node-2"), 150, 300);
         election.start();
-        long higherTerm = election.currentTerm() + 5;
-        assertTrue(election.handleRequestVote(higherTerm, "node-2", 100, higherTerm));
-        assertEquals(higherTerm, wal.getLastLogTerm());
+        long higherEpoch = election.currentEpoch() + 5;
+        assertTrue(election.handleRequestVote(higherEpoch, "node-2", 100, higherEpoch));
+        assertEquals(higherEpoch, wal.getLastLogEpoch());
         election.stop();
     }
 
@@ -105,7 +105,7 @@ class LeaderElectionTest {
 
     @Test
     void multiNodeShouldNotSelfElect() {
-        LeaderElection election = new LeaderElection("node-1", wal, List.of("node-2", "node-3"), 150, 300);
+        RaftElection election = new RaftElection("node-1", wal, List.of("node-2", "node-3"), 150, 300);
         election.start();
         waitForElection(election, 2000);
         assertNotEquals(RaftRole.LEADER, election.role(),
@@ -115,10 +115,10 @@ class LeaderElectionTest {
 
     @Test
     void shouldAsyncPersistTermAcrossWalReopen() throws Exception {
-        LeaderElection e1 = new LeaderElection("node-1", wal, List.of(), 150, 300);
+        RaftElection e1 = new RaftElection("node-1", wal, List.of(), 150, 300);
         e1.start();
         waitForElection(e1, 2000);
-        long termBeforeClose = e1.currentTerm();
+        long epochBeforeClose = e1.currentEpoch();
         String votedForBeforeClose = wal.getVotedFor();
         e1.stop();
 
@@ -130,8 +130,8 @@ class LeaderElectionTest {
             "memory_segment", 1, 8, 64, 10, 4, 1, false);
         SimpleWalWriter wal2 = new SimpleWalWriter(cfg, "raft-test");
         try {
-            assertEquals(termBeforeClose, wal2.getLastLogTerm(),
-                "term should persist across WAL close/reopen");
+            assertEquals(epochBeforeClose, wal2.getLastLogEpoch(),
+                "epoch should persist across WAL close/reopen");
             assertEquals(votedForBeforeClose, wal2.getVotedFor(),
                 "votedFor should persist across WAL close/reopen");
         } finally {
@@ -142,10 +142,10 @@ class LeaderElectionTest {
     @Test
     void shouldNotLoseVotedForAfterElection() throws Exception {
         // Single-node: should vote for self after self-election
-        LeaderElection e1 = new LeaderElection("node-1", wal, List.of(), 150, 300);
+        RaftElection e1 = new RaftElection("node-1", wal, List.of(), 150, 300);
         e1.start();
         waitForElection(e1, 2000);
-        long term = e1.currentTerm();
+        long epoch = e1.currentEpoch();
         e1.stop();
 
         // Close WAL to flush async writes
@@ -157,10 +157,10 @@ class LeaderElectionTest {
         try {
             assertEquals("node-1", wal2.getVotedFor(),
                 "self-vote should persist to disk");
-            // Replay: a new LeaderElection should start with same term
-            LeaderElection e2 = new LeaderElection("node-1", wal2, List.of(), 150, 300);
-            assertEquals(term, e2.currentTerm(),
-                "reloaded term should match original");
+            // Replay: a new RaftElection should start with same epoch
+            RaftElection e2 = new RaftElection("node-1", wal2, List.of(), 150, 300);
+            assertEquals(epoch, e2.currentEpoch(),
+                "reloaded epoch should match original");
         } finally {
             wal2.close();
         }

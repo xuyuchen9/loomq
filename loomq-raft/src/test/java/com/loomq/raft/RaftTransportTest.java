@@ -21,20 +21,20 @@ class RaftTransportTest {
 
     @Test
     void requestVoteShouldRoundTrip() {
-        long term = 7;
+        long epoch = 7;
         String candidateId = "node-3";
         long lastLogIndex = 150;
-        long lastLogTerm = 6;
+        long lastLogEpoch = 6;
 
-        byte[] encoded = RaftTransport.encodeRequestVote(term, candidateId, lastLogIndex, lastLogTerm);
+        byte[] encoded = RaftTransport.encodeRequestVote(epoch, candidateId, lastLogIndex, lastLogEpoch);
         assertNotNull(encoded);
         assertTrue(encoded.length > 8 + 2 + candidateId.length());
 
         RequestVoteMessage msg = RaftTransport.decodeRequestVote(encoded);
-        assertEquals(term, msg.term());
+        assertEquals(epoch, msg.epoch());
         assertEquals(candidateId, msg.candidateId());
         assertEquals(lastLogIndex, msg.lastLogIndex());
-        assertEquals(lastLogTerm, msg.lastLogTerm());
+        assertEquals(lastLogEpoch, msg.lastLogEpoch());
     }
 
     @Test
@@ -52,21 +52,21 @@ class RaftTransportTest {
 
     @Test
     void appendEntriesShouldRoundTrip() {
-        long term = 5;
+        long epoch = 5;
         String leaderId = "node-1";
         long prevLogIndex = 100;
-        long prevLogTerm = 4;
+        long prevLogEpoch = 4;
         byte[][] entries = { "entry1".getBytes(), "entry2".getBytes() };
         long leaderCommit = 98;
 
-        byte[] encoded = RaftTransport.encodeAppendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
+        byte[] encoded = RaftTransport.encodeAppendEntries(epoch, leaderId, prevLogIndex, prevLogEpoch, entries, leaderCommit);
         assertNotNull(encoded);
 
         AppendEntriesMessage msg = RaftTransport.decodeAppendEntries(encoded);
-        assertEquals(term, msg.term());
+        assertEquals(epoch, msg.epoch());
         assertEquals(leaderId, msg.leaderId());
         assertEquals(prevLogIndex, msg.prevLogIndex());
-        assertEquals(prevLogTerm, msg.prevLogTerm());
+        assertEquals(prevLogEpoch, msg.prevLogEpoch());
         assertEquals(2, msg.entries().length);
         assertArrayEquals("entry1".getBytes(), msg.entries()[0]);
         assertArrayEquals("entry2".getBytes(), msg.entries()[1]);
@@ -85,7 +85,7 @@ class RaftTransportTest {
         byte[] encoded = RaftTransport.encodeAppendEntriesResponse(10, true, 200, -1);
         AppendEntriesResult result = RaftTransport.decodeAppendEntriesResponse(encoded);
         assertTrue(result.success);
-        assertEquals(10, result.term);
+        assertEquals(10, result.epoch);
         assertEquals(200, result.matchIndex);
 
         encoded = RaftTransport.encodeAppendEntriesResponse(10, false, -1, 55);

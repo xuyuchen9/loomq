@@ -28,35 +28,35 @@ public class RaftTransport implements AutoCloseable {
 
     public RaftTransport(String nodeId) { this.nodeId = nodeId; }
 
-    /** Encode: term(8) + candidateIdLen(2) + candidateId + lastLogIndex(8) + lastLogTerm(8) */
-    static byte[] encodeRequestVote(long term, String candidateId, long lastLogIndex, long lastLogTerm) {
+    /** Encode: epoch(8) + candidateIdLen(2) + candidateId + lastLogIndex(8) + lastLogEpoch(8) */
+    static byte[] encodeRequestVote(long epoch, String candidateId, long lastLogIndex, long lastLogEpoch) {
         byte[] idBytes = candidateId.getBytes(StandardCharsets.UTF_8);
         ByteBuffer buf = ByteBuffer.allocate(8 + 2 + idBytes.length + 8 + 8);
-        buf.putLong(term);
+        buf.putLong(epoch);
         buf.putShort((short) idBytes.length);
         buf.put(idBytes);
         buf.putLong(lastLogIndex);
-        buf.putLong(lastLogTerm);
+        buf.putLong(lastLogEpoch);
         return buf.array();
     }
 
     /** Decode RequestVote from payload into a message record */
     static RequestVoteMessage decodeRequestVote(byte[] payload) {
         ByteBuffer buf = ByteBuffer.wrap(payload);
-        long term = buf.getLong();
+        long epoch = buf.getLong();
         short idLen = buf.getShort();
         byte[] idBytes = new byte[idLen];
         buf.get(idBytes);
         String candidateId = new String(idBytes, StandardCharsets.UTF_8);
         long lastLogIndex = buf.getLong();
-        long lastLogTerm = buf.getLong();
-        return new RequestVoteMessage(term, candidateId, lastLogIndex, lastLogTerm);
+        long lastLogEpoch = buf.getLong();
+        return new RequestVoteMessage(epoch, candidateId, lastLogIndex, lastLogEpoch);
     }
 
-    /** Encode response: term(8) + voteGranted(1) */
-    static byte[] encodeRequestVoteResponse(long term, boolean voteGranted) {
+    /** Encode response: epoch(8) + voteGranted(1) */
+    static byte[] encodeRequestVoteResponse(long epoch, boolean voteGranted) {
         ByteBuffer buf = ByteBuffer.allocate(9);
-        buf.putLong(term);
+        buf.putLong(epoch);
         buf.put(voteGranted ? (byte) 1 : (byte) 0);
         return buf.array();
     }
@@ -64,13 +64,13 @@ public class RaftTransport implements AutoCloseable {
     /** Decode response */
     static boolean decodeRequestVoteResponse(byte[] payload) {
         ByteBuffer buf = ByteBuffer.wrap(payload);
-        buf.getLong(); // term
+        buf.getLong(); // epoch
         return buf.get() == 1;
     }
 
-    /** Encode: term(8) + leaderIdLen(2) + leaderId + prevLogIndex(8) + prevLogTerm(8) + entryCount(4) + [entryLen(4)+entry]* + leaderCommit(8) */
-    static byte[] encodeAppendEntries(long term, String leaderId, long prevLogIndex,
-            long prevLogTerm, byte[][] entries, long leaderCommit) {
+    /** Encode: epoch(8) + leaderIdLen(2) + leaderId + prevLogIndex(8) + prevLogEpoch(8) + entryCount(4) + [entryLen(4)+entry]* + leaderCommit(8) */
+    static byte[] encodeAppendEntries(long epoch, String leaderId, long prevLogIndex,
+            long prevLogEpoch, byte[][] entries, long leaderCommit) {
         byte[] idBytes = leaderId.getBytes(StandardCharsets.UTF_8);
         int entryCount = entries != null ? entries.length : 0;
         int entriesSize = 0;
@@ -78,11 +78,11 @@ public class RaftTransport implements AutoCloseable {
             for (byte[] e : entries) if (e != null) entriesSize += 4 + e.length;
         }
         ByteBuffer buf = ByteBuffer.allocate(8 + 2 + idBytes.length + 8 + 8 + 4 + entriesSize + 8);
-        buf.putLong(term);
+        buf.putLong(epoch);
         buf.putShort((short) idBytes.length);
         buf.put(idBytes);
         buf.putLong(prevLogIndex);
-        buf.putLong(prevLogTerm);
+        buf.putLong(prevLogEpoch);
         buf.putInt(entryCount);
         if (entryCount > 0) {
             for (byte[] e : entries) {
@@ -98,13 +98,13 @@ public class RaftTransport implements AutoCloseable {
     /** Decode AppendEntries from payload */
     static AppendEntriesMessage decodeAppendEntries(byte[] payload) {
         ByteBuffer buf = ByteBuffer.wrap(payload);
-        long term = buf.getLong();
+        long epoch = buf.getLong();
         short idLen = buf.getShort();
         byte[] idBytes = new byte[idLen];
         buf.get(idBytes);
         String leaderId = new String(idBytes, StandardCharsets.UTF_8);
         long prevLogIndex = buf.getLong();
-        long prevLogTerm = buf.getLong();
+        long prevLogEpoch = buf.getLong();
         int entryCount = buf.getInt();
         byte[][] entries = new byte[entryCount][];
         for (int i = 0; i < entryCount; i++) {
@@ -113,13 +113,13 @@ public class RaftTransport implements AutoCloseable {
             buf.get(entries[i]);
         }
         long leaderCommit = buf.getLong();
-        return new AppendEntriesMessage(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
+        return new AppendEntriesMessage(epoch, leaderId, prevLogIndex, prevLogEpoch, entries, leaderCommit);
     }
 
-    /** Encode response: term(8) + success(1) + matchIndex(8) + conflictIndex(8) */
-    static byte[] encodeAppendEntriesResponse(long term, boolean success, long matchIndex, long conflictIndex) {
+    /** Encode response: epoch(8) + success(1) + matchIndex(8) + conflictIndex(8) */
+    static byte[] encodeAppendEntriesResponse(long epoch, boolean success, long matchIndex, long conflictIndex) {
         ByteBuffer buf = ByteBuffer.allocate(25);
-        buf.putLong(term);
+        buf.putLong(epoch);
         buf.put(success ? (byte) 1 : (byte) 0);
         buf.putLong(matchIndex);
         buf.putLong(conflictIndex);
@@ -131,28 +131,28 @@ public class RaftTransport implements AutoCloseable {
     /** Decode response */
     static AppendEntriesResult decodeAppendEntriesResponse(byte[] payload) {
         ByteBuffer buf = ByteBuffer.wrap(payload);
-        long term = buf.getLong();
+        long epoch = buf.getLong();
         boolean success = buf.get() == 1;
         long matchIndex = buf.getLong();
         long conflictIndex = buf.remaining() >= 8 ? buf.getLong() : -1;
         if (success) {
-            return AppendEntriesResult.success(term, matchIndex);
+            return AppendEntriesResult.success(epoch, matchIndex);
         } else {
-            return conflictIndex >= 0 ? AppendEntriesResult.fail(term, conflictIndex) : AppendEntriesResult.fail(term);
+            return conflictIndex >= 0 ? AppendEntriesResult.fail(epoch, conflictIndex) : AppendEntriesResult.fail(epoch);
         }
     }
 
-    /** Encode: term(8) + leaderIdLen(2) + leaderId + lastIncludedIndex(8) + lastIncludedTerm(8) + dataLen(4) + data */
-    static byte[] encodeInstallSnapshot(long term, String leaderId, long lastIncludedIndex,
-            long lastIncludedTerm, byte[] snapshotData) {
+    /** Encode: epoch(8) + leaderIdLen(2) + leaderId + lastIncludedIndex(8) + lastIncludedEpoch(8) + dataLen(4) + data */
+    static byte[] encodeInstallSnapshot(long epoch, String leaderId, long lastIncludedIndex,
+            long lastIncludedEpoch, byte[] snapshotData) {
         byte[] idBytes = leaderId.getBytes(StandardCharsets.UTF_8);
         int dataLen = snapshotData != null ? snapshotData.length : 0;
         ByteBuffer buf = ByteBuffer.allocate(8 + 2 + idBytes.length + 8 + 8 + 4 + dataLen);
-        buf.putLong(term);
+        buf.putLong(epoch);
         buf.putShort((short) idBytes.length);
         buf.put(idBytes);
         buf.putLong(lastIncludedIndex);
-        buf.putLong(lastIncludedTerm);
+        buf.putLong(lastIncludedEpoch);
         buf.putInt(dataLen);
         if (dataLen > 0) buf.put(snapshotData);
         return buf.array();
@@ -161,17 +161,17 @@ public class RaftTransport implements AutoCloseable {
     /** Decode InstallSnapshot from payload */
     static InstallSnapshotMessage decodeInstallSnapshot(byte[] payload) {
         ByteBuffer buf = ByteBuffer.wrap(payload);
-        long term = buf.getLong();
+        long epoch = buf.getLong();
         short idLen = buf.getShort();
         byte[] idBytes = new byte[idLen];
         buf.get(idBytes);
         String leaderId = new String(idBytes, StandardCharsets.UTF_8);
         long lastIncludedIndex = buf.getLong();
-        long lastIncludedTerm = buf.getLong();
+        long lastIncludedEpoch = buf.getLong();
         int dataLen = buf.getInt();
         byte[] snapshotData = new byte[dataLen];
         buf.get(snapshotData);
-        return new InstallSnapshotMessage(term, leaderId, lastIncludedIndex, lastIncludedTerm, snapshotData);
+        return new InstallSnapshotMessage(epoch, leaderId, lastIncludedIndex, lastIncludedEpoch, snapshotData);
     }
 
     public void setOnRequestVote(Function<RequestVoteMessage, Boolean> h) { this.onRequestVote = h; }
@@ -239,11 +239,11 @@ public class RaftTransport implements AutoCloseable {
     // ========== Server-side handlers (called from Ack handler) ==========
 
     /** Send RequestVote to a peer */
-    public CompletableFuture<Boolean> sendRequestVote(String peerId, long term, String candidateId,
-            long lastLogIndex, long lastLogTerm) {
-        byte[] payload = encodeRequestVote(term, candidateId, lastLogIndex, lastLogTerm);
+    public CompletableFuture<Boolean> sendRequestVote(String peerId, long epoch, String candidateId,
+            long lastLogIndex, long lastLogEpoch) {
+        byte[] payload = encodeRequestVote(epoch, candidateId, lastLogIndex, lastLogEpoch);
         ReplicationRecord record = ReplicationRecord.builder()
-            .offset(term).type(ReplicationRecordType.RAFT_REQUEST_VOTE)
+            .offset(epoch).type(ReplicationRecordType.RAFT_REQUEST_VOTE)
             .sourceNodeId(candidateId).payload(payload).build();
         ReplicaClient client = clients.get(peerId);
         if (client == null) return CompletableFuture.completedFuture(false);
@@ -256,18 +256,18 @@ public class RaftTransport implements AutoCloseable {
     }
 
     /** Send AppendEntries to a peer */
-    public CompletableFuture<AppendEntriesResult> sendAppendEntries(String peerId, long term,
-            String leaderId, long prevLogIndex, long prevLogTerm, byte[][] entries, long leaderCommit) {
-        byte[] payload = encodeAppendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
+    public CompletableFuture<AppendEntriesResult> sendAppendEntries(String peerId, long epoch,
+            String leaderId, long prevLogIndex, long prevLogEpoch, byte[][] entries, long leaderCommit) {
+        byte[] payload = encodeAppendEntries(epoch, leaderId, prevLogIndex, prevLogEpoch, entries, leaderCommit);
         ReplicationRecord record = ReplicationRecord.builder()
-            .offset(term).type(ReplicationRecordType.RAFT_APPEND_ENTRIES)
+            .offset(epoch).type(ReplicationRecordType.RAFT_APPEND_ENTRIES)
             .sourceNodeId(leaderId).payload(payload).build();
         ReplicaClient client = clients.get(peerId);
-        if (client == null) return CompletableFuture.completedFuture(AppendEntriesResult.fail(term));
+        if (client == null) return CompletableFuture.completedFuture(AppendEntriesResult.fail(epoch));
         return client.send(record).thenApply(ack -> {
-            if (!ack.isSuccess()) return AppendEntriesResult.fail(term);
+            if (!ack.isSuccess()) return AppendEntriesResult.fail(epoch);
             byte[] resp = ack.getRaftResponse();
-            if (resp == null || resp.length < 9) return AppendEntriesResult.fail(term);
+            if (resp == null || resp.length < 9) return AppendEntriesResult.fail(epoch);
             return decodeAppendEntriesResponse(resp);
         });
     }
@@ -279,7 +279,7 @@ public class RaftTransport implements AutoCloseable {
         try {
             RequestVoteMessage msg = decodeRequestVote(record.getPayload());
             boolean voteGranted = onRequestVote.apply(msg);
-            byte[] resp = encodeRequestVoteResponse(msg.term(), voteGranted);
+            byte[] resp = encodeRequestVoteResponse(msg.epoch(), voteGranted);
             return Ack.raftResponse(record.getOffset(),
                 voteGranted ? com.loomq.replication.AckStatus.REPLICATED : com.loomq.replication.AckStatus.REJECTED,
                 resp);
@@ -294,7 +294,7 @@ public class RaftTransport implements AutoCloseable {
         try {
             AppendEntriesMessage msg = decodeAppendEntries(record.getPayload());
             AppendEntriesResult result = onAppendEntries.apply(msg);
-            byte[] resp = encodeAppendEntriesResponse(result.term, result.success, result.matchIndex, result.conflictIndex);
+            byte[] resp = encodeAppendEntriesResponse(result.epoch, result.success, result.matchIndex, result.conflictIndex);
             return Ack.raftResponse(record.getOffset(),
                 result.success ? com.loomq.replication.AckStatus.REPLICATED : com.loomq.replication.AckStatus.REJECTED,
                 resp);
@@ -305,11 +305,11 @@ public class RaftTransport implements AutoCloseable {
     }
 
     /** Send InstallSnapshot to a lagging follower */
-    public CompletableFuture<Long> sendInstallSnapshot(String peerId, long term, String leaderId,
-            long lastIncludedIndex, long lastIncludedTerm, byte[] snapshotData) {
-        byte[] payload = encodeInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, snapshotData);
+    public CompletableFuture<Long> sendInstallSnapshot(String peerId, long epoch, String leaderId,
+            long lastIncludedIndex, long lastIncludedEpoch, byte[] snapshotData) {
+        byte[] payload = encodeInstallSnapshot(epoch, leaderId, lastIncludedIndex, lastIncludedEpoch, snapshotData);
         ReplicationRecord record = ReplicationRecord.builder()
-            .offset(term).type(ReplicationRecordType.RAFT_INSTALL_SNAPSHOT)
+            .offset(epoch).type(ReplicationRecordType.RAFT_INSTALL_SNAPSHOT)
             .sourceNodeId(leaderId).payload(payload).build();
         ReplicaClient client = clients.get(peerId);
         if (client == null) return CompletableFuture.completedFuture(-1L);
@@ -323,19 +323,19 @@ public class RaftTransport implements AutoCloseable {
     }
 
     /**
-     * Encode: term(8) + leaderIdLen(2) + leaderId + lastIncludedIndex(8) + lastIncludedTerm(8)
+     * Encode: epoch(8) + leaderIdLen(2) + leaderId + lastIncludedIndex(8) + lastIncludedEpoch(8)
      *       + chunkIndex(4) + totalChunks(4) + chunkLen(4) + chunkData
      */
-    static byte[] encodeInstallSnapshotChunk(long term, String leaderId, long lastIncludedIndex,
-            long lastIncludedTerm, int chunkIndex, int totalChunks, byte[] chunkData) {
+    static byte[] encodeInstallSnapshotChunk(long epoch, String leaderId, long lastIncludedIndex,
+            long lastIncludedEpoch, int chunkIndex, int totalChunks, byte[] chunkData) {
         byte[] idBytes = leaderId.getBytes(StandardCharsets.UTF_8);
         int dataLen = chunkData != null ? chunkData.length : 0;
         ByteBuffer buf = ByteBuffer.allocate(8 + 2 + idBytes.length + 8 + 8 + 4 + 4 + 4 + dataLen);
-        buf.putLong(term);
+        buf.putLong(epoch);
         buf.putShort((short) idBytes.length);
         buf.put(idBytes);
         buf.putLong(lastIncludedIndex);
-        buf.putLong(lastIncludedTerm);
+        buf.putLong(lastIncludedEpoch);
         buf.putInt(chunkIndex);
         buf.putInt(totalChunks);
         buf.putInt(dataLen);
@@ -345,31 +345,31 @@ public class RaftTransport implements AutoCloseable {
 
     static InstallSnapshotChunkMessage decodeInstallSnapshotChunk(byte[] payload) {
         ByteBuffer buf = ByteBuffer.wrap(payload);
-        long term = buf.getLong();
+        long epoch = buf.getLong();
         short idLen = buf.getShort();
         byte[] idBytes = new byte[idLen];
         buf.get(idBytes);
         String leaderId = new String(idBytes, StandardCharsets.UTF_8);
         long lastIncludedIndex = buf.getLong();
-        long lastIncludedTerm = buf.getLong();
+        long lastIncludedEpoch = buf.getLong();
         int chunkIndex = buf.getInt();
         int totalChunks = buf.getInt();
         int dataLen = buf.getInt();
         byte[] chunkData = new byte[dataLen];
         buf.get(chunkData);
-        return new InstallSnapshotChunkMessage(term, leaderId, lastIncludedIndex, lastIncludedTerm,
+        return new InstallSnapshotChunkMessage(epoch, leaderId, lastIncludedIndex, lastIncludedEpoch,
             chunkIndex, totalChunks, chunkData);
     }
 
     /**
      * Send a single InstallSnapshot chunk to a follower.
      */
-    public CompletableFuture<Boolean> sendInstallSnapshotChunk(String peerId, long term, String leaderId,
-            long lastIncludedIndex, long lastIncludedTerm, int chunkIndex, int totalChunks, byte[] chunkData) {
-        byte[] payload = encodeInstallSnapshotChunk(term, leaderId, lastIncludedIndex, lastIncludedTerm,
+    public CompletableFuture<Boolean> sendInstallSnapshotChunk(String peerId, long epoch, String leaderId,
+            long lastIncludedIndex, long lastIncludedEpoch, int chunkIndex, int totalChunks, byte[] chunkData) {
+        byte[] payload = encodeInstallSnapshotChunk(epoch, leaderId, lastIncludedIndex, lastIncludedEpoch,
             chunkIndex, totalChunks, chunkData);
         ReplicationRecord record = ReplicationRecord.builder()
-            .offset(term).type(ReplicationRecordType.RAFT_INSTALL_SNAPSHOT_CHUNK)
+            .offset(epoch).type(ReplicationRecordType.RAFT_INSTALL_SNAPSHOT_CHUNK)
             .sourceNodeId(leaderId).payload(payload).build();
         ReplicaClient client = clients.get(peerId);
         if (client == null) return CompletableFuture.completedFuture(false);
@@ -416,17 +416,17 @@ public class RaftTransport implements AutoCloseable {
     @Override public void close() { clients.values().forEach(ReplicaClient::shutdown); if (server != null) server.shutdown(); }
 
     /** Full RequestVote RPC message */
-    public record RequestVoteMessage(long term, String candidateId, long lastLogIndex, long lastLogTerm) {}
+    public record RequestVoteMessage(long epoch, String candidateId, long lastLogIndex, long lastLogEpoch) {}
 
     /** Full AppendEntries RPC message */
-    public record AppendEntriesMessage(long term, String leaderId, long prevLogIndex, long prevLogTerm,
+    public record AppendEntriesMessage(long epoch, String leaderId, long prevLogIndex, long prevLogEpoch,
             byte[][] entries, long leaderCommit) {}
 
     /** Full InstallSnapshot RPC message */
-    public record InstallSnapshotMessage(long term, String leaderId, long lastIncludedIndex,
-            long lastIncludedTerm, byte[] snapshotData) {}
+    public record InstallSnapshotMessage(long epoch, String leaderId, long lastIncludedIndex,
+            long lastIncludedEpoch, byte[] snapshotData) {}
 
     /** Chunked InstallSnapshot RPC message */
-    public record InstallSnapshotChunkMessage(long term, String leaderId, long lastIncludedIndex,
-            long lastIncludedTerm, int chunkIndex, int totalChunks, byte[] chunkData) {}
+    public record InstallSnapshotChunkMessage(long epoch, String leaderId, long lastIncludedIndex,
+            long lastIncludedEpoch, int chunkIndex, int totalChunks, byte[] chunkData) {}
 }

@@ -24,7 +24,7 @@ public class LogReplication {
     private final WalAccessor wal;
     private final RaftLog raftLog;
     private final IntentStore store;
-    private final LeaderElection election;
+    private final LeaderElection election; // interface — supports both Raft and K8s election
     private final RaftRuntimeListener runtimeListener;
     private final AtomicLong commitIndex = new AtomicLong(0);
     private final AtomicLong lastApplied = new AtomicLong(0);
@@ -103,45 +103,45 @@ public class LogReplication {
     }
 
     /**
-     * Leader: 推进 commitIndex（多数 matchIndex >= idx 且 entry 来自当前 term）。
+     * Leader: 推进 commitIndex（多数 matchIndex >= idx 且 entry 来自当前 epoch）。
      *
      * 算法：对 matchIndex 排序，取中位数作为 candidate（多数阈值）。
-     * 若 candidate > commitIndex 且 candidate entry 的 term == currentTerm，则提交。
+     * 若 candidate > commitIndex 且 candidate entry 的 epoch == currentEpoch，则提交。
      * 复杂度 O(p log p)，支持数十节点集群。
      */
-    public void advanceCommitIndex(long[] matchIndices, long currentTerm) {
+    public void advanceCommitIndex(long[] matchIndices, long currentEpoch) {
         java.util.Arrays.sort(matchIndices);
         long candidate = matchIndices[matchIndices.length / 2]; // majority threshold
         if (candidate > commitIndex.get()
-            && raftLog.readEntryTerm(candidate) == currentTerm) {
+            && raftLog.readEntryEpoch(candidate) == currentEpoch) {
             commitIndex.set(candidate);
-            metrics.updateRaftTerm(currentTerm);
+            metrics.updateRaftEpoch(currentEpoch);
             metrics.updateRaftCommitIndex(candidate);
             log.debug("commitIndex -> {}", candidate);
         }
     }
 
     /** Follower: 处理 AppendEntries */
-    public AppendEntriesResult handleAppendEntries(long term, String leaderId,
-            long prevLogIndex, long prevLogTerm, byte[][] entries, long leaderCommit) {
-        if (term < election.currentTerm()) return AppendEntriesResult.fail(election.currentTerm());
-        election.onAppendEntries(term, leaderId);
-        metrics.updateRaftTerm(term);
+    public AppendEntriesResult handleAppendEntries(long epoch, String leaderId,
+            long prevLogIndex, long prevLogEpoch, byte[][] entries, long leaderCommit) {
+        if (epoch < election.currentEpoch()) return AppendEntriesResult.fail(election.currentEpoch());
+        election.onAppendEntries(epoch, leaderId);
+        metrics.updateRaftEpoch(epoch);
 
-        // §5.3: 验证 prevLogIndex 处的 entry term 与 prevLogTerm 一致
+        // §5.3: 验证 prevLogIndex 处的 entry epoch 与 prevLogEpoch 一致
         if (prevLogIndex > 0) {
             long lastIdx = raftLog.lastIndex();
-            if (lastIdx < prevLogIndex) return AppendEntriesResult.fail(term, lastIdx);
-            long existingTerm = raftLog.readEntryTerm(prevLogIndex);
-            if (existingTerm < 0) {
+            if (lastIdx < prevLogIndex) return AppendEntriesResult.fail(epoch, lastIdx);
+            long existingEpoch = raftLog.readEntryEpoch(prevLogIndex);
+            if (existingEpoch < 0) {
                 // Entry not found or read error — treat as log inconsistency
-                log.warn("Cannot read term at prevLogIndex={}, rejecting AppendEntries", prevLogIndex);
-                return AppendEntriesResult.fail(term, lastIdx);
+                log.warn("Cannot read epoch at prevLogIndex={}, rejecting AppendEntries", prevLogIndex);
+                return AppendEntriesResult.fail(epoch, lastIdx);
             }
-            if (existingTerm != prevLogTerm) {
-                // Term mismatch — conflicting entry (§5.3).
+            if (existingEpoch != prevLogEpoch) {
+                // Epoch mismatch — conflicting entry (§5.3).
                 // Report prevLogIndex as conflict point for leader to skip to.
-                return AppendEntriesResult.fail(term, prevLogIndex);
+                return AppendEntriesResult.fail(epoch, prevLogIndex);
             }
         }
 
@@ -152,14 +152,14 @@ public class LogReplication {
             raftLog.truncateAfter(prevLogIndex);
         }
 
-        // 写入新 entries（每个 entry 前 8 字节为原始 term，由 leader 在 readEntryRaw 中保留）
+        // 写入新 entries（每个 entry 前 8 字节为原始 epoch，由 leader 在 readEntryRaw 中保留）
         for (byte[] entry : entries) {
-            if (entry == null || entry.length <= 8) continue;
+            if (entry == null || entry.length < 8) continue;
             java.nio.ByteBuffer entryBuf = java.nio.ByteBuffer.wrap(entry);
-            long entryTerm = entryBuf.getLong();
+            long entryEpoch = entryBuf.getLong();
             byte[] payload = new byte[entry.length - 8];
             entryBuf.get(payload);
-            raftLog.appendEntry(entryTerm, payload);
+            raftLog.appendEntry(entryEpoch, payload);
         }
         long lastIdx = raftLog.lastIndex();
         boolean commitAdvanced = false;
@@ -176,11 +176,11 @@ public class LogReplication {
         }
         metrics.updateRaftCommitIndex(commitIndex.get());
         metrics.updateRaftLastApplied(lastApplied.get());
-        return AppendEntriesResult.success(term, lastIdx);
+        return AppendEntriesResult.success(epoch, lastIdx);
     }
 
     /** Apply committed entries to state machine */
-    public void applyCommitted() {
+    public synchronized void applyCommitted() {
         long committed = commitIndex.get();
         long applied = lastApplied.get();
         while (applied < committed) {

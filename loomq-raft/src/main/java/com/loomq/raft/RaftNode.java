@@ -41,6 +41,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private final ScheduledExecutorService heartbeatTimer;
     private final long heartbeatMs;
     private final long readLeaseMs;
+    private final long shutdownTimeoutMs;
     private final ConcurrentMap<String, PeerReplicationState> peerStates;
     private ScheduledFuture<?> heartbeatTask;
     private volatile long readLeaseUntilMs = 0L;
@@ -54,11 +55,22 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private volatile long leaderGeneration = 0;
 
     public RaftNode(RaftConfig config, WalAccessor wal, IntentStore store, RaftTransport transport) {
-        this(config, wal, store, transport, null);
+        this(config, wal, store, transport, null, null);
     }
 
     public RaftNode(RaftConfig config, WalAccessor wal, IntentStore store, RaftTransport transport,
                     RaftRuntimeListener runtimeListener) {
+        this(config, wal, store, transport, runtimeListener, null);
+    }
+
+    /**
+     * 创建 RaftNode，使用外部提供的 LeaderElection 实现。
+     *
+     * <p>当 externalElection 不为 null 时，使用外部选举实现（如 K8sLeaseElection）；
+     * 否则创建默认的 RaftElection。
+     */
+    public RaftNode(RaftConfig config, WalAccessor wal, IntentStore store, RaftTransport transport,
+                    RaftRuntimeListener runtimeListener, LeaderElection externalElection) {
         this.nodeId = config.nodeId();
         this.wal = wal;
         this.store = store;
@@ -67,6 +79,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         this.peers = config.peers();
         this.heartbeatMs = config.heartbeatMs();
         this.readLeaseMs = computeReadLeaseMs(config.electionMinMs(), config.heartbeatMs());
+        this.shutdownTimeoutMs = config.shutdownTimeoutMs();
         this.peerStates = new ConcurrentHashMap<>();
         for (String peerId : peers) {
             if (!peerId.equals(nodeId)) {
@@ -74,8 +87,13 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             }
         }
         this.raftLog = new RaftLog(wal);
-        this.election = new LeaderElection(nodeId, wal, config.peers(),
-            config.electionMinMs(), config.electionMaxMs());
+        if (externalElection != null) {
+            this.election = externalElection;
+        } else {
+            RaftElection raftElection = new RaftElection(nodeId, wal, config.peers(),
+                config.electionMinMs(), config.electionMaxMs());
+            this.election = raftElection;
+        }
         this.replication = new LogReplication(nodeId, wal, raftLog, store, election, runtimeListener);
         this.heartbeatTimer = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "raft-heartbeat-" + nodeId);
@@ -85,16 +103,19 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
         // Server-side RPC handlers (transport may be null for single-node/no-network tests)
         if (transport != null) {
-            transport.setOnRequestVote(msg -> {
-                boolean granted = election.handleRequestVote(msg.term(), msg.candidateId(),
-                    msg.lastLogIndex(), msg.lastLogTerm());
-                syncRaftMetrics();
-                return granted;
-            });
+            // RequestVote handler — only for Raft election mode
+            if (election instanceof RaftElection raftElection) {
+                transport.setOnRequestVote(msg -> {
+                    boolean granted = raftElection.handleRequestVote(msg.epoch(), msg.candidateId(),
+                        msg.lastLogIndex(), msg.lastLogEpoch());
+                    syncRaftMetrics();
+                    return granted;
+                });
+            }
 
             transport.setOnAppendEntries(msg -> {
-                AppendEntriesResult result = replication.handleAppendEntries(msg.term(), msg.leaderId(),
-                    msg.prevLogIndex(), msg.prevLogTerm(), msg.entries(), msg.leaderCommit());
+                AppendEntriesResult result = replication.handleAppendEntries(msg.epoch(), msg.leaderId(),
+                    msg.prevLogIndex(), msg.prevLogEpoch(), msg.entries(), msg.leaderCommit());
                 syncRaftMetrics();
                 return result;
             });
@@ -113,9 +134,15 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         }
 
         // Election lifecycle callbacks
-        election.setOnElectionStarted(this::onElectionStarted);
-        election.setOnBecomeLeader(this::onBecomeLeader);
-        election.setOnBecomeFollower(this::onBecomeFollower);
+        if (election instanceof RaftElection raftElection) {
+            raftElection.setOnElectionStarted(this::onElectionStarted);
+            raftElection.setOnBecomeLeader(this::onBecomeLeader);
+            raftElection.setOnBecomeFollower(this::onBecomeFollower);
+        } else {
+            // K8s Lease mode — register listeners via interface
+            election.addBecomeLeaderListener(this::onBecomeLeader);
+            election.addBecomeFollowerListener(this::onBecomeFollower);
+        }
     }
 
     public void start() {
@@ -124,13 +151,18 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         if (runtimeListener != null && role() == RaftRole.FOLLOWER) {
             notifyRuntimeRole();
         }
-        log.info("RaftNode started: node={}, term={}, logIndex={}",
-            nodeId, election.currentTerm(), raftLog.lastIndex());
+        log.info("RaftNode started: node={}, epoch={}, logIndex={}",
+            nodeId, election.currentEpoch(), raftLog.lastIndex());
     }
 
     @Override
     public void close() {
-        stopHeartbeat();
+        stopHeartbeat();  // Stop periodic heartbeat FIRST
+        // 优雅关机：如果是 Leader，等待异步复制完成
+        if (isLeader() && !peerStates.isEmpty() && shutdownTimeoutMs > 0) {
+            gracefulShutdown();  // Now safe to send final heartbeats without racing
+        }
+
         heartbeatTimer.shutdown();
         election.stop();
         replication.failPendingWaiters(new IllegalStateException("Raft node closed"));
@@ -144,6 +176,46 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             transport.close();
         }
         log.info("RaftNode closed: node={}", nodeId);
+    }
+
+    /**
+     * 优雅关机：等待异步复制完成。
+     *
+     * <p>收到 SIGTERM 后，Leader 执行以下步骤：
+     * <ol>
+     *   <li>停止接收新的写入请求（election.stop() 后 isLeader() 返回 false）</li>
+     *   <li>持续复制积压日志到 Followers</li>
+     *   <li>等待 commitIndex 追上 lastLogIndex（最长 shutdownTimeoutMs）</li>
+     *   <li>超时后强制关闭</li>
+     * </ol>
+     */
+    private void gracefulShutdown() {
+        log.info("Graceful shutdown: waiting for async replication (max {}ms)", shutdownTimeoutMs);
+        long deadline = System.currentTimeMillis() + shutdownTimeoutMs;
+        long lastLogIdx = raftLog.lastIndex();
+        long commitIdx = replication.commitIndex();
+
+        // 先做一次心跳，触发复制
+        sendHeartbeats();
+
+        while (System.currentTimeMillis() < deadline && commitIdx < lastLogIdx) {
+            try {
+                Thread.sleep(100);
+                sendHeartbeats();
+                commitIdx = replication.commitIndex();
+                lastLogIdx = raftLog.lastIndex();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+
+        if (commitIdx >= lastLogIdx) {
+            log.info("Graceful shutdown: all entries replicated (commitIndex={})", commitIdx);
+        } else {
+            log.warn("Graceful shutdown: timeout, {} entries may not be replicated (commitIndex={}, lastLogIndex={})",
+                lastLogIdx - commitIdx, commitIdx, lastLogIdx);
+        }
     }
 
     public RaftRole role() { return election.role(); }
@@ -179,16 +251,40 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         if (!isLeader()) {
             throw new IllegalStateException("Raft proposals must be issued by the leader");
         }
-        long index = raftLog.appendEntry(election.currentTerm(), entry);
+        long epoch = election.currentEpoch(); // capture once
+        long index = raftLog.appendEntry(epoch, entry);
         if (peerStates.isEmpty()) {
             // Single-node: commit and apply immediately
-            replication.advanceCommitIndex(new long[]{index}, election.currentTerm());
+            replication.advanceCommitIndex(new long[]{index}, epoch);
             replication.applyCommitted();
         } else {
             // Multi-node: trigger immediate replication instead of waiting for next heartbeat tick
             triggerImmediateReplication();
         }
         log.debug("Proposed entry at index {}", index);
+        return index;
+    }
+
+    /**
+     * 异步模式：Leader 提交 entry 到本地 WAL 并立即提交应用。
+     *
+     * <p>不等待多数节点确认，直接将 commitIndex 推进到此 index。
+     * 用于 ASYNC 复制模式，写入延迟最低，但 Leader 崩溃可能丢失未复制的数据。
+     */
+    public long proposeAsync(byte[] entry) {
+        if (!isLeader()) {
+            throw new IllegalStateException("Raft proposals must be issued by the leader");
+        }
+        long epoch = election.currentEpoch(); // capture once
+        long index = raftLog.appendEntry(epoch, entry);
+        // 立即推进 commitIndex 并应用（不等待 quorum）
+        replication.advanceCommitIndex(new long[]{index}, epoch);
+        replication.applyCommitted();
+        // 后台异步复制到 Followers
+        if (!peerStates.isEmpty()) {
+            triggerImmediateReplication();
+        }
+        log.debug("Async proposed entry at index {}", index);
         return index;
     }
 
@@ -225,18 +321,18 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             return;
         }
 
-        long term = election.currentTerm();
+        long epoch = election.currentEpoch();
         long snapshotIndex = replication.lastApplied();
-        long snapshotTerm = snapshotIndex > 0 ? raftLog.readEntryTerm(snapshotIndex) : 0;
+        long snapshotEpoch = snapshotIndex > 0 ? raftLog.readEntryEpoch(snapshotIndex) : 0;
         long requestGeneration = ++ps.requestGeneration;
 
         // Encode current store state as snapshot payload
         byte[] snapshotData = encodeStoreSnapshot();
-        raftLog.compactThrough(snapshotIndex, snapshotTerm);
+        raftLog.compactThrough(snapshotIndex, snapshotEpoch);
 
         if (snapshotData.length <= SNAPSHOT_CHUNK_SIZE) {
             // Small snapshot: single RPC (original behavior)
-            transport.sendInstallSnapshot(peerId, term, nodeId, snapshotIndex, snapshotTerm, snapshotData)
+            transport.sendInstallSnapshot(peerId, epoch, nodeId, snapshotIndex, snapshotEpoch, snapshotData)
                 .thenAccept(newIndex -> {
                     if (requestGeneration != ps.requestGeneration) return;
                     if (newIndex >= 0) {
@@ -265,8 +361,8 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                     if (requestGeneration != ps.requestGeneration) {
                         return java.util.concurrent.CompletableFuture.completedFuture(false);
                     }
-                    return transport.sendInstallSnapshotChunk(peerId, term, nodeId,
-                        snapshotIndex, snapshotTerm, chunkIndex, totalChunks, chunk);
+                    return transport.sendInstallSnapshotChunk(peerId, epoch, nodeId,
+                        snapshotIndex, snapshotEpoch, chunkIndex, totalChunks, chunk);
                 });
             }
 
@@ -293,11 +389,11 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
      * @return 新的 lastApplied index（失败返回 -1）
      */
     private Long handleInstallSnapshot(RaftTransport.InstallSnapshotMessage msg) {
-        if (msg.term() < election.currentTerm()) {
-            log.debug("Rejecting InstallSnapshot: stale term {} < {}", msg.term(), election.currentTerm());
+        if (msg.epoch() < election.currentEpoch()) {
+            log.debug("Rejecting InstallSnapshot: stale epoch {} < {}", msg.epoch(), election.currentEpoch());
             return -1L;
         }
-        election.onAppendEntries(msg.term(), msg.leaderId());
+        election.onAppendEntries(msg.epoch(), msg.leaderId());
 
         try {
             // Decode snapshot first — if this fails, store is untouched and
@@ -312,10 +408,10 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                 store.upsert(intent);
             }
 
-            raftLog.compactThrough(msg.lastIncludedIndex(), msg.lastIncludedTerm());
+            raftLog.compactThrough(msg.lastIncludedIndex(), msg.lastIncludedEpoch());
             replication.resetToSnapshot(msg.lastIncludedIndex());
-            log.info("InstallSnapshot applied: {} intents, index={}, term={}",
-                decoded.size(), msg.lastIncludedIndex(), msg.lastIncludedTerm());
+            log.info("InstallSnapshot applied: {} intents, index={}, epoch={}",
+                decoded.size(), msg.lastIncludedIndex(), msg.lastIncludedEpoch());
             return msg.lastIncludedIndex();
         } catch (Exception e) {
             log.error("Failed to apply InstallSnapshot from {}", msg.leaderId(), e);
@@ -328,15 +424,15 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
      * Buffers chunks until all received, then reassembles and applies.
      */
     private Long handleInstallSnapshotChunk(RaftTransport.InstallSnapshotChunkMessage msg) {
-        if (msg.term() < election.currentTerm()) {
-            log.debug("Rejecting InstallSnapshot chunk: stale term {} < {}", msg.term(), election.currentTerm());
+        if (msg.epoch() < election.currentEpoch()) {
+            log.debug("Rejecting InstallSnapshot chunk: stale epoch {} < {}", msg.epoch(), election.currentEpoch());
             return -1L;
         }
-        election.onAppendEntries(msg.term(), msg.leaderId());
+        election.onAppendEntries(msg.epoch(), msg.leaderId());
 
         String reassemblyKey = msg.leaderId() + ":" + msg.lastIncludedIndex();
         ChunkReassembly reassembly = pendingChunks.computeIfAbsent(reassemblyKey,
-            k -> new ChunkReassembly(msg.totalChunks(), msg.lastIncludedIndex(), msg.lastIncludedTerm()));
+            k -> new ChunkReassembly(msg.totalChunks(), msg.lastIncludedIndex(), msg.lastIncludedEpoch()));
 
         boolean complete = reassembly.addChunk(msg.chunkIndex(), msg.chunkData());
         if (!complete) {
@@ -355,10 +451,10 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                 store.upsert(intent);
             }
 
-            raftLog.compactThrough(msg.lastIncludedIndex(), msg.lastIncludedTerm());
+            raftLog.compactThrough(msg.lastIncludedIndex(), msg.lastIncludedEpoch());
             replication.resetToSnapshot(msg.lastIncludedIndex());
-            log.info("Chunked snapshot applied: {} intents, index={}, term={}",
-                decoded.size(), msg.lastIncludedIndex(), msg.lastIncludedTerm());
+            log.info("Chunked snapshot applied: {} intents, index={}, epoch={}",
+                decoded.size(), msg.lastIncludedIndex(), msg.lastIncludedEpoch());
             return msg.lastIncludedIndex();
         } catch (Exception e) {
             log.error("Failed to apply chunked snapshot from {}", msg.leaderId(), e);
@@ -404,24 +500,25 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
     // ========== Vote coordination ==========
 
-    private void onElectionStarted(long term) {
+    private void onElectionStarted(long epoch) {
         syncRaftMetrics();
         if (peers.isEmpty() || transport == null) return;
-        log.info("Sending RequestVote to {} peers for term {}", peers.size(), term);
+        if (!(election instanceof RaftElection raftElection)) return; // K8s mode: no RequestVote
+        log.info("Sending RequestVote to {} peers for epoch {}", peers.size(), epoch);
         long lastIdx = raftLog.lastIndex();
-        long lastTerm = raftLog.lastTerm();
+        long lastEpoch = raftLog.lastEpoch();
         AtomicInteger votesGranted = new AtomicInteger(1); // self-vote
         int majority = (peers.size() / 2) + 1;
 
         for (String peerId : peers) {
             if (peerId.equals(nodeId)) continue;
-            transport.sendRequestVote(peerId, term, nodeId, lastIdx, lastTerm)
+            transport.sendRequestVote(peerId, epoch, nodeId, lastIdx, lastEpoch)
                 .thenAccept(granted -> {
                     if (granted) {
                         int total = votesGranted.incrementAndGet();
                         log.debug("Vote granted by {} (total={}/{})", peerId, total, majority);
-                        if (total >= majority && election.role() == RaftRole.CANDIDATE) {
-                            election.becomeLeader(term);
+                        if (total >= majority && raftElection.role() == RaftRole.CANDIDATE) {
+                            raftElection.becomeLeader(epoch);
                         }
                     }
                 });
@@ -430,26 +527,49 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
     // ========== Heartbeat ==========
 
-    private void onBecomeLeader(long term) {
+    private void onBecomeLeader(long epoch) {
         leaderGeneration++;
         renewReadLease();
         syncRaftMetrics();
         notifyRuntimeRole();
-        log.info("Node {} became LEADER at term {} (gen {})", nodeId, term, leaderGeneration);
-        startHeartbeat(term);
+        log.info("Node {} became LEADER at epoch {} (gen {})", nodeId, epoch, leaderGeneration);
+
+        // 追加 no-op entry（Raft 安全性保证）
+        // 新 Leader 无法直接提交之前 term 的 entry，
+        // 通过追加当前 term 的 no-op entry，间接提交所有之前的 entry。
+        if (!peerStates.isEmpty()) {
+            appendNoOpEntry();
+        }
+
+        startHeartbeat(epoch);
     }
 
-    private void onBecomeFollower(long term) {
+    /**
+     * 追加 no-op entry 到当前 term。
+     * 用于新 Leader 间接提交之前 term 的 entry（Raft §5.4.2）。
+     */
+    private void appendNoOpEntry() {
+        try {
+            long index = raftLog.appendEntry(election.currentEpoch(), new byte[0]);
+            log.debug("Appended no-op entry at index {} for epoch {}", index, election.currentEpoch());
+            // 触发复制以尽快推进 commitIndex
+            triggerImmediateReplication();
+        } catch (Exception e) {
+            log.error("Failed to append no-op entry", e);
+        }
+    }
+
+    private void onBecomeFollower(long epoch) {
         readLeaseUntilMs = 0L;
         syncRaftMetrics();
         replication.failPendingWaiters(new IllegalStateException("Leadership lost"));
         notifyRuntimeRole();
-        log.info("Node {} became FOLLOWER at term {}", nodeId, term);
+        log.info("Node {} became FOLLOWER at epoch {}", nodeId, epoch);
         leaderGeneration++;
         stopHeartbeat();
     }
 
-    private void startHeartbeat(long term) {
+    private void startHeartbeat(long epoch) {
         stopHeartbeat();
         heartbeatTask = heartbeatTimer.scheduleAtFixedRate(this::sendHeartbeats,
             heartbeatMs, heartbeatMs, TimeUnit.MILLISECONDS);
@@ -467,7 +587,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             }
             syncRaftMetrics();
             final long myGeneration = leaderGeneration;
-            long currentTerm = election.currentTerm();
+            long currentEpoch = election.currentEpoch();
             long commitIdx = replication.commitIndex();
             long lastIdx = raftLog.lastIndex();
             int majority = ((peerStates.size() + 1) / 2) + 1;
@@ -495,8 +615,8 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                     // Read entries the peer is missing (batch-limited)
                     long nextIdx = ps.nextIndex;
                     long prevLogIndex = nextIdx - 1;
-                    long prevLogTerm = prevLogIndex > 0 ? raftLog.readEntryTerm(prevLogIndex) : 0;
-                    if (prevLogTerm < 0) prevLogTerm = 0; // entry not yet readable
+                    long prevLogEpoch = prevLogIndex > 0 ? raftLog.readEntryEpoch(prevLogIndex) : 0;
+                    if (prevLogEpoch < 0) prevLogEpoch = 0; // entry not yet readable
 
                     int count = (int) Math.min(lastIdx - nextIdx + 1, MAX_ENTRIES_PER_APPEND);
                     if (count <= 0) continue;
@@ -514,8 +634,8 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                     // Track the max index covered by this in-flight RPC
                     ps.inflightMaxIndex = nextIdx + count - 1;
 
-                    transport.sendAppendEntries(ps.peerId, currentTerm, nodeId,
-                            prevLogIndex, prevLogTerm, entries, commitIdx)
+                    transport.sendAppendEntries(ps.peerId, currentEpoch, nodeId,
+                            prevLogIndex, prevLogEpoch, entries, commitIdx)
                         .whenComplete((result, throwable) -> {
                             if (throwable != null) {
                                 log.error("AppendEntries failed for peer {}: {}", ps.peerId,
@@ -523,7 +643,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                                 return;
                             }
                             if (requestGeneration != ps.requestGeneration) return;
-                            // Bail out if this response belongs to a past leadership term
+                            // Bail out if this response belongs to a past leadership epoch
                             if (myGeneration != leaderGeneration) return;
 
                             if (result.success) {
@@ -533,8 +653,14 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                                     renewReadLease();
                                 }
                                 advanceCommitIndexFromAllPeers();
-                            } else if (result.term > currentTerm) {
-                                election.stepDown(result.term);
+                            } else if (result.epoch > currentEpoch) {
+                                if (election instanceof RaftElection raftElection) {
+                                    raftElection.stepDown(result.epoch);
+                                } else if (election instanceof K8sLeaseElection k8sElection) {
+                                    log.warn("AppendEntries rejected: follower {} has higher epoch {} > {}, stepping down",
+                                        ps.peerId, result.epoch, currentEpoch);
+                                    k8sElection.forceStepDown(result.epoch);
+                                }
                             } else {
                                 // Log inconsistency: use conflictIndex for fast backtrack
                                 if (result.conflictIndex > 0) {
@@ -569,7 +695,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             matchIndices[i++] = ps.matchIndex;
         }
         long before = replication.commitIndex();
-        replication.advanceCommitIndex(matchIndices, election.currentTerm());
+        replication.advanceCommitIndex(matchIndices, election.currentEpoch());
         if (replication.commitIndex() > before) {
             replication.applyCommitted();
         }
@@ -587,7 +713,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         RaftStatusSnapshot status = snapshotStatus();
         metrics.updateRaftRole(status.role().name());
         metrics.updateRaftLeaderId(status.leaderId());
-        metrics.updateRaftTerm(status.term());
+        metrics.updateRaftEpoch(status.epoch());
         metrics.updateRaftCommitIndex(status.commitIndex());
         metrics.updateRaftLastApplied(status.lastApplied());
         metrics.updateRaftReplicationLag(status.replicationLag());
@@ -601,13 +727,13 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
     private void notifyRuntimeRole(RaftRole role) {
         if (runtimeListener != null) {
-            runtimeListener.onRoleChanged(role, election.currentTerm());
+            runtimeListener.onRoleChanged(role, election.currentEpoch());
         }
     }
 
     @Override
     public RaftStatusSnapshot snapshotStatus() {
-        long term = election.currentTerm();
+        long epoch = election.currentEpoch();
         long commitIndex = replication.commitIndex();
         long lastApplied = replication.lastApplied();
         long commitLag = Math.max(0, commitIndex - lastApplied);
@@ -640,7 +766,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             nodeId,
             election.role(),
             election.currentLeader(),
-            term,
+            epoch,
             commitIndex,
             lastApplied,
             commitLag,
@@ -678,14 +804,14 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     static class ChunkReassembly {
         private final int totalChunks;
         private final long lastIncludedIndex;
-        private final long lastIncludedTerm;
+        private final long lastIncludedEpoch;
         private final byte[][] chunks;
         private final java.util.concurrent.atomic.AtomicInteger receivedCount = new java.util.concurrent.atomic.AtomicInteger(0);
 
-        ChunkReassembly(int totalChunks, long lastIncludedIndex, long lastIncludedTerm) {
+        ChunkReassembly(int totalChunks, long lastIncludedIndex, long lastIncludedEpoch) {
             this.totalChunks = totalChunks;
             this.lastIncludedIndex = lastIncludedIndex;
-            this.lastIncludedTerm = lastIncludedTerm;
+            this.lastIncludedEpoch = lastIncludedEpoch;
             this.chunks = new byte[totalChunks][];
         }
 

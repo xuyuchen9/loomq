@@ -90,10 +90,10 @@ class RaftNodeTest {
         RaftNode node1 = new RaftNode(config, wal, store, null);
         node1.start();
         waitForLeader(node1, 3000);
-        long term1 = node1.getElection().currentTerm();
+        long epoch1 = node1.getElection().currentEpoch();
         node1.close();
         RaftNode node2 = new RaftNode(config, wal, store, null);
-        assertEquals(term1, node2.getElection().currentTerm(), "term should persist");
+        assertEquals(epoch1, node2.getElection().currentEpoch(), "epoch should persist");
         node2.close();
     }
 
@@ -122,7 +122,7 @@ class RaftNodeTest {
         assertTrue(index > 0);
 
         // Simulate commit and apply
-        node.getReplication().advanceCommitIndex(new long[]{index}, node.getElection().currentTerm());
+        node.getReplication().advanceCommitIndex(new long[]{index}, node.getElection().currentEpoch());
         node.applyCommitted();
 
         Intent restored = store.findById("raft-intent-2");
@@ -140,13 +140,13 @@ class RaftNodeTest {
         waitForLeader(node, 3000);
         assertTrue(node.isLeader(), "should become leader");
 
-        long leaderTerm = node.getElection().currentTerm();
+        long leaderEpoch = node.getElection().currentEpoch();
 
         // Wait 5 heartbeat periods - leader should not self-trigger re-election
         Thread.sleep(config.heartbeatMs() * 5);
         assertTrue(node.isLeader(), "leader should remain leader (no self-re-election)");
-        assertEquals(leaderTerm, node.getElection().currentTerm(),
-            "term should not change (no spurious election)");
+        assertEquals(leaderEpoch, node.getElection().currentEpoch(),
+            "epoch should not change (no spurious election)");
         node.close();
     }
 
@@ -163,7 +163,7 @@ class RaftNodeTest {
 
         // Single-node: self-matchIndex = lastIndex, majority of 1 is trivially met
         node.getReplication().advanceCommitIndex(
-            new long[]{node.getRaftLog().lastIndex()}, node.getElection().currentTerm());
+            new long[]{node.getRaftLog().lastIndex()}, node.getElection().currentEpoch());
         assertTrue(node.getReplication().commitIndex() > 0,
             "commitIndex should advance for single-node majority");
         node.close();
@@ -198,14 +198,14 @@ class RaftNodeTest {
             LoomQMetrics.MetricsSnapshot afterStart = metrics.snapshot();
             assertEquals("LEADER", afterStart.raftRole());
             assertEquals("node-1", afterStart.raftLeaderId());
-            assertTrue(afterStart.raftTerm() > 0);
+            assertTrue(afterStart.raftEpoch() > 0);
             assertEquals(0, afterStart.raftConnectedPeers());
             assertEquals(0, afterStart.raftTotalPeers());
 
             byte[] encoded = IntentBinaryCodec.encode(makeIntent("metrics-intent"));
             long index = node.propose(encoded);
             node.getReplication().advanceCommitIndex(
-                new long[]{node.getRaftLog().lastIndex()}, node.getElection().currentTerm());
+                new long[]{node.getRaftLog().lastIndex()}, node.getElection().currentEpoch());
             node.applyCommitted();
 
             LoomQMetrics.MetricsSnapshot afterCommit = metrics.snapshot();
@@ -243,7 +243,7 @@ class RaftNodeTest {
         assertTrue(idx1 > 0 && idx2 > idx1);
 
         node.getReplication().advanceCommitIndex(
-            new long[]{idx2}, node.getElection().currentTerm());
+            new long[]{idx2}, node.getElection().currentEpoch());
         node.applyCommitted();
 
         // Verify intents are in store after commit
@@ -268,7 +268,7 @@ class RaftNodeTest {
         byte[] encoded = IntentBinaryCodec.encode(existingIntent);
         long index = node.propose(encoded);
         node.getReplication().advanceCommitIndex(
-            new long[]{index}, node.getElection().currentTerm());
+            new long[]{index}, node.getElection().currentEpoch());
         node.applyCommitted();
 
         // Store should still have the intent (verify atomicity guarantee:
@@ -293,7 +293,7 @@ class RaftNodeTest {
         RaftNode node = new RaftNode(config, wal, store, transport);
         try {
             node.start();
-            node.getElection().becomeLeader(1);
+            ((RaftElection) node.getElection()).becomeLeader(1);
 
             node.getRaftLog().appendEntry(1, IntentBinaryCodec.encode(makeIntent("stale-1")));
             node.getRaftLog().appendEntry(1, IntentBinaryCodec.encode(makeIntent("stale-2")));
@@ -328,7 +328,7 @@ class RaftNodeTest {
 
         @Override
         public CompletableFuture<Boolean> sendRequestVote(String peerId, long term, String candidateId,
-                long lastLogIndex, long lastLogTerm) {
+                long lastLogIndex, long lastLogEpoch) {
             return CompletableFuture.completedFuture(false);
         }
 
