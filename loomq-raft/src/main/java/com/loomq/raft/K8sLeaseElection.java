@@ -45,6 +45,9 @@ public class K8sLeaseElection implements LeaderElection {
     private volatile String currentLeader = null;
     private volatile long currentEpoch = 0;
     private ScheduledFuture<?> renewTask;
+    private volatile long lastKnownRenewTimeMicros = 0;
+    private volatile long lastRenewNanoTime = 0;
+    private final long clockSkewBufferSeconds;
 
     private Consumer<Long> onBecomeLeader;
     private Consumer<Long> onBecomeFollower;
@@ -62,6 +65,7 @@ public class K8sLeaseElection implements LeaderElection {
             t.setDaemon(true);
             return t;
         });
+        this.clockSkewBufferSeconds = config.clockSkewBufferSeconds();
 
         // Restore persisted epoch
         long persistedEpoch = wal.getLastLogEpoch();
@@ -85,7 +89,17 @@ public class K8sLeaseElection implements LeaderElection {
 
     @Override
     public boolean isLeader() {
-        return role == RaftRole.LEADER;
+        if (role != RaftRole.LEADER) return false;
+
+        // Monotonic clock check: if we haven't renewed within leaseDuration, step down
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - lastRenewNanoTime);
+        if (elapsedMs > config.leaseDurationSeconds() * 1000L) {
+            log.warn("Lease expired (monotonic clock), elapsed={}ms, stepping down", elapsedMs);
+            stepDown(currentEpoch);
+            return false;
+        }
+
+        return true;
     }
 
     @Override
@@ -224,6 +238,7 @@ public class K8sLeaseElection implements LeaderElection {
                     .leaseTransitions((int) 0));
 
             coordinationApi.createNamespacedLease(config.namespace(), lease).execute();
+            updateFencingState(lease);
             becomeLeader(0);
             log.info("Created Lease: holder={}, transitions={}", config.podName(), 0);
         } catch (ApiException e) {
@@ -250,6 +265,7 @@ public class K8sLeaseElection implements LeaderElection {
 
             coordinationApi.replaceNamespacedLease(
                 config.leaseName(), config.namespace(), existingLease).execute();
+            updateFencingState(existingLease);
 
             becomeLeader(newTransitions);
             log.info("Updated Lease: holder={}, transitions={}", config.podName(), newTransitions);
@@ -273,8 +289,18 @@ public class K8sLeaseElection implements LeaderElection {
         int durationSeconds = lease.getSpec().getLeaseDurationSeconds() != null
             ? lease.getSpec().getLeaseDurationSeconds()
             : config.leaseDurationSeconds();
-        OffsetDateTime expiryTime = renewTime.plusSeconds(durationSeconds);
+        // Wall-clock comparison with safety buffer for clock skew
+        OffsetDateTime expiryTime = renewTime.plusSeconds(durationSeconds)
+                                             .minusSeconds(clockSkewBufferSeconds);
         return OffsetDateTime.now().isAfter(expiryTime);
+    }
+
+    private void updateFencingState(V1Lease lease) {
+        OffsetDateTime renewTime = lease.getSpec().getRenewTime();
+        if (renewTime != null) {
+            lastKnownRenewTimeMicros = renewTime.toInstant().toEpochMilli() * 1000;
+        }
+        lastRenewNanoTime = System.nanoTime();
     }
 
     private synchronized void becomeLeader(long epoch) {
