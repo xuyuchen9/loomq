@@ -136,12 +136,14 @@ Pod A 启动
 ```
 1. K8s Lease 过期，触发新选主
 2. Follower 获取 Lease，epoch 递增
-3. Follower 变为新 Leader，将自己的最后一条日志 index 设为 commitIndex
+3. Follower 变为新 Leader，将 commitIndex 推进到本地 RaftLog 的末尾
 4. 新 Leader 开始接收写入请求
-5. 新 Leader 向其他 Follower 发送 AppendEntries（带新 epoch）
+5. 新 Leader 向其他 Follower 发送 AppendEntries（携带新 epoch 和新 commitIndex）
    → Follower 发现 epoch 变更，接受新 Leader
    → 可能截断旧 epoch 未提交的日志
 ```
+
+> **注意：** 步骤 3 中，Follower 本地日志的最后一条 index 可能超过旧 Leader 的 commitIndex（如果 Follower 收到了 AppendEntries 但旧 Leader 未来得及提交）。新 Leader 将 commitIndex 推进到本地末尾，意味着这些日志被"隐式提交"——只要新 Leader 拥有这些日志，它们就不会丢失（因为新 Leader 的日志至少和多数节点一样新，否则无法获取 Lease）。
 
 ### 5.3 写入流程（Leader）
 
@@ -368,6 +370,20 @@ loomq:
 ### 8.1 K8s StatefulSet 部署示例
 
 ```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: loomq-headless
+spec:
+  clusterIP: None
+  selector:
+    app: loomq
+  ports:
+  - port: 9090
+    name: grpc
+  - port: 8080
+    name: http
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -524,6 +540,7 @@ java -jar loomq-server.jar --loomq.mode=standalone
 ### 12.2 数据可靠性
 
 - [ ] 同步复制模式下，Leader 宕机后所有已确认写入的数据零丢失
+- [ ] 同步复制模式下，Leader 连续宕机 3 次后，已提交的数据仍然一致且不丢失（跨多次 Leader 切换的一致性）
 - [ ] 异步复制模式下，Leader 宕机后未复制的数据丢失量在可接受范围内（文档明确说明）
 - [ ] Follower 落后太多时，自动触发 InstallSnapshot 并成功同步
 
