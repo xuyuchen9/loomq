@@ -166,6 +166,17 @@ RaftWriteCoordinator.submitWrite()
     └─ 返回结果
 ```
 
+**Leader 主动关机时的处理：**
+
+收到 SIGTERM 信号后，Leader 执行以下步骤：
+
+1. 立即停止接收新的写入请求（`isLeader()` 返回 false 或 HTTP 层拒绝新请求）
+2. 等待后台异步复制任务完成（最长 `shutdown-timeout-seconds` 秒）
+3. 等待期间，Leader 持续将积压的日志复制到 Followers 并推进 commitIndex
+4. 超时后，Leader 强制关闭
+
+这可以最大程度减少因主动关机导致的数据丢失。关键约束：`shutdown-timeout-seconds` 必须小于 K8s 的 `terminationGracePeriodSeconds`，否则 SIGKILL 会在 flush 完成前强杀进程。
+
 ### 5.4 读取流程
 
 ```
@@ -354,6 +365,7 @@ loomq:
 loomq:
   replication:
     mode: ASYNC  # ASYNC（默认）| SYNC
+    shutdown-timeout-seconds: 25  # 等待异步复制完成的最大时间，必须小于 terminationGracePeriodSeconds
 ```
 
 ### 7.3 单机模式配置
@@ -400,6 +412,7 @@ spec:
         app: loomq
     spec:
       serviceAccountName: loomq-sa
+      terminationGracePeriodSeconds: 30  # 必须大于 loomq.replication.shutdown-timeout-seconds
       containers:
       - name: loomq
         image: loomq:latest
@@ -510,6 +523,7 @@ java -jar loomq-server.jar --loomq.mode=standalone
 | K8s API Server 不可用 | 无法选主 | 这是 K8s 的固有限制，需要保证 API Server 高可用 |
 | gRPC 性能低于自定义 TCP | 复制延迟增加 | 使用 streaming、pipeline、批量发送优化 |
 | 旧 Leader GC 停顿后自以为是 | 写入过期日志 | isLeader() 同时检查 Lease 有效期，Follower 端 epoch fencing |
+| K8s 强制终止 Leader Pod（SIGKILL） | 异步复制日志丢失 | 优雅关机：SIGTERM 后等待异步复制完成（最长 25s），`shutdown-timeout` < `terminationGracePeriodSeconds` |
 
 ---
 
@@ -543,6 +557,7 @@ java -jar loomq-server.jar --loomq.mode=standalone
 - [ ] 同步复制模式下，Leader 连续宕机 3 次后，已提交的数据仍然一致且不丢失（跨多次 Leader 切换的一致性）
 - [ ] 异步复制模式下，Leader 宕机后未复制的数据丢失量在可接受范围内（文档明确说明）
 - [ ] Follower 落后太多时，自动触发 InstallSnapshot 并成功同步
+- [ ] Leader 主动关机（SIGTERM）时，在 25 秒内完成积压日志的异步复制
 
 ### 12.3 基本功能
 
@@ -566,11 +581,18 @@ java -jar loomq-server.jar --loomq.mode=standalone
 
 ## 13. 实施路径
 
+### 实施原则
+
+**原则 1：先通过测试，再删代码。** 在删除任何代码之前，先定义 `LeaderElection` 接口，并把现有的选举逻辑包装成 `RaftElection implements LeaderElection`。这样可以确保所有现有测试仍然通过，后续的每一步改动都有安全的回退基线。
+
+**原则 2：先验证基础设施，再写业务代码。** 在写 `K8sLeaseElection` 的具体实现之前，先搭建一个简单的集成测试（可以用 microk8s 或 kind），确保 LoomQ 能成功调用 K8s Lease API。这一步单独验证可以避免大量代码写完后才发现基础设施问题。
+
 ### Phase 1：接口抽象
 - 定义 `LeaderElection` 接口
 - 实现 `StandaloneElection`（单机模式）
+- 将现有 `LeaderElection` 包装为 `RaftElection implements LeaderElection`（保持现有行为不变）
 - 将 `RaftNode`、`LogReplication`、`RaftWriteCoordinator` 中的选举依赖改为接口依赖
-- 确保现有功能不受影响（用现有 `LeaderElection` 实现适配接口）
+- **验证点：** 所有现有单元测试通过
 
 ### Phase 2：Epoch 替代 Term
 - 将所有 `term` 引用替换为 `epoch`
@@ -578,10 +600,12 @@ java -jar loomq-server.jar --loomq.mode=standalone
 - 修改 AppendEntries 协议格式
 
 ### Phase 3：K8s Lease 实现
+- 搭建 K8s 集成测试环境（microk8s 或 kind）
 - 实现 `K8sLeaseElection`
 - 集成 Kubernetes Java Client
 - 实现 Lease watch 和 leadership 监听
 - 实现 epoch 持久化
+- **验证点：** K8s Lease API 调用成功，Leader 选举和 failover 正常工作
 
 ### Phase 4：gRPC 迁移
 - 定义 gRPC proto 文件
