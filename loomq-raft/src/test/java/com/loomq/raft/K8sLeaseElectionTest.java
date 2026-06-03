@@ -14,6 +14,7 @@ import io.kubernetes.client.openapi.models.V1Lease;
 import io.kubernetes.client.openapi.models.V1LeaseSpec;
 import io.kubernetes.client.openapi.models.V1ObjectMeta;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
@@ -224,6 +225,44 @@ class K8sLeaseElectionTest {
                 "tryAcquireLease should step down and NOT re-acquire on monotonic expiry");
             assertFalse(k8sApiCalled.get(),
                 "should not call K8s API after monotonic expiry step-down");
+        } finally {
+            election.stop();
+        }
+    }
+
+    @Test
+    void multipleListenersShouldAllFire() throws Exception {
+        K8sLeaseConfig config = new K8sLeaseConfig(15, 4, "default", "loomq-leader", "pod-1");
+        ApiClient dummyClient = new ApiClient();
+        K8sLeaseElection election = new K8sLeaseElection(config, wal, dummyClient);
+        try {
+            AtomicBoolean leader1Fired = new AtomicBoolean(false);
+            AtomicBoolean leader2Fired = new AtomicBoolean(false);
+            AtomicBoolean follower1Fired = new AtomicBoolean(false);
+            AtomicBoolean follower2Fired = new AtomicBoolean(false);
+
+            election.addBecomeLeaderListener(epoch -> leader1Fired.set(true));
+            election.addBecomeLeaderListener(epoch -> leader2Fired.set(true));
+            election.addBecomeFollowerListener(epoch -> follower1Fired.set(true));
+            election.addBecomeFollowerListener(epoch -> follower2Fired.set(true));
+
+            // Force to LEADER — should fire both leader listeners
+            Method becomeLeader =
+                K8sLeaseElection.class.getDeclaredMethod("becomeLeader", long.class);
+            becomeLeader.setAccessible(true);
+            becomeLeader.invoke(election, 1L);
+
+            assertTrue(leader1Fired.get(), "first leader listener should fire");
+            assertTrue(leader2Fired.get(), "second leader listener should fire");
+
+            // Force to FOLLOWER — should fire both follower listeners
+            Method becomeFollower =
+                K8sLeaseElection.class.getDeclaredMethod("becomeFollower", String.class, long.class);
+            becomeFollower.setAccessible(true);
+            becomeFollower.invoke(election, "other-pod", 2L);
+
+            assertTrue(follower1Fired.get(), "first follower listener should fire");
+            assertTrue(follower2Fired.get(), "second follower listener should fire");
         } finally {
             election.stop();
         }

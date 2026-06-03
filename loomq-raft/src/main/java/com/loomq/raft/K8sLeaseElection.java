@@ -11,6 +11,8 @@ import io.kubernetes.client.openapi.models.V1ObjectMeta;
 import io.kubernetes.client.util.Config;
 import java.io.IOException;
 import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -49,8 +51,8 @@ public class K8sLeaseElection implements LeaderElection {
     private volatile boolean stopped = false;
     private final long clockSkewBufferSeconds;
 
-    private volatile Consumer<Long> onBecomeLeader;
-    private volatile Consumer<Long> onBecomeFollower;
+    private final List<Consumer<Long>> onBecomeLeaderListeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<Long>> onBecomeFollowerListeners = new CopyOnWriteArrayList<>();
 
     public K8sLeaseElection(K8sLeaseConfig config, WalAccessor wal) {
         this(config, wal, createDefaultApiClient());
@@ -151,8 +153,8 @@ public class K8sLeaseElection implements LeaderElection {
                 persistEpoch(leaderEpoch);
                 log.info("Stepped down to FOLLOWER via AppendEntries: pod={}, leader={}, epoch={}",
                     config.podName(), leaderId, leaderEpoch);
-                if (onBecomeFollower != null) {
-                    onBecomeFollower.accept(leaderEpoch);
+                for (Consumer<Long> listener : onBecomeFollowerListeners) {
+                    listener.accept(leaderEpoch);
                 }
             } else {
                 currentLeader = leaderId;
@@ -166,12 +168,12 @@ public class K8sLeaseElection implements LeaderElection {
 
     @Override
     public void addBecomeLeaderListener(Consumer<Long> listener) {
-        this.onBecomeLeader = listener;
+        onBecomeLeaderListeners.add(listener);
     }
 
     @Override
     public void addBecomeFollowerListener(Consumer<Long> listener) {
-        this.onBecomeFollower = listener;
+        onBecomeFollowerListeners.add(listener);
     }
 
     /**
@@ -317,8 +319,8 @@ public class K8sLeaseElection implements LeaderElection {
             currentEpoch = safeEpoch;
             persistEpoch(safeEpoch);
             log.info("Became LEADER: pod={}, epoch={}", config.podName(), safeEpoch);
-            if (onBecomeLeader != null) {
-                onBecomeLeader.accept(safeEpoch);
+            for (Consumer<Long> listener : onBecomeLeaderListeners) {
+                listener.accept(safeEpoch);
             }
         } else {
             // Already leader — just update epoch if changed
@@ -338,8 +340,8 @@ public class K8sLeaseElection implements LeaderElection {
             currentEpoch = safeEpoch;
             persistEpoch(safeEpoch);
             log.info("Became FOLLOWER: pod={}, leader={}, epoch={}", config.podName(), leader, safeEpoch);
-            if (onBecomeFollower != null) {
-                onBecomeFollower.accept(safeEpoch);
+            for (Consumer<Long> listener : onBecomeFollowerListeners) {
+                listener.accept(safeEpoch);
             }
         } else {
             currentLeader = leader;
