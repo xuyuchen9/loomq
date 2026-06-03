@@ -88,15 +88,7 @@ public class K8sLeaseElection implements LeaderElection {
 
     @Override
     public boolean isLeader() {
-        if (role != RaftRole.LEADER) return false;
-
-        if (isLeaseExpiredMonotonic()) {
-            log.warn("Lease expired (monotonic clock), stepping down");
-            stepDown(currentEpoch);
-            return false;
-        }
-
-        return true;
+        return role == RaftRole.LEADER;
     }
 
     private boolean isLeaseExpiredMonotonic() {
