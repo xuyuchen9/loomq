@@ -146,24 +146,27 @@ class K8sLeaseElectionTest {
         K8sLeaseConfig config = new K8sLeaseConfig(15, 4, "default", "loomq-leader", "pod-1");
         ApiClient dummyClient = new ApiClient();
         K8sLeaseElection election = new K8sLeaseElection(config, wal, dummyClient);
+        try {
+            // Use reflection to force the election into LEADER state with stale renewal time
+            Field roleField = K8sLeaseElection.class.getDeclaredField("role");
+            roleField.setAccessible(true);
+            roleField.set(election, RaftRole.LEADER);
 
-        // Use reflection to force the election into LEADER state with stale renewal time
-        Field roleField = K8sLeaseElection.class.getDeclaredField("role");
-        roleField.setAccessible(true);
-        roleField.set(election, RaftRole.LEADER);
+            Field epochField = K8sLeaseElection.class.getDeclaredField("currentEpoch");
+            epochField.setAccessible(true);
+            epochField.set(election, 1L);
 
-        Field epochField = K8sLeaseElection.class.getDeclaredField("currentEpoch");
-        epochField.setAccessible(true);
-        epochField.set(election, 1L);
+            Field nanoField = K8sLeaseElection.class.getDeclaredField("lastRenewNanoTime");
+            nanoField.setAccessible(true);
+            // Set last renewal to 60 seconds ago — far beyond the 15s lease duration
+            nanoField.set(election, System.nanoTime() - TimeUnit.SECONDS.toNanos(60));
 
-        Field nanoField = K8sLeaseElection.class.getDeclaredField("lastRenewNanoTime");
-        nanoField.setAccessible(true);
-        // Set last renewal to 60 seconds ago — far beyond the 15s lease duration
-        nanoField.set(election, System.nanoTime() - TimeUnit.SECONDS.toNanos(60));
-
-        // isLeader() should detect monotonic clock expiration and step down
-        assertFalse(election.isLeader());
-        assertEquals(RaftRole.FOLLOWER, election.role(),
-            "should step down to FOLLOWER after monotonic clock expiration");
+            // isLeader() should detect monotonic clock expiration and step down
+            assertFalse(election.isLeader());
+            assertEquals(RaftRole.FOLLOWER, election.role(),
+                "should step down to FOLLOWER after monotonic clock expiration");
+        } finally {
+            election.stop();
+        }
     }
 }
