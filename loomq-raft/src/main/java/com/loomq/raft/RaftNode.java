@@ -27,7 +27,6 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private static final Logger log = LoggerFactory.getLogger(RaftNode.class);
     private static final LoomQMetrics metrics = LoomQMetrics.getInstance();
     private static final int MAX_ENTRIES_PER_APPEND = 1000;
-    private static final int SNAPSHOT_CHUNK_SIZE = 256 * 1024; // 256KB per chunk
     private final String nodeId;
     private final WalAccessor wal;
     private final IntentStore store;
@@ -44,8 +43,6 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private final ConcurrentMap<String, PeerReplicationState> peerStates;
     private ScheduledFuture<?> heartbeatTask;
     private volatile long readLeaseUntilMs = 0L;
-    /** Chunk reassembly buffer for incoming InstallSnapshot chunks. */
-    private final ConcurrentMap<String, ChunkReassembly> pendingChunks = new ConcurrentHashMap<>();
     /**
      * Leader generation counter — incremented each time this node becomes leader.
      * Heartbeat callbacks check this against their captured generation to discard
@@ -110,15 +107,8 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             });
 
             transport.setOnInstallSnapshot(request -> {
-                // 统一处理 InstallSnapshot：根据 totalChunks 区分单块 vs 分块
-                Long appliedIndex;
-                if (request.totalChunks() <= 1) {
-                    // 小 snapshot：单块传输
-                    appliedIndex = handleInstallSnapshot(request);
-                } else {
-                    // 大 snapshot：分块传输，缓冲后重组
-                    appliedIndex = handleInstallSnapshotChunk(request);
-                }
+                // Transport layer handles chunk reassembly — only complete snapshots arrive here
+                Long appliedIndex = handleInstallSnapshot(request);
                 syncRaftMetrics();
                 return new RaftTransport.InstallSnapshotResponse(
                     request.epoch(), appliedIndex != null ? appliedIndex : -1);
@@ -304,8 +294,6 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
      * Leader: 发送快照给落后过多的 follower。
      * 当 follower 的 nextIndex 低于 WAL 最早可用 index 时（段文件已截断），
      * 必须用快照替代 AppendEntries 来同步。
-     *
-     * 对于大快照（>256KB），使用分块传输避免单次 RPC 内存爆炸。
      */
     public void sendInstallSnapshot(String peerId) {
         PeerReplicationState ps = peerStates.get(peerId);
@@ -318,70 +306,30 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         long snapshotEpoch = snapshotIndex > 0 ? raftLog.readEntryEpoch(snapshotIndex) : 0;
         long requestGeneration = ++ps.requestGeneration;
 
-        // Encode current store state as snapshot payload
         byte[] snapshotData = encodeStoreSnapshot();
         raftLog.compactThrough(snapshotIndex, snapshotEpoch);
 
-        if (snapshotData.length <= SNAPSHOT_CHUNK_SIZE) {
-            // Small snapshot: single RPC (chunkIndex=0, totalChunks=1)
-            transport.sendInstallSnapshot(peerId,
-                new RaftTransport.InstallSnapshotRequest(
-                    epoch, nodeId, snapshotIndex, snapshotEpoch,
-                    0, 1, snapshotData))
-                .thenAccept(response -> {
-                    if (requestGeneration != ps.requestGeneration) return;
-                    if (response.bytesReceived() >= 0) {
-                        ps.nextIndex = snapshotIndex + 1;
-                        ps.matchIndex = snapshotIndex;
-                        log.info("InstallSnapshot accepted by {} (index={})", peerId, snapshotIndex);
-                    } else {
-                        log.warn("InstallSnapshot rejected by {}", peerId);
-                    }
-                })
-                .exceptionally(ex -> {
-                    log.error("InstallSnapshot failed for {}: {}", peerId, ex.getMessage(), ex);
-                    return null;
-                });
-        } else {
-            // Large snapshot: chunked transfer
-            int totalChunks = (snapshotData.length + SNAPSHOT_CHUNK_SIZE - 1) / SNAPSHOT_CHUNK_SIZE;
-            log.info("Sending chunked snapshot to {}: {} bytes in {} chunks", peerId, snapshotData.length, totalChunks);
+        log.info("Sending snapshot to {}: {} bytes (index={})", peerId, snapshotData.length, snapshotIndex);
 
-            java.util.concurrent.CompletableFuture<Boolean> chain =
-                java.util.concurrent.CompletableFuture.completedFuture(true);
-
-            for (int i = 0; i < totalChunks; i++) {
-                final int chunkIndex = i;
-                int start = i * SNAPSHOT_CHUNK_SIZE;
-                int end = Math.min(start + SNAPSHOT_CHUNK_SIZE, snapshotData.length);
-                byte[] chunk = java.util.Arrays.copyOfRange(snapshotData, start, end);
-
-                chain = chain.thenCompose(ok -> {
-                    if (requestGeneration != ps.requestGeneration) {
-                        return java.util.concurrent.CompletableFuture.completedFuture(false);
-                    }
-                    return transport.sendInstallSnapshot(peerId,
-                        new RaftTransport.InstallSnapshotRequest(
-                            epoch, nodeId, snapshotIndex, snapshotEpoch,
-                            chunkIndex, totalChunks, chunk))
-                        .thenApply(resp -> resp.bytesReceived() >= 0);
-                });
-            }
-
-            chain.thenAccept(success -> {
+        // Transport handles chunking — RaftNode passes full data
+        transport.sendInstallSnapshot(peerId,
+            new RaftTransport.InstallSnapshotRequest(
+                epoch, nodeId, snapshotIndex, snapshotEpoch,
+                0, 1, snapshotData))
+            .thenAccept(response -> {
                 if (requestGeneration != ps.requestGeneration) return;
-                if (success) {
+                if (response.bytesReceived() >= 0) {
                     ps.nextIndex = snapshotIndex + 1;
                     ps.matchIndex = snapshotIndex;
-                    log.info("Chunked snapshot accepted by {} (index={}, chunks={})", peerId, snapshotIndex, totalChunks);
+                    log.info("InstallSnapshot accepted by {} (index={})", peerId, snapshotIndex);
                 } else {
-                    log.warn("Chunked snapshot rejected by {} (chunks={})", peerId, totalChunks);
+                    log.warn("InstallSnapshot rejected by {}", peerId);
                 }
-            }).exceptionally(ex -> {
-                log.error("Chunked snapshot failed for {}: {}", peerId, ex.getMessage(), ex);
+            })
+            .exceptionally(ex -> {
+                log.error("InstallSnapshot failed for {}: {}", peerId, ex.getMessage(), ex);
                 return null;
             });
-        }
     }
 
     /**
@@ -417,49 +365,6 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             return request.lastIncludedIndex();
         } catch (Exception e) {
             log.error("Failed to apply InstallSnapshot from {}", request.leaderId(), e);
-            return -1L;
-        }
-    }
-
-    /**
-     * Follower: handle an incoming InstallSnapshot chunk.
-     * Buffers chunks until all received, then reassembles and applies.
-     */
-    private Long handleInstallSnapshotChunk(RaftTransport.InstallSnapshotRequest request) {
-        if (request.epoch() < election.currentEpoch()) {
-            log.debug("Rejecting InstallSnapshot chunk: stale epoch {} < {}", request.epoch(), election.currentEpoch());
-            return -1L;
-        }
-        election.onAppendEntries(request.epoch(), request.leaderId());
-
-        String reassemblyKey = request.leaderId() + ":" + request.lastIncludedIndex();
-        ChunkReassembly reassembly = pendingChunks.computeIfAbsent(reassemblyKey,
-            k -> new ChunkReassembly(request.totalChunks(), request.lastIncludedIndex(), request.lastIncludedEpoch()));
-
-        boolean complete = reassembly.addChunk(request.chunkIndex(), request.data());
-        if (!complete) {
-            log.debug("Received chunk {}/{} for snapshot from {}", request.chunkIndex() + 1, request.totalChunks(), request.leaderId());
-            return request.lastIncludedIndex(); // ack chunk but not yet complete
-        }
-
-        // All chunks received — reassemble and apply
-        pendingChunks.remove(reassemblyKey);
-        try {
-            byte[] fullSnapshot = reassembly.reassemble();
-            java.util.List<com.loomq.domain.intent.Intent> decoded = decodeStoreSnapshot(fullSnapshot);
-
-            store.clear();
-            for (com.loomq.domain.intent.Intent intent : decoded) {
-                store.upsert(intent);
-            }
-
-            raftLog.compactThrough(request.lastIncludedIndex(), request.lastIncludedEpoch());
-            replication.resetToSnapshot(request.lastIncludedIndex());
-            log.info("Chunked snapshot applied: {} intents, index={}, epoch={}",
-                decoded.size(), request.lastIncludedIndex(), request.lastIncludedEpoch());
-            return request.lastIncludedIndex();
-        } catch (Exception e) {
-            log.error("Failed to apply chunked snapshot from {}", request.leaderId(), e);
             return -1L;
         }
     }
@@ -767,61 +672,6 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
         PeerReplicationState(String peerId) {
             this.peerId = peerId;
-        }
-    }
-
-    /**
-     * Reassembly buffer for chunked InstallSnapshot transfer.
-     * Collects chunks by index and reassembles into a full snapshot blob.
-     */
-    static class ChunkReassembly {
-        private final int totalChunks;
-        private final long lastIncludedIndex;
-        private final long lastIncludedEpoch;
-        private final byte[][] chunks;
-        private final java.util.concurrent.atomic.AtomicInteger receivedCount = new java.util.concurrent.atomic.AtomicInteger(0);
-
-        ChunkReassembly(int totalChunks, long lastIncludedIndex, long lastIncludedEpoch) {
-            this.totalChunks = totalChunks;
-            this.lastIncludedIndex = lastIncludedIndex;
-            this.lastIncludedEpoch = lastIncludedEpoch;
-            this.chunks = new byte[totalChunks][];
-        }
-
-        /**
-         * Add a chunk. Returns true when all chunks have been received.
-         */
-        synchronized boolean addChunk(int chunkIndex, byte[] data) {
-            if (chunkIndex < 0 || chunkIndex >= totalChunks) {
-                log.warn("Invalid chunk index: {} (total={})", chunkIndex, totalChunks);
-                return false;
-            }
-            if (chunks[chunkIndex] != null) {
-                // Duplicate chunk — ignore
-                return receivedCount.get() >= totalChunks;
-            }
-            chunks[chunkIndex] = data;
-            receivedCount.incrementAndGet();
-            return receivedCount.get() >= totalChunks;
-        }
-
-        /**
-         * Reassemble all chunks into a single byte array.
-         */
-        byte[] reassemble() {
-            int totalSize = 0;
-            for (byte[] chunk : chunks) {
-                totalSize += chunk != null ? chunk.length : 0;
-            }
-            byte[] result = new byte[totalSize];
-            int offset = 0;
-            for (byte[] chunk : chunks) {
-                if (chunk != null) {
-                    System.arraycopy(chunk, 0, result, offset, chunk.length);
-                    offset += chunk.length;
-                }
-            }
-            return result;
         }
     }
 
