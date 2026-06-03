@@ -44,12 +44,12 @@ public class K8sLeaseElection implements LeaderElection {
     private volatile RaftRole role = RaftRole.FOLLOWER;
     private volatile String currentLeader = null;
     private volatile long currentEpoch = 0;
-    private ScheduledFuture<?> renewTask;
+    private volatile ScheduledFuture<?> renewTask;
     private volatile long lastRenewNanoTime = 0;
     private final long clockSkewBufferSeconds;
 
-    private Consumer<Long> onBecomeLeader;
-    private Consumer<Long> onBecomeFollower;
+    private volatile Consumer<Long> onBecomeLeader;
+    private volatile Consumer<Long> onBecomeFollower;
 
     public K8sLeaseElection(K8sLeaseConfig config, WalAccessor wal) {
         this(config, wal, createDefaultApiClient());

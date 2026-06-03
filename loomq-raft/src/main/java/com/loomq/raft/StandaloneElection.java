@@ -18,7 +18,7 @@ public class StandaloneElection implements LeaderElection {
     private final WalAccessor wal;
     private volatile boolean started = false;
     private volatile long currentEpoch = 1L;
-    private Consumer<Long> onBecomeLeader;
+    private volatile Consumer<Long> onBecomeLeader;
 
     public StandaloneElection() {
         this(null);
