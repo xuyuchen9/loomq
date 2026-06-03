@@ -354,22 +354,24 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             // we reject the snapshot (leader will retry).
             java.util.List<com.loomq.domain.intent.Intent> decoded = decodeStoreSnapshot(request.data());
 
-            // Upsert new data first (overwrites existing, no clear needed)
-            java.util.Set<String> snapshotIds = new java.util.HashSet<>();
-            for (com.loomq.domain.intent.Intent intent : decoded) {
-                store.upsert(intent);
-                snapshotIds.add(intent.getIntentId());
-            }
+            synchronized (replication) {
+                // Upsert new data first (overwrites existing, no clear needed)
+                java.util.Set<String> snapshotIds = new java.util.HashSet<>();
+                for (com.loomq.domain.intent.Intent intent : decoded) {
+                    store.upsert(intent);
+                    snapshotIds.add(intent.getIntentId());
+                }
 
-            // Remove stale intents not in snapshot
-            java.util.Set<String> toRemove = new java.util.HashSet<>(store.getAllIntents().keySet());
-            toRemove.removeAll(snapshotIds);
-            for (String id : toRemove) {
-                store.delete(id);
-            }
+                // Remove stale intents not in snapshot
+                java.util.Set<String> toRemove = new java.util.HashSet<>(store.getAllIntents().keySet());
+                toRemove.removeAll(snapshotIds);
+                for (String id : toRemove) {
+                    store.delete(id);
+                }
 
-            raftLog.compactThrough(request.lastIncludedIndex(), request.lastIncludedEpoch());
-            replication.resetToSnapshot(request.lastIncludedIndex());
+                raftLog.compactThrough(request.lastIncludedIndex(), request.lastIncludedEpoch());
+                replication.resetToSnapshot(request.lastIncludedIndex());
+            }
             log.info("InstallSnapshot applied: {} intents, index={}, epoch={}",
                 decoded.size(), request.lastIncludedIndex(), request.lastIncludedEpoch());
             return request.lastIncludedIndex();
@@ -410,6 +412,9 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         java.util.List<com.loomq.domain.intent.Intent> result = new java.util.ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             int len = dis.readInt();
+            if (len < 0 || len > 10_000_000) {
+                throw new java.io.IOException("Invalid entry length: " + len);
+            }
             byte[] encoded = new byte[len];
             dis.readFully(encoded);
             var intent = com.loomq.infrastructure.wal.IntentBinaryCodec.decode(encoded);

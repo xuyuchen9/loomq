@@ -48,7 +48,7 @@ public class LogReplication {
      * 重置 commitIndex 和 lastApplied（InstallSnapshot 使用）。
      * Leader 通过 majority 推进，follower 通过此方法直接跳转到快照 index。
      */
-    public void resetToSnapshot(long index) {
+    public synchronized void resetToSnapshot(long index) {
         commitIndex.set(index);
         lastApplied.set(index);
         metrics.updateRaftCommitIndex(index);
