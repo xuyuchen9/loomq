@@ -406,7 +406,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         java.io.DataInputStream dis = new java.io.DataInputStream(
             new java.io.ByteArrayInputStream(data));
         int count = dis.readInt();
-        if (count < 0 || count > 10_000_000) {
+        if (count < 0 || count > 1_000_000) {
             throw new java.io.IOException("Invalid snapshot count: " + count);
         }
         java.util.List<com.loomq.domain.intent.Intent> result = new java.util.ArrayList<>(count);
