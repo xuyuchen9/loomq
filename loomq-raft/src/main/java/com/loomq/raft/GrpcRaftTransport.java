@@ -349,7 +349,7 @@ public class GrpcRaftTransport implements RaftTransport {
         @Override
         public StreamObserver<SnapshotChunk> installSnapshot(StreamObserver<SnapshotResponse> responseObserver) {
             return new StreamObserver<>() {
-                private volatile boolean errored = false;
+                private final java.util.concurrent.atomic.AtomicBoolean errored = new java.util.concurrent.atomic.AtomicBoolean(false);
                 private long epoch;
                 private String leaderId;
                 private long lastIncludedIndex;
@@ -361,10 +361,10 @@ public class GrpcRaftTransport implements RaftTransport {
                 @Override
                 public void onNext(SnapshotChunk chunk) {
                     try {
-                        if (errored) return;
+                        if (errored.get()) return;
                         if (installSnapshotHandler == null) {
                             log.warn("InstallSnapshot received but no handler registered");
-                            errored = true;
+                            errored.set(true);
                             responseObserver.onError(new IllegalStateException("No installSnapshotHandler"));
                             return;
                         }
@@ -384,7 +384,7 @@ public class GrpcRaftTransport implements RaftTransport {
                         }
                     } catch (Exception e) {
                         log.error("InstallSnapshot chunk processing error", e);
-                        errored = true;
+                        errored.set(true);
                         responseObserver.onError(e);
                     }
                 }
@@ -392,15 +392,14 @@ public class GrpcRaftTransport implements RaftTransport {
                 @Override
                 public void onError(Throwable t) {
                     log.warn("InstallSnapshot stream error from {}: {}", leaderId, t.getMessage());
-                    if (!errored) {
-                        errored = true;
+                    if (errored.compareAndSet(false, true)) {
                         responseObserver.onError(t);
                     }
                 }
 
                 @Override
                 public void onCompleted() {
-                    if (errored) return;
+                    if (errored.get()) return;
                     try {
                         if (receivedCount != totalChunks) {
                             log.warn("InstallSnapshot incomplete: received {}/{} chunks", receivedCount, totalChunks);
