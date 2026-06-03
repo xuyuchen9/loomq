@@ -142,7 +142,7 @@ class K8sLeaseElectionTest {
     }
 
     @Test
-    void isLeaderShouldReturnFalseWhenMonotonicClockExpired() throws Exception {
+    void tryAcquireLeaseShouldStepDownWhenMonotonicClockExpired() throws Exception {
         K8sLeaseConfig config = new K8sLeaseConfig(15, 4, "default", "loomq-leader", "pod-1");
         ApiClient dummyClient = new ApiClient();
         K8sLeaseElection election = new K8sLeaseElection(config, wal, dummyClient);
@@ -161,10 +161,17 @@ class K8sLeaseElectionTest {
             // Set last renewal to 60 seconds ago — far beyond the 15s lease duration
             nanoField.set(election, System.nanoTime() - TimeUnit.SECONDS.toNanos(60));
 
-            // isLeader() should detect monotonic clock expiration and step down
-            assertFalse(election.isLeader());
+            // isLeader() is a pure query — should still return true (role is LEADER)
+            assertTrue(election.isLeader(), "isLeader() is a pure query, should not change role");
+            assertEquals(RaftRole.LEADER, election.role());
+
+            // tryAcquireLease() detects monotonic clock expiration and steps down
+            java.lang.reflect.Method tryAcquire = K8sLeaseElection.class.getDeclaredMethod("tryAcquireLease");
+            tryAcquire.setAccessible(true);
+            tryAcquire.invoke(election);
+
             assertEquals(RaftRole.FOLLOWER, election.role(),
-                "should step down to FOLLOWER after monotonic clock expiration");
+                "tryAcquireLease should step down to FOLLOWER after monotonic clock expiration");
         } finally {
             election.stop();
         }
