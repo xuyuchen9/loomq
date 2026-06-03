@@ -44,6 +44,11 @@ public class GrpcRaftTransport implements RaftTransport {
         t.setDaemon(true);
         return t;
     });
+    private final ExecutorService snapshotExecutor = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "grpc-raft-snapshot");
+        t.setDaemon(true);
+        return t;
+    });
     private Server grpcServer;
 
     // Server-side handlers (DTO-based)
@@ -77,10 +82,18 @@ public class GrpcRaftTransport implements RaftTransport {
         if (listenPort <= 0) {
             throw new IllegalStateException("listenHost and listenPort must be set via setListenAddress() before start()");
         }
-        grpcServer = ServerBuilder.forPort(listenPort)
-            .addService(new RaftServiceImpl())
-            .build()
-            .start();
+        if (listenHost != null && !listenHost.isEmpty()) {
+            grpcServer = io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder
+                .forAddress(new java.net.InetSocketAddress(listenHost, listenPort))
+                .addService(new RaftServiceImpl())
+                .build()
+                .start();
+        } else {
+            grpcServer = ServerBuilder.forPort(listenPort)
+                .addService(new RaftServiceImpl())
+                .build()
+                .start();
+        }
         log.info("GrpcRaftTransport listening on {}:{}", listenHost, listenPort);
     }
 
@@ -242,7 +255,7 @@ public class GrpcRaftTransport implements RaftTransport {
                 log.warn("InstallSnapshot to {} failed: {}", peerId, e.getMessage());
                 return new RaftTransport.InstallSnapshotResponse(request.epoch(), -1);
             }
-        }, rpcExecutor);
+        }, snapshotExecutor);
     }
 
     @Override
@@ -276,6 +289,15 @@ public class GrpcRaftTransport implements RaftTransport {
             }
         } catch (InterruptedException e) {
             rpcExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        snapshotExecutor.shutdown();
+        try {
+            if (!snapshotExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                snapshotExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            snapshotExecutor.shutdownNow();
             Thread.currentThread().interrupt();
         }
     }
