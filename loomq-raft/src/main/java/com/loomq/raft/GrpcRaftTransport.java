@@ -392,8 +392,10 @@ public class GrpcRaftTransport implements RaftTransport {
                 @Override
                 public void onError(Throwable t) {
                     log.warn("InstallSnapshot stream error from {}: {}", leaderId, t.getMessage());
-                    errored = true;
-                    responseObserver.onError(t);
+                    if (!errored) {
+                        errored = true;
+                        responseObserver.onError(t);
+                    }
                 }
 
                 @Override
