@@ -418,6 +418,9 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             byte[] encoded = new byte[len];
             dis.readFully(encoded);
             var intent = com.loomq.infrastructure.wal.IntentBinaryCodec.decode(encoded);
+            if (intent == null) {
+                throw new java.io.IOException("Decoded intent is null at index " + i);
+            }
             result.add(intent);
         }
         return result;
