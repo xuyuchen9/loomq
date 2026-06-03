@@ -1,7 +1,6 @@
 package com.loomq.raft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -139,6 +138,40 @@ class K8sLeaseElectionTest {
     void defaultClockSkewBufferShouldBeFive() {
         K8sLeaseConfig config = new K8sLeaseConfig(15, 4, "default", "loomq-leader", "pod-1");
         assertEquals(5, config.clockSkewBufferSeconds());
+    }
+
+    @Test
+    void tryAcquireLeaseShouldExitAfterStepDown() throws Exception {
+        K8sLeaseConfig config = new K8sLeaseConfig(15, 4, "default", "loomq-leader", "pod-1");
+        ApiClient dummyClient = new ApiClient();
+        K8sLeaseElection election = new K8sLeaseElection(config, wal, dummyClient);
+        try {
+            // Force into LEADER state with stale monotonic clock
+            Field roleField = K8sLeaseElection.class.getDeclaredField("role");
+            roleField.setAccessible(true);
+            roleField.set(election, RaftRole.LEADER);
+
+            Field epochField = K8sLeaseElection.class.getDeclaredField("currentEpoch");
+            epochField.setAccessible(true);
+            epochField.set(election, 1L);
+
+            Field nanoField = K8sLeaseElection.class.getDeclaredField("lastRenewNanoTime");
+            nanoField.setAccessible(true);
+            // 60 seconds ago — far beyond 15s lease duration
+            nanoField.set(election, System.nanoTime() - TimeUnit.SECONDS.toNanos(60));
+
+            java.lang.reflect.Method tryAcquire = K8sLeaseElection.class.getDeclaredMethod("tryAcquireLease");
+            tryAcquire.setAccessible(true);
+
+            // First call: monotonic expired → stepDown → role becomes FOLLOWER
+            // The K8s API call will fail (dummy client), but stepDown should still happen
+            tryAcquire.invoke(election);
+
+            assertEquals(RaftRole.FOLLOWER, election.role(),
+                "tryAcquireLease should step down and NOT re-acquire on monotonic expiry");
+        } finally {
+            election.stop();
+        }
     }
 
     @Test
