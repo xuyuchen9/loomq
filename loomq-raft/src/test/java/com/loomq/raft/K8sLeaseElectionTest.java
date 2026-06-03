@@ -1,6 +1,7 @@
 package com.loomq.raft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -8,11 +9,22 @@ import com.loomq.common.RaftRole;
 import com.loomq.config.WalConfig;
 import com.loomq.infrastructure.wal.SimpleWalWriter;
 import io.kubernetes.client.openapi.ApiClient;
+import io.kubernetes.client.openapi.JSON;
+import io.kubernetes.client.openapi.models.V1Lease;
+import io.kubernetes.client.openapi.models.V1LeaseSpec;
+import io.kubernetes.client.openapi.models.V1ObjectMeta;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.OffsetDateTime;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import okhttp3.Interceptor;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -143,8 +155,46 @@ class K8sLeaseElectionTest {
     @Test
     void tryAcquireLeaseShouldExitAfterStepDown() throws Exception {
         K8sLeaseConfig config = new K8sLeaseConfig(15, 4, "default", "loomq-leader", "pod-1");
-        ApiClient dummyClient = new ApiClient();
-        K8sLeaseElection election = new K8sLeaseElection(config, wal, dummyClient);
+
+        // Valid lease: holder is self, recent renewTime (not wall-clock expired).
+        // Without the `return;` fix, stepDown() sets FOLLOWER, then the code falls through
+        // to readLease() -> finds self-held lease -> updateLease() -> becomeLeader() -> LEADER.
+        // With the `return;` fix, the method exits after stepDown() -> stays FOLLOWER.
+        V1Lease validLease = new V1Lease()
+            .metadata(new V1ObjectMeta().name("loomq-leader").namespace("default"))
+            .spec(new V1LeaseSpec()
+                .holderIdentity("pod-1")
+                .renewTime(OffsetDateTime.now())
+                .leaseDurationSeconds(15)
+                .leaseTransitions(0));
+
+        // Intercept at the OkHttp layer: the K8s CoordinationV1Api uses ApiClient's
+        // OkHttpClient internally. By injecting a custom interceptor, we can make
+        // readLease() and updateLease() succeed without mocking any K8s classes.
+        JSON json = new JSON();
+        String leaseJson = json.serialize(validLease);
+        AtomicBoolean k8sApiCalled = new AtomicBoolean(false);
+
+        Interceptor mockInterceptor = chain -> {
+            k8sApiCalled.set(true);
+            return new Response.Builder()
+                .request(chain.request())
+                .protocol(Protocol.HTTP_1_1)
+                .code(200)
+                .body(ResponseBody.create(leaseJson, MediaType.parse("application/json")))
+                .build();
+        };
+
+        OkHttpClient mockHttpClient = new OkHttpClient.Builder()
+            .addInterceptor(mockInterceptor)
+            .build();
+        ApiClient apiClient = new ApiClient(mockHttpClient);
+        // serverIndex defaults to 0 with an empty server URL, producing relative URLs
+        // that fail before reaching OkHttp. setBasePath sets serverIndex=null so
+        // buildUrl falls back to basePath ("http://localhost") as the base.
+        apiClient.setBasePath("http://localhost");
+
+        K8sLeaseElection election = new K8sLeaseElection(config, wal, apiClient);
         try {
             // Force into LEADER state with stale monotonic clock
             Field roleField = K8sLeaseElection.class.getDeclaredField("role");
@@ -163,50 +213,20 @@ class K8sLeaseElectionTest {
             java.lang.reflect.Method tryAcquire = K8sLeaseElection.class.getDeclaredMethod("tryAcquireLease");
             tryAcquire.setAccessible(true);
 
-            // First call: monotonic expired → stepDown → role becomes FOLLOWER
-            // The K8s API call will fail (dummy client), but stepDown should still happen
+            // Monotonic expired -> stepDown -> role becomes FOLLOWER
+            // Without `return;`: falls through -> readLease succeeds -> updateLease -> becomeLeader -> LEADER
+            //   (k8sApiCalled would be true, role would be LEADER)
+            // With `return;`: exits method -> stays FOLLOWER
+            //   (k8sApiCalled stays false, role stays FOLLOWER)
             tryAcquire.invoke(election);
 
             assertEquals(RaftRole.FOLLOWER, election.role(),
                 "tryAcquireLease should step down and NOT re-acquire on monotonic expiry");
+            assertFalse(k8sApiCalled.get(),
+                "should not call K8s API after monotonic expiry step-down");
         } finally {
             election.stop();
         }
     }
 
-    @Test
-    void tryAcquireLeaseShouldStepDownWhenMonotonicClockExpired() throws Exception {
-        K8sLeaseConfig config = new K8sLeaseConfig(15, 4, "default", "loomq-leader", "pod-1");
-        ApiClient dummyClient = new ApiClient();
-        K8sLeaseElection election = new K8sLeaseElection(config, wal, dummyClient);
-        try {
-            // Use reflection to force the election into LEADER state with stale renewal time
-            Field roleField = K8sLeaseElection.class.getDeclaredField("role");
-            roleField.setAccessible(true);
-            roleField.set(election, RaftRole.LEADER);
-
-            Field epochField = K8sLeaseElection.class.getDeclaredField("currentEpoch");
-            epochField.setAccessible(true);
-            epochField.set(election, 1L);
-
-            Field nanoField = K8sLeaseElection.class.getDeclaredField("lastRenewNanoTime");
-            nanoField.setAccessible(true);
-            // Set last renewal to 60 seconds ago — far beyond the 15s lease duration
-            nanoField.set(election, System.nanoTime() - TimeUnit.SECONDS.toNanos(60));
-
-            // isLeader() is a pure query — should still return true (role is LEADER)
-            assertTrue(election.isLeader(), "isLeader() is a pure query, should not change role");
-            assertEquals(RaftRole.LEADER, election.role());
-
-            // tryAcquireLease() detects monotonic clock expiration and steps down
-            java.lang.reflect.Method tryAcquire = K8sLeaseElection.class.getDeclaredMethod("tryAcquireLease");
-            tryAcquire.setAccessible(true);
-            tryAcquire.invoke(election);
-
-            assertEquals(RaftRole.FOLLOWER, election.role(),
-                "tryAcquireLease should step down to FOLLOWER after monotonic clock expiration");
-        } finally {
-            election.stop();
-        }
-    }
 }
