@@ -540,6 +540,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                             if (throwable != null) {
                                 log.error("AppendEntries failed for peer {}: {}", ps.peerId,
                                     throwable.getMessage(), throwable);
+                                ps.inflightMaxIndex = 0; // Reset so next heartbeat can retry
                                 return;
                             }
                             if (requestGeneration != ps.requestGeneration) return;
