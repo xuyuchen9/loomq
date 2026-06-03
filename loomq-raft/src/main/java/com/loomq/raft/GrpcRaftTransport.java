@@ -327,6 +327,7 @@ public class GrpcRaftTransport implements RaftTransport {
         @Override
         public StreamObserver<SnapshotChunk> installSnapshot(StreamObserver<SnapshotResponse> responseObserver) {
             return new StreamObserver<>() {
+                private volatile boolean errored = false;
                 private long epoch;
                 private String leaderId;
                 private long lastIncludedIndex;
@@ -338,6 +339,13 @@ public class GrpcRaftTransport implements RaftTransport {
                 @Override
                 public void onNext(SnapshotChunk chunk) {
                     try {
+                        if (errored) return;
+                        if (installSnapshotHandler == null) {
+                            log.warn("InstallSnapshot received but no handler registered");
+                            errored = true;
+                            responseObserver.onError(new IllegalStateException("No installSnapshotHandler"));
+                            return;
+                        }
                         if (totalChunks == -1) {
                             epoch = chunk.getEpoch();
                             leaderId = chunk.getLeaderId();
@@ -354,6 +362,7 @@ public class GrpcRaftTransport implements RaftTransport {
                         }
                     } catch (Exception e) {
                         log.error("InstallSnapshot chunk processing error", e);
+                        errored = true;
                         responseObserver.onError(e);
                     }
                 }
@@ -361,12 +370,15 @@ public class GrpcRaftTransport implements RaftTransport {
                 @Override
                 public void onError(Throwable t) {
                     log.warn("InstallSnapshot stream error from {}: {}", leaderId, t.getMessage());
+                    errored = true;
+                    responseObserver.onError(t);
                 }
 
                 @Override
                 public void onCompleted() {
+                    if (errored) return;
                     try {
-                        if (receivedCount != totalChunks || installSnapshotHandler == null) {
+                        if (receivedCount != totalChunks) {
                             log.warn("InstallSnapshot incomplete: received {}/{} chunks", receivedCount, totalChunks);
                             responseObserver.onNext(SnapshotResponse.newBuilder()
                                 .setLastIncludedIndex(-1)
