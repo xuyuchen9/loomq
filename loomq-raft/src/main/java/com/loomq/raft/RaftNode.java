@@ -354,12 +354,18 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             // we reject the snapshot (leader will retry).
             java.util.List<com.loomq.domain.intent.Intent> decoded = decodeStoreSnapshot(request.data());
 
-            // Clear existing store state before applying the snapshot
-            store.clear();
-
-            // Apply decoded intents
+            // Upsert new data first (overwrites existing, no clear needed)
+            java.util.Set<String> snapshotIds = new java.util.HashSet<>();
             for (com.loomq.domain.intent.Intent intent : decoded) {
                 store.upsert(intent);
+                snapshotIds.add(intent.getIntentId());
+            }
+
+            // Remove stale intents not in snapshot
+            java.util.Set<String> toRemove = new java.util.HashSet<>(store.getAllIntents().keySet());
+            toRemove.removeAll(snapshotIds);
+            for (String id : toRemove) {
+                store.delete(id);
             }
 
             raftLog.compactThrough(request.lastIncludedIndex(), request.lastIncludedEpoch());
