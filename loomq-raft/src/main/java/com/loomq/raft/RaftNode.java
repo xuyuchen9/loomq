@@ -201,7 +201,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     }
 
     public RaftRole role() { return election.role(); }
-    public boolean isLeader() { return role() == RaftRole.LEADER; }
+    public boolean isLeader() { return election.isLeader(); }
     public LeaderElection getElection() { return election; }
     public LogReplication getReplication() { return replication; }
     public WalAccessor getWal() { return wal; }
@@ -307,6 +307,10 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         long requestGeneration = ++ps.requestGeneration;
 
         byte[] snapshotData = encodeStoreSnapshot();
+        if (snapshotData.length == 0) {
+            log.error("Failed to encode snapshot for peer {}, skipping", peerId);
+            return;
+        }
         raftLog.compactThrough(snapshotIndex, snapshotEpoch);
 
         log.info("Sending snapshot to {}: {} bytes (index={})", peerId, snapshotData.length, snapshotIndex);
@@ -394,6 +398,9 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         java.io.DataInputStream dis = new java.io.DataInputStream(
             new java.io.ByteArrayInputStream(data));
         int count = dis.readInt();
+        if (count < 0 || count > 10_000_000) {
+            throw new java.io.IOException("Invalid snapshot count: " + count);
+        }
         java.util.List<com.loomq.domain.intent.Intent> result = new java.util.ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             int len = dis.readInt();
