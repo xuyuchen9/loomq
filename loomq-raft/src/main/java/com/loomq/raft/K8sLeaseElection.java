@@ -46,6 +46,7 @@ public class K8sLeaseElection implements LeaderElection {
     private volatile long currentEpoch = 0;
     private volatile ScheduledFuture<?> renewTask;
     private volatile long lastRenewNanoTime = 0;
+    private volatile boolean stopped = false;
     private final long clockSkewBufferSeconds;
 
     private volatile Consumer<Long> onBecomeLeader;
@@ -123,6 +124,7 @@ public class K8sLeaseElection implements LeaderElection {
 
     @Override
     public void stop() {
+        stopped = true;
         log.info("K8sLeaseElection stopping: pod={}", config.podName());
         if (renewTask != null) {
             renewTask.cancel(false);
@@ -184,6 +186,7 @@ public class K8sLeaseElection implements LeaderElection {
      * </ol>
      */
     private void tryAcquireLease() {
+        if (stopped) return;
         try {
             if (role == RaftRole.LEADER && isLeaseExpiredMonotonic()) {
                 log.warn("Lease expired (monotonic clock), stepping down");
@@ -305,6 +308,7 @@ public class K8sLeaseElection implements LeaderElection {
     }
 
     private synchronized void becomeLeader(long epoch) {
+        if (stopped) return;
         long safeEpoch = Math.max(epoch, currentEpoch);
         if (role != RaftRole.LEADER) {
             role = RaftRole.LEADER;
@@ -325,6 +329,7 @@ public class K8sLeaseElection implements LeaderElection {
     }
 
     private synchronized void becomeFollower(String leader, long epoch) {
+        if (stopped) return;
         long safeEpoch = Math.max(epoch, currentEpoch);
         if (role != RaftRole.FOLLOWER) {
             role = RaftRole.FOLLOWER;
