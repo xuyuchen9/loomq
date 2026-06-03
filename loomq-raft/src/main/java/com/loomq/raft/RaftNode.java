@@ -311,8 +311,6 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             log.error("Failed to encode snapshot for peer {}, skipping", peerId);
             return;
         }
-        raftLog.compactThrough(snapshotIndex, snapshotEpoch);
-
         log.info("Sending snapshot to {}: {} bytes (index={})", peerId, snapshotData.length, snapshotIndex);
 
         // Transport handles chunking — RaftNode passes full data
@@ -325,6 +323,8 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                 if (response.bytesReceived() >= 0) {
                     ps.nextIndex = snapshotIndex + 1;
                     ps.matchIndex = snapshotIndex;
+                    // Compact log now that snapshot is confirmed by follower
+                    raftLog.compactThrough(snapshotIndex, snapshotEpoch);
                     log.info("InstallSnapshot accepted by {} (index={})", peerId, snapshotIndex);
                 } else {
                     log.warn("InstallSnapshot rejected by {}", peerId);
