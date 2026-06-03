@@ -34,8 +34,6 @@ import org.slf4j.LoggerFactory;
  */
 public class GrpcRaftTransport implements RaftTransport {
     private static final Logger log = LoggerFactory.getLogger(GrpcRaftTransport.class);
-    private static final int SNAPSHOT_CHUNK_SIZE = 256 * 1024; // 256KB per chunk
-
     private final String nodeId;
     private final Map<String, ManagedChannel> channels = new ConcurrentHashMap<>();
     private final Map<String, RaftServiceGrpc.RaftServiceBlockingStub> blockingStubs = new ConcurrentHashMap<>();
@@ -48,8 +46,8 @@ public class GrpcRaftTransport implements RaftTransport {
     private Server grpcServer;
 
     // Server-side handlers (DTO-based)
-    private Function<RaftTransport.AppendEntriesRequest, RaftTransport.AppendEntriesResponse> appendEntriesHandler;
-    private Function<RaftTransport.InstallSnapshotRequest, RaftTransport.InstallSnapshotResponse> installSnapshotHandler;
+    private volatile Function<RaftTransport.AppendEntriesRequest, RaftTransport.AppendEntriesResponse> appendEntriesHandler;
+    private volatile Function<RaftTransport.InstallSnapshotRequest, RaftTransport.InstallSnapshotResponse> installSnapshotHandler;
 
     private String listenHost;
     private int listenPort;
@@ -97,14 +95,12 @@ public class GrpcRaftTransport implements RaftTransport {
     @Override
     public CompletableFuture<Void> connect(String peerId, String host, int port) {
         return CompletableFuture.runAsync(() -> {
-            ManagedChannel existing = channels.get(peerId);
+            ManagedChannel existing = channels.put(peerId,
+                ManagedChannelBuilder.forAddress(host, port).usePlaintext().build());
             if (existing != null) {
                 existing.shutdown();
             }
-            ManagedChannel channel = ManagedChannelBuilder.forAddress(host, port)
-                .usePlaintext()
-                .build();
-            channels.put(peerId, channel);
+            ManagedChannel channel = channels.get(peerId);
             blockingStubs.put(peerId, RaftServiceGrpc.newBlockingStub(channel));
             asyncStubs.put(peerId, RaftServiceGrpc.newStub(channel));
             log.info("GrpcRaftTransport connected to {} at {}:{}", peerId, host, port);
@@ -341,12 +337,15 @@ public class GrpcRaftTransport implements RaftTransport {
                         }
                     } catch (Exception e) {
                         log.error("InstallSnapshot chunk handler error", e);
+                        responseObserver.onError(e);
+                        return;
                     }
                 }
 
                 @Override
                 public void onError(Throwable t) {
                     log.warn("InstallSnapshot stream error", t);
+                    responseObserver.onError(t);
                 }
 
                 @Override
