@@ -34,6 +34,7 @@ import org.slf4j.LoggerFactory;
  */
 public class GrpcRaftTransport implements RaftTransport {
     private static final Logger log = LoggerFactory.getLogger(GrpcRaftTransport.class);
+    private static final int SNAPSHOT_CHUNK_SIZE = 256 * 1024; // 256KB per chunk
     private final String nodeId;
     private final Map<String, ManagedChannel> channels = new ConcurrentHashMap<>();
     private final Map<String, RaftServiceGrpc.RaftServiceBlockingStub> blockingStubs = new ConcurrentHashMap<>();
@@ -178,7 +179,7 @@ public class GrpcRaftTransport implements RaftTransport {
         }, rpcExecutor);
     }
 
-    /** Send InstallSnapshot to a lagging follower (single-shot or chunked) */
+    /** Send InstallSnapshot to a lagging follower — single stream, internally chunked */
     @Override
     public CompletableFuture<RaftTransport.InstallSnapshotResponse> sendInstallSnapshot(
             String peerId, RaftTransport.InstallSnapshotRequest request) {
@@ -188,6 +189,9 @@ public class GrpcRaftTransport implements RaftTransport {
                 return new RaftTransport.InstallSnapshotResponse(request.epoch(), -1);
             }
             try {
+                byte[] data = request.data();
+                int totalChunks = Math.max(1, (data.length + SNAPSHOT_CHUNK_SIZE - 1) / SNAPSHOT_CHUNK_SIZE);
+
                 CountDownLatch latch = new CountDownLatch(1);
                 final long[] result = {-1L};
 
@@ -209,23 +213,30 @@ public class GrpcRaftTransport implements RaftTransport {
                     }
                 };
 
+                // One stream for all chunks
+                long deadlineSeconds = Math.max(60, totalChunks * 5L);
                 StreamObserver<SnapshotChunk> requestObserver = asyncStub
-                    .withDeadlineAfter(60, TimeUnit.SECONDS)
+                    .withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
                     .installSnapshot(responseObserver);
 
-                SnapshotChunk chunk = SnapshotChunk.newBuilder()
-                    .setEpoch(request.epoch())
-                    .setLeaderId(request.leaderId())
-                    .setLastIncludedIndex(request.lastIncludedIndex())
-                    .setLastIncludedEpoch(request.lastIncludedEpoch())
-                    .setChunkIndex(request.chunkIndex())
-                    .setTotalChunks(request.totalChunks())
-                    .setData(ByteString.copyFrom(request.data()))
-                    .build();
-                requestObserver.onNext(chunk);
+                for (int i = 0; i < totalChunks; i++) {
+                    int start = i * SNAPSHOT_CHUNK_SIZE;
+                    int end = Math.min(start + SNAPSHOT_CHUNK_SIZE, data.length);
+                    byte[] chunk = java.util.Arrays.copyOfRange(data, start, end);
+
+                    requestObserver.onNext(SnapshotChunk.newBuilder()
+                        .setEpoch(request.epoch())
+                        .setLeaderId(request.leaderId())
+                        .setLastIncludedIndex(request.lastIncludedIndex())
+                        .setLastIncludedEpoch(request.lastIncludedEpoch())
+                        .setChunkIndex(i)
+                        .setTotalChunks(totalChunks)
+                        .setData(ByteString.copyFrom(chunk))
+                        .build());
+                }
                 requestObserver.onCompleted();
 
-                latch.await(60, TimeUnit.SECONDS);
+                latch.await(deadlineSeconds, TimeUnit.SECONDS);
                 return new RaftTransport.InstallSnapshotResponse(request.epoch(), result[0]);
             } catch (Exception e) {
                 log.warn("InstallSnapshot to {} failed: {}", peerId, e.getMessage());
@@ -316,44 +327,84 @@ public class GrpcRaftTransport implements RaftTransport {
         @Override
         public StreamObserver<SnapshotChunk> installSnapshot(StreamObserver<SnapshotResponse> responseObserver) {
             return new StreamObserver<>() {
-                private long lastIndex = -1;
+                private long epoch;
+                private String leaderId;
+                private long lastIncludedIndex;
+                private long lastIncludedEpoch;
+                private int totalChunks = -1;
+                private byte[][] chunks;
+                private int receivedCount = 0;
 
                 @Override
                 public void onNext(SnapshotChunk chunk) {
                     try {
-                        if (installSnapshotHandler != null) {
-                            // protobuf -> DTO
-                            RaftTransport.InstallSnapshotRequest dtoReq = new RaftTransport.InstallSnapshotRequest(
-                                chunk.getEpoch(), chunk.getLeaderId(),
-                                chunk.getLastIncludedIndex(), chunk.getLastIncludedEpoch(),
-                                chunk.getChunkIndex(), chunk.getTotalChunks(),
-                                chunk.getData().toByteArray());
+                        if (totalChunks == -1) {
+                            epoch = chunk.getEpoch();
+                            leaderId = chunk.getLeaderId();
+                            lastIncludedIndex = chunk.getLastIncludedIndex();
+                            lastIncludedEpoch = chunk.getLastIncludedEpoch();
+                            totalChunks = chunk.getTotalChunks();
+                            chunks = new byte[totalChunks][];
+                        }
 
-                            RaftTransport.InstallSnapshotResponse dtoResp =
-                                installSnapshotHandler.apply(dtoReq);
-                            if (dtoResp.bytesReceived() >= 0) {
-                                lastIndex = dtoResp.bytesReceived();
-                            }
+                        int idx = chunk.getChunkIndex();
+                        if (idx >= 0 && idx < totalChunks && chunks[idx] == null) {
+                            chunks[idx] = chunk.getData().toByteArray();
+                            receivedCount++;
                         }
                     } catch (Exception e) {
-                        log.error("InstallSnapshot chunk handler error", e);
+                        log.error("InstallSnapshot chunk processing error", e);
                         responseObserver.onError(e);
-                        return;
                     }
                 }
 
                 @Override
                 public void onError(Throwable t) {
-                    log.warn("InstallSnapshot stream error", t);
-                    responseObserver.onError(t);
+                    log.warn("InstallSnapshot stream error from {}: {}", leaderId, t.getMessage());
                 }
 
                 @Override
                 public void onCompleted() {
-                    responseObserver.onNext(SnapshotResponse.newBuilder()
-                        .setLastIncludedIndex(lastIndex)
-                        .build());
-                    responseObserver.onCompleted();
+                    try {
+                        if (receivedCount != totalChunks || installSnapshotHandler == null) {
+                            log.warn("InstallSnapshot incomplete: received {}/{} chunks", receivedCount, totalChunks);
+                            responseObserver.onNext(SnapshotResponse.newBuilder()
+                                .setLastIncludedIndex(-1)
+                                .build());
+                            responseObserver.onCompleted();
+                            return;
+                        }
+
+                        // Reassemble all chunks
+                        int totalSize = 0;
+                        for (byte[] c : chunks) {
+                            totalSize += c != null ? c.length : 0;
+                        }
+                        byte[] fullData = new byte[totalSize];
+                        int offset = 0;
+                        for (byte[] c : chunks) {
+                            if (c != null) {
+                                System.arraycopy(c, 0, fullData, offset, c.length);
+                                offset += c.length;
+                            }
+                        }
+
+                        // Construct DTO (complete snapshot, totalChunks=1)
+                        RaftTransport.InstallSnapshotRequest dtoReq = new RaftTransport.InstallSnapshotRequest(
+                            epoch, leaderId, lastIncludedIndex, lastIncludedEpoch,
+                            0, 1, fullData);
+
+                        RaftTransport.InstallSnapshotResponse dtoResp =
+                            installSnapshotHandler.apply(dtoReq);
+
+                        responseObserver.onNext(SnapshotResponse.newBuilder()
+                            .setLastIncludedIndex(dtoResp.bytesReceived())
+                            .build());
+                        responseObserver.onCompleted();
+                    } catch (Exception e) {
+                        log.error("InstallSnapshot completion error", e);
+                        responseObserver.onError(e);
+                    }
                 }
             };
         }
