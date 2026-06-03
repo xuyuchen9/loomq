@@ -355,13 +355,8 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             // we reject the snapshot (leader will retry).
             java.util.List<com.loomq.domain.intent.Intent> decoded = decodeStoreSnapshot(request.data());
 
+            // Phase 1: upsert-then-prune (requires replication lock to block applyCommitted)
             synchronized (replication) {
-                // Upsert new data first (overwrites existing, no clear needed)
-                // If upsert fails mid-loop, the store has partial snapshot data.
-                // This is acceptable: upsert is idempotent and the leader retries
-                // the snapshot on the next heartbeat, converging to the correct state.
-                // applyCommitted() is blocked by this lock, so no stale entries
-                // can overwrite snapshot data during the upsert.
                 java.util.Set<String> snapshotIds = new java.util.HashSet<>();
                 for (com.loomq.domain.intent.Intent intent : decoded) {
                     store.upsert(intent);
@@ -375,9 +370,13 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                     store.delete(id);
                 }
 
-                raftLog.compactThrough(request.lastIncludedIndex(), request.lastIncludedEpoch());
                 replication.resetToSnapshot(request.lastIncludedIndex());
             }
+
+            // Phase 2: compact WAL outside the replication lock to avoid deadlock
+            // (compactThrough is synchronized on RaftLog, which could deadlock if
+            // another thread holds RaftLog lock and waits for replication lock)
+            raftLog.compactThrough(request.lastIncludedIndex(), request.lastIncludedEpoch());
             log.info("InstallSnapshot applied: {} intents, index={}, epoch={}",
                 decoded.size(), request.lastIncludedIndex(), request.lastIncludedEpoch());
             return request.lastIncludedIndex();
@@ -528,20 +527,16 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                     int count = (int) Math.min(lastIdx - nextIdx + 1, MAX_ENTRIES_PER_APPEND);
                     if (count <= 0) continue;
 
-                    byte[][] entries = new byte[count][];
+                    // Read entries, stopping at first null (truncated or I/O error)
+                    java.util.List<byte[]> entryList = new java.util.ArrayList<>(count);
                     for (int i = 0; i < count; i++) {
                         byte[] entry = raftLog.readEntryRaw(nextIdx + i);
-                        if (entry == null) {
-                            entries[i] = new byte[0];
-                        } else {
-                            entries[i] = entry;
-                        }
+                        if (entry == null) break;
+                        entryList.add(entry);
                     }
-
-                    // Track the max index covered by this in-flight RPC
-                    ps.inflightMaxIndex = nextIdx + count - 1;
-
-                    java.util.List<byte[]> entryList = java.util.Arrays.asList(entries);
+                    if (entryList.isEmpty()) continue;
+                    // Update inflightMaxIndex to actual last entry sent
+                    ps.inflightMaxIndex = nextIdx + entryList.size() - 1;
                     transport.sendAppendEntries(ps.peerId,
                             new RaftTransport.AppendEntriesRequest(
                                 currentEpoch, nodeId, prevLogIndex, prevLogEpoch, entryList, commitIdx))

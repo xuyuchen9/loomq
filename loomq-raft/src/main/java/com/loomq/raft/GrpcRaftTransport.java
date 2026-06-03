@@ -369,11 +369,18 @@ public class GrpcRaftTransport implements RaftTransport {
                             return;
                         }
                         if (totalChunks == -1) {
+                            int remoteTotalChunks = chunk.getTotalChunks();
+                            if (remoteTotalChunks <= 0 || remoteTotalChunks > 10_000) {
+                                errored.set(true);
+                                responseObserver.onError(new IllegalArgumentException(
+                                    "Invalid totalChunks: " + remoteTotalChunks));
+                                return;
+                            }
                             epoch = chunk.getEpoch();
                             leaderId = chunk.getLeaderId();
                             lastIncludedIndex = chunk.getLastIncludedIndex();
                             lastIncludedEpoch = chunk.getLastIncludedEpoch();
-                            totalChunks = chunk.getTotalChunks();
+                            totalChunks = remoteTotalChunks;
                             chunks = new byte[totalChunks][];
                         }
 
