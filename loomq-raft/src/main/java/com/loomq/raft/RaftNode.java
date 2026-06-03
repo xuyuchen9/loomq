@@ -357,6 +357,11 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
             synchronized (replication) {
                 // Upsert new data first (overwrites existing, no clear needed)
+                // If upsert fails mid-loop, the store has partial snapshot data.
+                // This is acceptable: upsert is idempotent and the leader retries
+                // the snapshot on the next heartbeat, converging to the correct state.
+                // applyCommitted() is blocked by this lock, so no stale entries
+                // can overwrite snapshot data during the upsert.
                 java.util.Set<String> snapshotIds = new java.util.HashSet<>();
                 for (com.loomq.domain.intent.Intent intent : decoded) {
                     store.upsert(intent);
