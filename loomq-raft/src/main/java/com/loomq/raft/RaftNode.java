@@ -321,10 +321,10 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             .thenAccept(response -> {
                 if (requestGeneration != ps.requestGeneration) return;
                 if (response.bytesReceived() >= 0) {
-                    ps.nextIndex = snapshotIndex + 1;
-                    ps.matchIndex = snapshotIndex;
                     // Compact log now that snapshot is confirmed by follower
                     raftLog.compactThrough(snapshotIndex, snapshotEpoch);
+                    ps.nextIndex = snapshotIndex + 1;
+                    ps.matchIndex = snapshotIndex;
                     log.info("InstallSnapshot accepted by {} (index={})", peerId, snapshotIndex);
                 } else {
                     log.warn("InstallSnapshot rejected by {}", peerId);
