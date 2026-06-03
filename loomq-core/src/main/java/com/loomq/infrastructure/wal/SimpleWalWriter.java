@@ -588,9 +588,9 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
 
         for (Segment seg : toRemove) {
             try {
+                seg.closed = true;       // 标记关闭优先，防止 flushLoop 并发访问已释放的 arena
                 seg.mappedRegion.force();
                 seg.arena.close();       // 释放原生内存映射，防止虚拟内存累积
-                seg.closed = true;
                 seg.channel.close();
                 Files.deleteIfExists(seg.path);
                 segments.remove(seg);
@@ -645,10 +645,10 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
                 if (seg.mappedRegion != null) {
                     seg.mappedRegion.force();
                 }
+                seg.closed = true;
                 if (seg.arena != null) {
                     seg.arena.close();       // 释放原生内存映射，防止虚拟内存累积
                 }
-                seg.closed = true;
                 if (seg.channel != null && seg.channel.isOpen()) {
                     seg.channel.close();
                 }
