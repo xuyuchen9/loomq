@@ -331,7 +331,8 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                 }
             })
             .exceptionally(ex -> {
-                log.error("InstallSnapshot failed for {}: {}", peerId, ex.getMessage(), ex);
+                log.error("InstallSnapshot failed for {}: {} (compactThrough may have failed, disk space not reclaimed)",
+                    peerId, ex.getMessage(), ex);
                 return null;
             });
     }
