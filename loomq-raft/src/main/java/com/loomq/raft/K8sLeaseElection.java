@@ -45,7 +45,6 @@ public class K8sLeaseElection implements LeaderElection {
     private volatile String currentLeader = null;
     private volatile long currentEpoch = 0;
     private ScheduledFuture<?> renewTask;
-    private volatile long lastKnownRenewTimeMicros = 0;
     private volatile long lastRenewNanoTime = 0;
     private final long clockSkewBufferSeconds;
 
@@ -89,17 +88,13 @@ public class K8sLeaseElection implements LeaderElection {
 
     @Override
     public boolean isLeader() {
-        if (role != RaftRole.LEADER) return false;
+        return role == RaftRole.LEADER && !isLeaseExpiredMonotonic();
+    }
 
-        // Monotonic clock check: if we haven't renewed within leaseDuration, step down
+    private boolean isLeaseExpiredMonotonic() {
+        if (lastRenewNanoTime == 0) return false;
         long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - lastRenewNanoTime);
-        if (elapsedMs > config.leaseDurationSeconds() * 1000L) {
-            log.warn("Lease expired (monotonic clock), elapsed={}ms, stepping down", elapsedMs);
-            stepDown(currentEpoch);
-            return false;
-        }
-
-        return true;
+        return elapsedMs > config.leaseDurationSeconds() * 1000L;
     }
 
     @Override
@@ -133,6 +128,14 @@ public class K8sLeaseElection implements LeaderElection {
             renewTask.cancel(false);
         }
         scheduler.shutdown();
+        try {
+            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                scheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
         role = RaftRole.FOLLOWER;
     }
 
@@ -182,6 +185,11 @@ public class K8sLeaseElection implements LeaderElection {
      */
     private void tryAcquireLease() {
         try {
+            if (role == RaftRole.LEADER && isLeaseExpiredMonotonic()) {
+                log.warn("Lease expired (monotonic clock), stepping down");
+                stepDown(currentEpoch);
+            }
+
             V1Lease existingLease = readLease();
 
             if (existingLease == null) {
@@ -238,7 +246,7 @@ public class K8sLeaseElection implements LeaderElection {
                     .leaseTransitions((int) 0));
 
             coordinationApi.createNamespacedLease(config.namespace(), lease).execute();
-            updateFencingState(lease);
+            updateFencingState();
             becomeLeader(0);
             log.info("Created Lease: holder={}, transitions={}", config.podName(), 0);
         } catch (ApiException e) {
@@ -265,7 +273,7 @@ public class K8sLeaseElection implements LeaderElection {
 
             coordinationApi.replaceNamespacedLease(
                 config.leaseName(), config.namespace(), existingLease).execute();
-            updateFencingState(existingLease);
+            updateFencingState();
 
             becomeLeader(newTransitions);
             log.info("Updated Lease: holder={}, transitions={}", config.podName(), newTransitions);
@@ -283,9 +291,6 @@ public class K8sLeaseElection implements LeaderElection {
             return true;
         }
         OffsetDateTime renewTime = lease.getSpec().getRenewTime();
-        if (renewTime == null) {
-            return true;
-        }
         int durationSeconds = lease.getSpec().getLeaseDurationSeconds() != null
             ? lease.getSpec().getLeaseDurationSeconds()
             : config.leaseDurationSeconds();
@@ -295,11 +300,7 @@ public class K8sLeaseElection implements LeaderElection {
         return OffsetDateTime.now().isAfter(expiryTime);
     }
 
-    private void updateFencingState(V1Lease lease) {
-        OffsetDateTime renewTime = lease.getSpec().getRenewTime();
-        if (renewTime != null) {
-            lastKnownRenewTimeMicros = renewTime.toInstant().toEpochMilli() * 1000;
-        }
+    private void updateFencingState() {
         lastRenewNanoTime = System.nanoTime();
     }
 
