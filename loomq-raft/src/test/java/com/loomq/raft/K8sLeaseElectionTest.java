@@ -231,6 +231,42 @@ class K8sLeaseElectionTest {
     }
 
     @Test
+    void onAppendEntriesAfterStopShouldBeNoOp() throws Exception {
+        K8sLeaseConfig config = new K8sLeaseConfig(15, 4, "default", "loomq-leader", "pod-1");
+        ApiClient dummyClient = new ApiClient();
+        K8sLeaseElection election = new K8sLeaseElection(config, wal, dummyClient);
+
+        // Force to LEADER with a known epoch
+        Field roleField = K8sLeaseElection.class.getDeclaredField("role");
+        roleField.setAccessible(true);
+        roleField.set(election, RaftRole.LEADER);
+
+        Field epochField = K8sLeaseElection.class.getDeclaredField("currentEpoch");
+        epochField.setAccessible(true);
+        epochField.set(election, 1L);
+
+        AtomicBoolean followerFired = new AtomicBoolean(false);
+        election.addBecomeFollowerListener(epoch -> followerFired.set(true));
+
+        // Stop the election — sets role=FOLLOWER, stopped=true
+        election.stop();
+
+        // Try to step down via AppendEntries with a higher epoch — should be no-op
+        // because stopped=true. Without the guard, onAppendEntries would update
+        // currentEpoch to 5 and currentLeader to "other-pod" even after stop.
+        election.onAppendEntries(5L, "other-pod");
+
+        assertEquals(RaftRole.FOLLOWER, election.role(),
+            "role should be FOLLOWER (set by stop()), not changed by onAppendEntries");
+        assertFalse(followerFired.get(),
+            "onBecomeFollower callback should NOT fire after stop");
+        assertEquals(1L, election.currentEpoch(),
+            "epoch should NOT be updated after stop");
+        assertEquals(null, election.currentLeader(),
+            "leader should NOT be updated after stop");
+    }
+
+    @Test
     void multipleListenersShouldAllFire() throws Exception {
         K8sLeaseConfig config = new K8sLeaseConfig(15, 4, "default", "loomq-leader", "pod-1");
         ApiClient dummyClient = new ApiClient();

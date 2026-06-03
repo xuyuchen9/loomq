@@ -145,17 +145,10 @@ public class K8sLeaseElection implements LeaderElection {
 
     @Override
     public synchronized void onAppendEntries(long leaderEpoch, String leaderId) {
+        if (stopped) return;
         if (leaderEpoch >= currentEpoch) {
             if (role != RaftRole.FOLLOWER) {
-                role = RaftRole.FOLLOWER;
-                currentEpoch = leaderEpoch;
-                currentLeader = leaderId;
-                persistEpoch(leaderEpoch);
-                log.info("Stepped down to FOLLOWER via AppendEntries: pod={}, leader={}, epoch={}",
-                    config.podName(), leaderId, leaderEpoch);
-                for (Consumer<Long> listener : onBecomeFollowerListeners) {
-                    listener.accept(leaderEpoch);
-                }
+                becomeFollower(leaderId, leaderEpoch);
             } else {
                 currentLeader = leaderId;
                 if (leaderEpoch > currentEpoch) {
@@ -310,20 +303,37 @@ public class K8sLeaseElection implements LeaderElection {
         lastRenewNanoTime = System.nanoTime();
     }
 
-    private synchronized void becomeLeader(long epoch) {
+    /**
+     * Central role transition. All role changes go through here.
+     *
+     * @param target the desired role
+     * @param leader the leader ID (null for stepDown)
+     * @param epoch the new epoch
+     */
+    private synchronized void transitionRole(RaftRole target, String leader, long epoch) {
         if (stopped) return;
         long safeEpoch = Math.max(epoch, currentEpoch);
-        if (role != RaftRole.LEADER) {
-            role = RaftRole.LEADER;
-            currentLeader = config.podName();
+        if (role != target) {
+            role = target;
+            currentLeader = leader;
             currentEpoch = safeEpoch;
             persistEpoch(safeEpoch);
-            log.info("Became LEADER: pod={}, epoch={}", config.podName(), safeEpoch);
-            for (Consumer<Long> listener : onBecomeLeaderListeners) {
-                listener.accept(safeEpoch);
+            if (target == RaftRole.LEADER) {
+                log.info("Became LEADER: pod={}, epoch={}", config.podName(), safeEpoch);
+                for (Consumer<Long> listener : onBecomeLeaderListeners) {
+                    listener.accept(safeEpoch);
+                }
+            } else {
+                log.info("Became FOLLOWER: pod={}, leader={}, epoch={}", config.podName(), leader, safeEpoch);
+                for (Consumer<Long> listener : onBecomeFollowerListeners) {
+                    listener.accept(safeEpoch);
+                }
             }
         } else {
-            // Already leader — just update epoch if changed
+            // Already in target role — just update leader/epoch if changed
+            if (leader != null) {
+                currentLeader = leader;
+            }
             if (safeEpoch != currentEpoch) {
                 currentEpoch = safeEpoch;
                 persistEpoch(safeEpoch);
@@ -331,25 +341,12 @@ public class K8sLeaseElection implements LeaderElection {
         }
     }
 
+    private synchronized void becomeLeader(long epoch) {
+        transitionRole(RaftRole.LEADER, config.podName(), epoch);
+    }
+
     private synchronized void becomeFollower(String leader, long epoch) {
-        if (stopped) return;
-        long safeEpoch = Math.max(epoch, currentEpoch);
-        if (role != RaftRole.FOLLOWER) {
-            role = RaftRole.FOLLOWER;
-            currentLeader = leader;
-            currentEpoch = safeEpoch;
-            persistEpoch(safeEpoch);
-            log.info("Became FOLLOWER: pod={}, leader={}, epoch={}", config.podName(), leader, safeEpoch);
-            for (Consumer<Long> listener : onBecomeFollowerListeners) {
-                listener.accept(safeEpoch);
-            }
-        } else {
-            currentLeader = leader;
-            if (safeEpoch != currentEpoch) {
-                currentEpoch = safeEpoch;
-                persistEpoch(safeEpoch);
-            }
-        }
+        transitionRole(RaftRole.FOLLOWER, leader, epoch);
     }
 
     /**
