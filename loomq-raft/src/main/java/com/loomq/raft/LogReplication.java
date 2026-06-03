@@ -185,13 +185,16 @@ public class LogReplication {
         long applied = lastApplied.get();
         while (applied < committed) {
             applied++;
-            lastApplied.set(applied);
             byte[] entryPayload = raftLog.readEntry(applied);
-            if (entryPayload == null || entryPayload.length == 0) continue;
+            if (entryPayload == null || entryPayload.length == 0) {
+                lastApplied.set(applied); // no-op entry, safe to advance
+                continue;
+            }
             try {
                 Intent intent = IntentBinaryCodec.decode(entryPayload);
                 boolean isNew = store.findById(intent.getIntentId()) == null;
                 store.upsert(intent);
+                lastApplied.set(applied); // upsert 成功后才推进
                 if (runtimeListener != null) {
                     try {
                         runtimeListener.onCommittedIntent(intent, isNew, election.role() == RaftRole.LEADER);
@@ -205,6 +208,7 @@ public class LogReplication {
             } catch (Exception e) {
                 log.error("Failed to apply committed entry at index {}", applied, e);
                 failAppliedWaiter(applied, e);
+                break; // stop applying — next entries depend on this one
             }
         }
         metrics.updateRaftCommitIndex(commitIndex.get());
