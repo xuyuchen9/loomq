@@ -54,19 +54,18 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private volatile long leaderGeneration = 0;
 
     public RaftNode(RaftConfig config, WalAccessor wal, IntentStore store, RaftTransport transport) {
-        this(config, wal, store, transport, null, null);
+        this(config, wal, store, transport, null, new StandaloneElection(wal));
     }
 
     public RaftNode(RaftConfig config, WalAccessor wal, IntentStore store, RaftTransport transport,
                     RaftRuntimeListener runtimeListener) {
-        this(config, wal, store, transport, runtimeListener, null);
+        this(config, wal, store, transport, runtimeListener, new StandaloneElection(wal));
     }
 
     /**
      * 创建 RaftNode，使用外部提供的 LeaderElection 实现。
      *
-     * <p>当 externalElection 不为 null 时，使用外部选举实现（如 K8sLeaseElection）；
-     * 否则创建默认的 RaftElection。
+     * <p>externalElection 不能为 null，必须显式传入（K8sLeaseElection 或 StandaloneElection）。
      */
     public RaftNode(RaftConfig config, WalAccessor wal, IntentStore store, RaftTransport transport,
                     RaftRuntimeListener runtimeListener, LeaderElection externalElection) {
@@ -86,13 +85,10 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             }
         }
         this.raftLog = new RaftLog(wal);
-        if (externalElection != null) {
-            this.election = externalElection;
-        } else {
-            RaftElection raftElection = new RaftElection(nodeId, wal, config.peers(),
-                config.electionMinMs(), config.electionMaxMs());
-            this.election = raftElection;
+        if (externalElection == null) {
+            throw new IllegalArgumentException("externalElection is required (K8sLeaseElection or StandaloneElection)");
         }
+        this.election = externalElection;
         this.replication = new LogReplication(nodeId, wal, raftLog, store, election, runtimeListener);
         this.heartbeatTimer = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "raft-heartbeat-" + nodeId);
@@ -132,10 +128,6 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         // Election lifecycle callbacks
         election.addBecomeLeaderListener(this::onBecomeLeader);
         election.addBecomeFollowerListener(this::onBecomeFollower);
-        // RaftElection 特有的选举开始回调 — 构造时类型判断，不是运行时分发
-        if (election instanceof RaftElection raftElection) {
-            raftElection.setOnElectionStarted(this::onElectionStarted);
-        }
     }
 
     public void start() {
@@ -150,25 +142,32 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
 
     @Override
     public void close() {
-        stopHeartbeat();  // Stop periodic heartbeat FIRST
-        // 优雅关机：如果是 Leader，等待异步复制完成
-        if (isLeader() && !peerStates.isEmpty() && shutdownTimeoutMs > 0) {
-            gracefulShutdown();  // Now safe to send final heartbeats without racing
+        try {
+            stopHeartbeat();
+            if (isLeader() && !peerStates.isEmpty() && shutdownTimeoutMs > 0) {
+                gracefulShutdown();
+            }
+        } catch (Exception e) {
+            log.error("Error during graceful shutdown", e);
+        } finally {
+            heartbeatTimer.shutdown();
+            election.stop();
+            replication.failPendingWaiters(new IllegalStateException("Raft node closed"));
+            notifyRuntimeRole(RaftRole.FOLLOWER);
+            metrics.updateRaftRole("OFFLINE");
+            metrics.updateRaftLeaderId(null);
+            metrics.updateRaftReplicationLag(0);
+            metrics.updateRaftConnectedPeers(0);
+            metrics.updateRaftTotalPeers(0);
+            if (transport != null) {
+                try {
+                    transport.close();
+                } catch (Exception e) {
+                    log.error("Error closing transport", e);
+                }
+            }
+            log.info("RaftNode closed: node={}", nodeId);
         }
-
-        heartbeatTimer.shutdown();
-        election.stop();
-        replication.failPendingWaiters(new IllegalStateException("Raft node closed"));
-        notifyRuntimeRole(RaftRole.FOLLOWER);
-        metrics.updateRaftRole("OFFLINE");
-        metrics.updateRaftLeaderId(null);
-        metrics.updateRaftReplicationLag(0);
-        metrics.updateRaftConnectedPeers(0);
-        metrics.updateRaftTotalPeers(0);
-        if (transport != null) {
-            transport.close();
-        }
-        log.info("RaftNode closed: node={}", nodeId);
     }
 
     /**
@@ -191,7 +190,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
         // 先做一次心跳，触发复制
         sendHeartbeats();
 
-        while (System.currentTimeMillis() < deadline && commitIdx < lastLogIdx) {
+        while (System.currentTimeMillis() < deadline && commitIdx < lastLogIdx && isLeader()) {
             try {
                 Thread.sleep(100);
                 sendHeartbeats();
@@ -338,6 +337,10 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                     } else {
                         log.warn("InstallSnapshot rejected by {}", peerId);
                     }
+                })
+                .exceptionally(ex -> {
+                    log.error("InstallSnapshot failed for {}: {}", peerId, ex.getMessage(), ex);
+                    return null;
                 });
         } else {
             // Large snapshot: chunked transfer
@@ -495,16 +498,6 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
             result.add(intent);
         }
         return result;
-    }
-
-    // ========== Vote coordination ==========
-
-    private void onElectionStarted(long epoch) {
-        syncRaftMetrics();
-        // RequestVote RPC 已从 RaftTransport 接口移除。
-        // K8s Lease 模式使用外部选主，Standalone 模式自选举。
-        // 多节点 Raft 选举将在后续版本中通过 K8s Lease 替代。
-        log.info("Election started for epoch {} (voting not supported with current transport)", epoch);
     }
 
     // ========== Heartbeat ==========
