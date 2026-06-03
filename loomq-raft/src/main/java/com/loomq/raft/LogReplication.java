@@ -96,10 +96,13 @@ public class LogReplication {
         if (cause == null) {
             cause = new IllegalStateException("Raft leadership lost");
         }
-        for (CompletableFuture<Void> waiter : appliedWaiters.values()) {
-            waiter.completeExceptionally(cause);
+        // Use iterator.remove() to atomically drain — avoids race with
+        // awaitApplied() adding a new waiter between loop completion and clear().
+        var it = appliedWaiters.entrySet().iterator();
+        while (it.hasNext()) {
+            it.next().getValue().completeExceptionally(cause);
+            it.remove();
         }
-        appliedWaiters.clear();
     }
 
     /**
@@ -110,8 +113,9 @@ public class LogReplication {
      * 复杂度 O(p log p)，支持数十节点集群。
      */
     public void advanceCommitIndex(long[] matchIndices, long currentEpoch) {
-        java.util.Arrays.sort(matchIndices);
-        long candidate = matchIndices[matchIndices.length / 2]; // majority threshold
+        long[] sorted = matchIndices.clone();
+        java.util.Arrays.sort(sorted);
+        long candidate = sorted[sorted.length / 2]; // majority threshold
         if (candidate > commitIndex.get()
             && raftLog.readEntryEpoch(candidate) == currentEpoch) {
             commitIndex.set(candidate);
@@ -163,13 +167,10 @@ public class LogReplication {
         }
         long lastIdx = raftLog.lastIndex();
         boolean commitAdvanced = false;
-        long currentCommit = commitIndex.get();
-        if (leaderCommit > currentCommit) {
+        if (leaderCommit > commitIndex.get()) {
             long newCommit = Math.min(leaderCommit, lastIdx);
-            if (newCommit > currentCommit) {
-                commitIndex.set(newCommit);
-                commitAdvanced = true;
-            }
+            long prev = commitIndex.getAndUpdate(cur -> Math.max(cur, newCommit));
+            commitAdvanced = newCommit > prev;
         }
         if (commitAdvanced) {
             applyCommitted();
