@@ -98,11 +98,11 @@ class RaftNodeTest {
     }
 
     @Test
-    void multiNodeShouldStartAsFollower() {
+    void multiNodeShouldStartAsLeaderWithStandaloneElection() {
         RaftConfig config = new RaftConfig("node-1", List.of("node-1","node-2","node-3"), dataDir.toString(), 150, 300, 50);
         RaftNode node = new RaftNode(config, wal, store, null);
         node.start();
-        assertEquals(RaftRole.FOLLOWER, node.role(), "should start as follower in multi-node cluster");
+        assertEquals(RaftRole.LEADER, node.role(), "StandaloneElection always starts as leader");
         node.close();
     }
 
@@ -197,7 +197,7 @@ class RaftNodeTest {
 
             LoomQMetrics.MetricsSnapshot afterStart = metrics.snapshot();
             assertEquals("LEADER", afterStart.raftRole());
-            assertEquals("node-1", afterStart.raftLeaderId());
+            assertEquals("standalone", afterStart.raftLeaderId());
             assertTrue(afterStart.raftEpoch() > 0);
             assertEquals(0, afterStart.raftConnectedPeers());
             assertEquals(0, afterStart.raftTotalPeers());
@@ -210,7 +210,7 @@ class RaftNodeTest {
 
             LoomQMetrics.MetricsSnapshot afterCommit = metrics.snapshot();
             assertEquals("LEADER", afterCommit.raftRole());
-            assertEquals("node-1", afterCommit.raftLeaderId());
+            assertEquals("standalone", afterCommit.raftLeaderId());
             assertTrue(afterCommit.raftCommitIndex() >= index);
             assertTrue(afterCommit.raftLastApplied() >= index);
             assertEquals(0, afterCommit.raftCommitLag());
@@ -290,10 +290,9 @@ class RaftNodeTest {
             20_000,
             500
         );
-        RaftNode node = new RaftNode(config, wal, store, transport);
+        RaftNode node = new RaftNode(config, wal, store, transport, null, new StandaloneElection(wal));
         try {
             node.start();
-            ((RaftElection) node.getElection()).becomeLeader(1);
 
             node.getRaftLog().appendEntry(1, IntentBinaryCodec.encode(makeIntent("stale-1")));
             node.getRaftLog().appendEntry(1, IntentBinaryCodec.encode(makeIntent("stale-2")));

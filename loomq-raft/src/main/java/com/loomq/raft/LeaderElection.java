@@ -8,7 +8,6 @@ import java.util.function.Consumer;
  *
  * <p>不同环境使用不同实现：
  * <ul>
- *   <li>{@link RaftElection} — 自研 Raft 选举（多节点集群）</li>
  *   <li>{@link StandaloneElection} — 单机模式 no-op 实现</li>
  *   <li>{@link K8sLeaseElection} — K8s Lease 选主</li>
  * </ul>
