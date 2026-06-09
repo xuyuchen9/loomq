@@ -151,50 +151,10 @@ public class LoomqServerApplication {
 
         } else if (Boolean.parseBoolean(
                 resolveSetting("LOOMQ_RAFT_ENABLED", "loomq.raft.enabled", "false"))) {
-            // ---- 自研 Raft 选举 + 日志复制（向后兼容）----
-            engine.getScheduler().pause();
-            String raftNodeId = resolveSetting("LOOMQ_RAFT_NODE_ID", "loomq.raft.nodeId", nodeId);
-            String peersStr = resolveSetting("LOOMQ_RAFT_PEERS", "loomq.raft.peers", raftNodeId);
-            List<String> peers = parseRaftPeerIds(peersStr, raftNodeId);
-            List<RaftPeerTarget> peerTargets = parseRaftPeerTargets(peersStr, raftNodeId);
-            int raftPort = Integer.parseInt(
-                resolveSetting("LOOMQ_RAFT_PORT", "loomq.raft.port", "9928"));
-
-            validateRaftStartupConfig(raftNodeId, peers, peerTargets, raftPort, serverConfig);
-
-            raftRuntimeListener = new RaftRuntimeBridge(engine);
-            com.loomq.raft.RaftConfig raftConfig = new com.loomq.raft.RaftConfig(
-                raftNodeId, peers, dataDir, 150, 300, 50);
-
-            com.loomq.raft.GrpcRaftTransport raftTransport = new com.loomq.raft.GrpcRaftTransport(raftNodeId);
-            raftTransport.setListenAddress("0.0.0.0", raftPort);
-            try {
-                raftTransport.start();
-            } catch (Exception e) {
-                throw new IllegalStateException("Failed to start Raft gRPC transport", e);
-            }
-
-            raftNode = new com.loomq.raft.RaftNode(raftConfig,
-                engine.getWalAccessor(), engine.getIntentStoreInternal(), raftTransport, raftRuntimeListener);
-            if (peerTargets.isEmpty() && peers.size() > 1) {
-                logger.warn("Raft peers were configured without connectable endpoints; use peerId@host:port to enable peer connections");
-            }
-            connectRaftPeers(raftTransport, peerTargets, raftNodeId);
-
-            String replicationModeStr = resolveSetting("LOOMQ_REPLICATION_MODE", "loomq.replication.mode", "SYNC");
-            com.loomq.raft.ReplicationMode replicationMode = "SYNC".equalsIgnoreCase(replicationModeStr)
-                ? com.loomq.raft.ReplicationMode.SYNC : com.loomq.raft.ReplicationMode.ASYNC;
-
-            writeCoordinator = new RaftWriteCoordinator(
-                raftNode,
-                engine.getIntentStoreInternal(),
-                serverConfig.maxConcurrentBusinessRequests(),
-                serverConfig.httpSemaphoreTimeoutMs(),
-                5_000L,
-                replicationMode
-            );
-            logger.info("Raft mode enabled: node={}, peers={}, connectablePeers={}, replicationMode={}",
-                raftNodeId, peers, peerTargets.size(), replicationMode);
+            throw new IllegalStateException(
+                "loomq.raft.enabled=true is no longer supported. "
+                + "Use loomq.mode=distributed with K8s Lease for multi-node deployment. "
+                + "See migration guide: docs/superpowers/specs/2026-06-03-raft-code-review-fixes-design.md");
         } else {
             // ---- 单机模式 ----
             raftNode = null;
@@ -547,36 +507,6 @@ public class LoomqServerApplication {
         }
     }
 
-    static void validateRaftStartupConfig(String raftNodeId, List<String> peers,
-                                          List<RaftPeerTarget> peerTargets, int raftPort,
-                                          ServerConfig serverConfig) {
-        if (raftNodeId == null || raftNodeId.isBlank()) {
-            throw new IllegalStateException("Raft node id cannot be blank");
-        }
-        if (peers == null || peers.isEmpty()) {
-            throw new IllegalStateException("Raft peers cannot be empty");
-        }
-        if (!peers.contains(raftNodeId)) {
-            throw new IllegalStateException("Raft peer list must include the local node id: " + raftNodeId);
-        }
-        if (peers.size() > 1 && peerTargets.isEmpty()) {
-            throw new IllegalStateException(
-                "Raft cluster mode requires connectable peer endpoints; use peerId@host:port or peerId=host:port");
-        }
-        if (peerTargets.size() != Math.max(0, peers.size() - 1)) {
-            throw new IllegalStateException(
-                "Raft peer endpoints must cover every remote peer exactly once");
-        }
-        if (raftPort <= 0 || raftPort > 65535) {
-            throw new IllegalStateException("Raft port must be in range [1, 65535]");
-        }
-        if (serverConfig.port() > 0 && serverConfig.port() == raftPort) {
-            throw new IllegalStateException("Raft port must differ from HTTP server port");
-        }
-        if (serverConfig.nettyPort() > 0 && serverConfig.nettyPort() == raftPort) {
-            throw new IllegalStateException("Raft port must differ from Netty port");
-        }
-    }
 
     private static void connectRaftPeers(com.loomq.raft.RaftTransport transport,
                                          List<RaftPeerTarget> targets,

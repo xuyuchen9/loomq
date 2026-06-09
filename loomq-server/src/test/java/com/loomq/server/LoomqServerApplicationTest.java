@@ -57,28 +57,6 @@ class LoomqServerApplicationTest {
     }
 
     @Test
-    void validateRaftStartupConfigShouldRejectMissingSelfPeer() {
-        ServerConfig serverConfig = serverConfig(7928, 7929);
-        List<String> peers = List.of("node-2");
-        List<LoomqServerApplication.RaftPeerTarget> targets = List.of(
-            new LoomqServerApplication.RaftPeerTarget("node-2", "127.0.0.1", 9929));
-
-        assertThrows(IllegalStateException.class,
-            () -> LoomqServerApplication.validateRaftStartupConfig(
-                "node-1", peers, targets, 9928, serverConfig));
-    }
-
-    @Test
-    void validateRaftStartupConfigShouldRejectPortCollision() {
-        ServerConfig serverConfig = serverConfig(9928, 9928);
-        List<String> peers = List.of("node-1");
-
-        assertThrows(IllegalStateException.class,
-            () -> LoomqServerApplication.validateRaftStartupConfig(
-                "node-1", peers, List.of(), 9928, serverConfig));
-    }
-
-    @Test
     void buildReadinessResponseShouldAllowEmbeddedModeWhenWalIsHealthy() {
         Object response = LoomqServerApplication.buildReadinessResponse(null, metrics(true, 0));
 
