@@ -239,22 +239,40 @@ public class GrpcRaftTransport implements RaftTransport {
                     .withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
                     .installSnapshot(responseObserver);
 
-                for (int i = 0; i < totalChunks; i++) {
-                    int start = i * SNAPSHOT_CHUNK_SIZE;
-                    int end = Math.min(start + SNAPSHOT_CHUNK_SIZE, data.length);
-                    byte[] chunk = java.util.Arrays.copyOfRange(data, start, end);
+                // Use isReady() + setOnReadyHandler for gRPC backpressure
+                java.util.concurrent.atomic.AtomicInteger chunkIdx =
+                    new java.util.concurrent.atomic.AtomicInteger(0);
 
-                    requestObserver.onNext(SnapshotChunk.newBuilder()
-                        .setEpoch(request.epoch())
-                        .setLeaderId(request.leaderId())
-                        .setLastIncludedIndex(request.lastIncludedIndex())
-                        .setLastIncludedEpoch(request.lastIncludedEpoch())
-                        .setChunkIndex(i)
-                        .setTotalChunks(totalChunks)
-                        .setData(ByteString.copyFrom(chunk))
-                        .build());
-                }
-                requestObserver.onCompleted();
+                // Cast to CallStreamObserver to access isReady() and setOnReadyHandler
+                // Note: The StreamObserver returned by stub.installSnapshot() is a CallStreamObserver
+                io.grpc.stub.CallStreamObserver<SnapshotChunk> callStream =
+                    (io.grpc.stub.CallStreamObserver<SnapshotChunk>) requestObserver;
+
+                java.lang.Runnable onReadyHandler = () -> {
+                    while (callStream.isReady()) {
+                        int i = chunkIdx.getAndIncrement();
+                        if (i >= totalChunks) {
+                            requestObserver.onCompleted();
+                            return;
+                        }
+                        int start = i * SNAPSHOT_CHUNK_SIZE;
+                        int end = Math.min(start + SNAPSHOT_CHUNK_SIZE, data.length);
+                        byte[] chunk = java.util.Arrays.copyOfRange(data, start, end);
+                        requestObserver.onNext(SnapshotChunk.newBuilder()
+                            .setEpoch(request.epoch())
+                            .setLeaderId(request.leaderId())
+                            .setLastIncludedIndex(request.lastIncludedIndex())
+                            .setLastIncludedEpoch(request.lastIncludedEpoch())
+                            .setChunkIndex(i)
+                            .setTotalChunks(totalChunks)
+                            .setData(ByteString.copyFrom(chunk))
+                            .build());
+                    }
+                };
+                callStream.setOnReadyHandler(onReadyHandler);
+
+                // Trigger first send (gRPC will also call it later if isReady() flips)
+                onReadyHandler.run();
 
                 latch.await(deadlineSeconds, TimeUnit.SECONDS);
                 return new RaftTransport.InstallSnapshotResponse(request.epoch(), result[0]);
