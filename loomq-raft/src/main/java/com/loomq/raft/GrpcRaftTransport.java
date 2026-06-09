@@ -290,43 +290,46 @@ public class GrpcRaftTransport implements RaftTransport {
     @Override
     public void close() {
         if (grpcServer != null) {
-            grpcServer.shutdown();
-            try {
-                if (!grpcServer.awaitTermination(5, TimeUnit.SECONDS)) {
-                    grpcServer.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                grpcServer.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
+            gracefulShutdown(grpcServer);
         }
-        channels.values().forEach(channel -> {
-            channel.shutdown();
-            try {
-                if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {
-                    channel.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                channel.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-        });
-        rpcExecutor.shutdown();
+        channels.values().forEach(this::gracefulShutdown);
+        gracefulShutdown(rpcExecutor, "rpcExecutor");
+        gracefulShutdown(snapshotExecutor, "snapshotExecutor");
+    }
+
+    private void gracefulShutdown(java.util.concurrent.ExecutorService svc, String name) {
+        svc.shutdown();
         try {
-            if (!rpcExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                rpcExecutor.shutdownNow();
+            if (!svc.awaitTermination(5, TimeUnit.SECONDS)) {
+                log.warn("{} did not terminate gracefully, forcing shutdown", name);
+                svc.shutdownNow();
             }
         } catch (InterruptedException e) {
-            rpcExecutor.shutdownNow();
+            svc.shutdownNow();
             Thread.currentThread().interrupt();
         }
-        snapshotExecutor.shutdown();
+    }
+
+    private void gracefulShutdown(io.grpc.Server server) {
+        server.shutdown();
         try {
-            if (!snapshotExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                snapshotExecutor.shutdownNow();
+            if (!server.awaitTermination(5, TimeUnit.SECONDS)) {
+                server.shutdownNow();
             }
         } catch (InterruptedException e) {
-            snapshotExecutor.shutdownNow();
+            server.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void gracefulShutdown(ManagedChannel channel) {
+        channel.shutdown();
+        try {
+            if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {
+                channel.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            channel.shutdownNow();
             Thread.currentThread().interrupt();
         }
     }
