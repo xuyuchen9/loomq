@@ -48,6 +48,12 @@ public interface RaftTransport extends AutoCloseable {
     void setOnInstallSnapshot(
         Function<InstallSnapshotRequest, InstallSnapshotResponse> handler);
 
+    /**
+     * Set a supplier for the current epoch, used to reject stale InstallSnapshot
+     * requests early (before buffering all chunks).
+     */
+    void setCurrentEpochSupplier(java.util.function.Supplier<Long> supplier);
+
     // --- 连接状态查询 ---
 
     boolean isPeerConnected(String peerId);

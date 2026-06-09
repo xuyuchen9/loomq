@@ -354,6 +354,11 @@ class RaftNodeTest {
         }
 
         @Override
+        public void setCurrentEpochSupplier(java.util.function.Supplier<Long> supplier) {
+            // no-op for tests
+        }
+
+        @Override
         public boolean isPeerConnected(String peerId) {
             return true;
         }

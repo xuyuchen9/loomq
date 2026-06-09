@@ -35,6 +35,7 @@ import org.slf4j.LoggerFactory;
 public class GrpcRaftTransport implements RaftTransport {
     private static final Logger log = LoggerFactory.getLogger(GrpcRaftTransport.class);
     private static final int SNAPSHOT_CHUNK_SIZE = 256 * 1024; // 256KB per chunk
+    private static final long MAX_SNAPSHOT_BYTES = 256L * 1024 * 1024; // 256MB max snapshot
     private final String nodeId;
     private final Map<String, ManagedChannel> channels = new ConcurrentHashMap<>();
     private final Map<String, RaftServiceGrpc.RaftServiceBlockingStub> blockingStubs = new ConcurrentHashMap<>();
@@ -54,6 +55,7 @@ public class GrpcRaftTransport implements RaftTransport {
     // Server-side handlers (DTO-based)
     private volatile Function<RaftTransport.AppendEntriesRequest, RaftTransport.AppendEntriesResponse> appendEntriesHandler;
     private volatile Function<RaftTransport.InstallSnapshotRequest, RaftTransport.InstallSnapshotResponse> installSnapshotHandler;
+    private volatile java.util.function.Supplier<Long> currentEpochSupplier = () -> 0L;
 
     private String listenHost;
     private int listenPort;
@@ -74,6 +76,11 @@ public class GrpcRaftTransport implements RaftTransport {
     public void setOnInstallSnapshot(
             Function<RaftTransport.InstallSnapshotRequest, RaftTransport.InstallSnapshotResponse> handler) {
         this.installSnapshotHandler = handler;
+    }
+
+    @Override
+    public void setCurrentEpochSupplier(java.util.function.Supplier<Long> supplier) {
+        this.currentEpochSupplier = supplier;
     }
 
     /** Start gRPC server to listen for incoming Raft RPCs */
@@ -376,11 +383,28 @@ public class GrpcRaftTransport implements RaftTransport {
                                     "Invalid totalChunks: " + remoteTotalChunks));
                                 return;
                             }
+                            long estimatedSize = (long) remoteTotalChunks * SNAPSHOT_CHUNK_SIZE;
+                            if (estimatedSize > MAX_SNAPSHOT_BYTES) {
+                                log.warn("Rejecting InstallSnapshot: estimated size {} > max {}", estimatedSize, MAX_SNAPSHOT_BYTES);
+                                errored.set(true);
+                                responseObserver.onError(new IllegalArgumentException(
+                                    "Snapshot too large: " + estimatedSize + " > " + MAX_SNAPSHOT_BYTES));
+                                return;
+                            }
                             epoch = chunk.getEpoch();
                             leaderId = chunk.getLeaderId();
                             lastIncludedIndex = chunk.getLastIncludedIndex();
                             lastIncludedEpoch = chunk.getLastIncludedEpoch();
                             totalChunks = remoteTotalChunks;
+                            // Early epoch check — reject stale snapshot before buffering all chunks
+                            if (currentEpochSupplier.get() > chunk.getEpoch()) {
+                                log.warn("Rejecting stale InstallSnapshot: epoch {} < current epoch {}",
+                                    chunk.getEpoch(), currentEpochSupplier.get());
+                                errored.set(true);
+                                responseObserver.onError(new io.grpc.StatusRuntimeException(
+                                    io.grpc.Status.FAILED_PRECONDITION.withDescription("Stale snapshot epoch")));
+                                return;
+                            }
                             chunks = new byte[totalChunks][];
                         }
 

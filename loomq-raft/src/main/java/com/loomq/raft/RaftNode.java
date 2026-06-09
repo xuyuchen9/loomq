@@ -113,6 +113,7 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                 return new RaftTransport.InstallSnapshotResponse(
                     request.epoch(), appliedIndex != null ? appliedIndex : -1);
             });
+            transport.setCurrentEpochSupplier(election::currentEpoch);
         }
 
         // Election lifecycle callbacks

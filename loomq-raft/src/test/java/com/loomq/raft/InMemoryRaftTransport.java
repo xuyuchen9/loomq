@@ -59,6 +59,11 @@ public class InMemoryRaftTransport implements RaftTransport {
     }
 
     @Override
+    public void setCurrentEpochSupplier(java.util.function.Supplier<Long> supplier) {
+        // no-op: test transport doesn't need epoch validation
+    }
+
+    @Override
     public boolean isPeerConnected(String peerId) {
         return true;
     }
