@@ -372,12 +372,13 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
                 }
 
                 replication.resetToSnapshot(request.lastIncludedIndex());
+                // Compact WAL inside the replication lock so the snapshot is applied
+                // atomically with log truncation. This keeps log state consistent with
+                // the in-memory store: any concurrent applyCommitted is blocked until
+                // both the reset and the compaction have completed.
+                raftLog.compactThrough(request.lastIncludedIndex(), request.lastIncludedEpoch());
             }
 
-            // Phase 2: compact WAL outside the replication lock to avoid deadlock
-            // (compactThrough is synchronized on RaftLog, which could deadlock if
-            // another thread holds RaftLog lock and waits for replication lock)
-            raftLog.compactThrough(request.lastIncludedIndex(), request.lastIncludedEpoch());
             log.info("InstallSnapshot applied: {} intents, index={}, epoch={}",
                 decoded.size(), request.lastIncludedIndex(), request.lastIncludedEpoch());
             return request.lastIncludedIndex();
