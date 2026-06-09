@@ -37,6 +37,7 @@ public class GrpcRaftTransport implements RaftTransport {
     private static final int SNAPSHOT_CHUNK_SIZE = 256 * 1024; // 256KB per chunk
     private static final long MAX_SNAPSHOT_BYTES = 256L * 1024 * 1024; // 256MB max snapshot
     private final String nodeId;
+    private final Object connectionLock = new Object();
     private final Map<String, ManagedChannel> channels = new ConcurrentHashMap<>();
     private final Map<String, RaftServiceGrpc.RaftServiceBlockingStub> blockingStubs = new ConcurrentHashMap<>();
     private final Map<String, RaftServiceGrpc.RaftServiceStub> asyncStubs = new ConcurrentHashMap<>();
@@ -116,14 +117,17 @@ public class GrpcRaftTransport implements RaftTransport {
     @Override
     public CompletableFuture<Void> connect(String peerId, String host, int port) {
         return CompletableFuture.runAsync(() -> {
-            ManagedChannel existing = channels.put(peerId,
-                ManagedChannelBuilder.forAddress(host, port).usePlaintext().build());
-            if (existing != null) {
-                existing.shutdown();
+            synchronized (connectionLock) {
+                ManagedChannel newChannel = ManagedChannelBuilder.forAddress(host, port)
+                    .usePlaintext()
+                    .build();
+                ManagedChannel existing = channels.put(peerId, newChannel);
+                if (existing != null) {
+                    existing.shutdown();
+                }
+                blockingStubs.put(peerId, RaftServiceGrpc.newBlockingStub(newChannel));
+                asyncStubs.put(peerId, RaftServiceGrpc.newStub(newChannel));
             }
-            ManagedChannel channel = channels.get(peerId);
-            blockingStubs.put(peerId, RaftServiceGrpc.newBlockingStub(channel));
-            asyncStubs.put(peerId, RaftServiceGrpc.newStub(channel));
             log.info("GrpcRaftTransport connected to {} at {}:{}", peerId, host, port);
         }, rpcExecutor);
     }
