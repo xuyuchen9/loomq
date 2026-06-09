@@ -208,8 +208,15 @@ public class LogReplication {
                 log.debug("Applied committed entry at index {}: intentId={}", applied, intent.getIntentId());
             } catch (Exception e) {
                 log.error("Failed to apply committed entry at index {}", applied, e);
+                // Fail this entry's waiter
                 failAppliedWaiter(applied, e);
-                break; // stop applying — next entries depend on this one
+                // Fail all subsequent entries' waiters — Raft requires sequential application,
+                // so entries after a failed entry cannot be safely applied.
+                for (long i = applied + 1; i <= committed; i++) {
+                    failAppliedWaiter(i,
+                        new IllegalStateException("Skipped: prior entry at index " + applied + " failed", e));
+                }
+                break;
             }
         }
         metrics.updateRaftCommitIndex(commitIndex.get());
