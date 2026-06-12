@@ -338,6 +338,28 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         return Integer.parseInt(indexPart);
     }
 
+    /**
+     * 关闭单个段：标记为已关闭 → 刷盘 → 关闭 Arena 和 FileChannel。
+     * 必须在 seg.closed = true 之后才能调用 arena.close()，
+     * 防止 flushLoop 并发访问已释放的内存映射。
+     */
+    private void closeSegment(Segment seg) {
+        try {
+            seg.closed = true;
+            if (seg.mappedRegion != null) {
+                seg.mappedRegion.force();
+            }
+            if (seg.arena != null) {
+                seg.arena.close();
+            }
+            if (seg.channel != null && seg.channel.isOpen()) {
+                seg.channel.close();
+            }
+        } catch (IOException e) {
+            logger.error("Failed to close WAL segment: {}", seg.path, e);
+        }
+    }
+
     private long writeInternal(byte[] payload) {
         if (closed.get()) {
             throw new IllegalStateException("Writer is closed");
@@ -587,18 +609,15 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
         }
 
         for (Segment seg : toRemove) {
+            closeSegment(seg);
             try {
-                seg.closed = true;       // 标记关闭优先，防止 flushLoop 并发访问已释放的 arena
-                seg.mappedRegion.force();
-                seg.arena.close();       // 释放原生内存映射，防止虚拟内存累积
-                seg.channel.close();
                 Files.deleteIfExists(seg.path);
-                segments.remove(seg);
-                logger.info("Truncated WAL segment: {} (offset range {} - {})",
-                    seg.path.getFileName(), seg.startGlobalOffset, seg.endGlobalOffset());
             } catch (IOException e) {
-                logger.error("Failed to truncate WAL segment: {}", seg.path, e);
+                logger.error("Failed to delete WAL segment: {}", seg.path, e);
             }
+            segments.remove(seg);
+            logger.info("Truncated WAL segment: {} (offset range {} - {})",
+                seg.path.getFileName(), seg.startGlobalOffset, seg.endGlobalOffset());
         }
     }
 
@@ -641,24 +660,15 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
             }
         }
         for (Segment seg : toRemove) {
+            closeSegment(seg);
             try {
-                if (seg.mappedRegion != null) {
-                    seg.mappedRegion.force();
-                }
-                seg.closed = true;
-                if (seg.arena != null) {
-                    seg.arena.close();       // 释放原生内存映射，防止虚拟内存累积
-                }
-                if (seg.channel != null && seg.channel.isOpen()) {
-                    seg.channel.close();
-                }
                 Files.deleteIfExists(seg.path);
-                segments.remove(seg);
-                logger.info("resetTo removed segment: {} (offset range {} - {})",
-                    seg.path.getFileName(), seg.startGlobalOffset, seg.endGlobalOffset());
             } catch (IOException e) {
-                logger.error("Failed to remove segment {} during resetTo", seg.path, e);
+                logger.error("Failed to delete segment {} during resetTo", seg.path, e);
             }
+            segments.remove(seg);
+            logger.info("resetTo removed segment: {} (offset range {} - {})",
+                seg.path.getFileName(), seg.startGlobalOffset, seg.endGlobalOffset());
         }
 
         if (keepSegment == null) {
@@ -945,34 +955,9 @@ public class SimpleWalWriter implements AutoCloseable, WalAccessor {
             Thread.currentThread().interrupt();
         }
 
-        // 标记所有段为已关闭，防止并发 flushLoop 访问
+        // Close all segments (mark closed → flush → close arena/channel)
         for (Segment seg : segments) {
-            seg.closed = true;
-        }
-
-        // 最终刷盘所有段
-        for (Segment seg : segments) {
-            try {
-                if (seg.mappedRegion != null) {
-                    seg.mappedRegion.force();
-                }
-            } catch (Exception e) {
-                logger.error("Final flush failed for segment {}", seg.path, e);
-            }
-        }
-
-        // 关闭所有段的 Arena 和 FileChannel
-        for (Segment seg : segments) {
-            try {
-                if (seg.arena != null) {
-                    seg.arena.close();
-                }
-                if (seg.channel != null && seg.channel.isOpen()) {
-                    seg.channel.close();
-                }
-            } catch (IOException e) {
-                logger.error("Close channel failed for segment {}", seg.path, e);
-            }
+            closeSegment(seg);
         }
 
         // 最后同步保存 Raft 元数据保证最新状态落盘
