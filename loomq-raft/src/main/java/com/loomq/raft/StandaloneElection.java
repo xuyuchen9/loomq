@@ -19,6 +19,7 @@ public class StandaloneElection implements LeaderElection {
     private volatile boolean started = false;
     private volatile long currentEpoch = 1L;
     private volatile Consumer<Long> onBecomeLeader;
+    private volatile Consumer<Long> onBecomeFollower;
 
     public StandaloneElection() {
         this(null);
@@ -79,7 +80,7 @@ public class StandaloneElection implements LeaderElection {
 
     @Override
     public void addBecomeFollowerListener(Consumer<Long> listener) {
-        // No-op: standalone never becomes follower
+        this.onBecomeFollower = listener;
     }
 
     @Override

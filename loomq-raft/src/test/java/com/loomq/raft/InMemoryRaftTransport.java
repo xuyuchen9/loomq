@@ -1,6 +1,8 @@
 package com.loomq.raft;
 
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
 /**
@@ -10,6 +12,7 @@ public class InMemoryRaftTransport implements RaftTransport {
 
     private Function<AppendEntriesRequest, AppendEntriesResponse> appendEntriesHandler;
     private Function<InstallSnapshotRequest, InstallSnapshotResponse> installSnapshotHandler;
+    private final Set<String> connectedPeers = ConcurrentHashMap.newKeySet();
 
     @Override
     public void start() {
@@ -18,12 +21,13 @@ public class InMemoryRaftTransport implements RaftTransport {
 
     @Override
     public CompletableFuture<Void> connect(String peerId, String host, int port) {
+        connectedPeers.add(peerId);
         return CompletableFuture.completedFuture(null);
     }
 
     @Override
     public void disconnect(String peerId) {
-        // no-op
+        connectedPeers.remove(peerId);
     }
 
     @Override
@@ -65,12 +69,12 @@ public class InMemoryRaftTransport implements RaftTransport {
 
     @Override
     public boolean isPeerConnected(String peerId) {
-        return true;
+        return connectedPeers.contains(peerId);
     }
 
     @Override
     public int connectedPeerCount() {
-        return 0;
+        return connectedPeers.size();
     }
 
     @Override

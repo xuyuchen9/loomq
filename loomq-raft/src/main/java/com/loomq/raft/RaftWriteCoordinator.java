@@ -267,7 +267,7 @@ public final class RaftWriteCoordinator implements WriteCoordinator {
             }
             updatePendingWrites(-1);
             // Cleanup stale intent locks (unlocked, no waiters)
-            if (needIntentLock && intentLock != null && !intentLock.isLocked() && !intentLock.hasQueuedThreads()) {
+            if (needIntentLock && intentLock != null && intentLock.getHoldCount() == 0) {
                 intentLocks.remove(intentId, intentLock);
             }
         }
