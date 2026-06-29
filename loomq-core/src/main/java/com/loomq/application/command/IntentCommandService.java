@@ -244,6 +244,12 @@ public final class IntentCommandService {
 
         Intent intent = intentStore.findByIdInternal(intentId);
         if (intent == null) {
+            // 冷意图：intent 已从 store 移除，尝试标记取消
+            if (coldSwapper != null && coldSwapper.cancelCold(intentId)) {
+                metricsCollector.incrementIntentsCancelled();
+                logger.info("Cold intent cancelled: id={}", intentId);
+                return true;
+            }
             return false;
         }
 
@@ -294,6 +300,11 @@ public final class IntentCommandService {
 
         Intent intent = intentStore.findByIdInternal(intentId);
         if (intent == null) {
+            // 冷意图尚在冷索引中，无法立即触发
+            if (coldSwapper != null && coldSwapper.isCold(intentId)) {
+                logger.warn("Cannot fire-now a cold intent (not yet swapped in): id={}", intentId);
+                return false;
+            }
             return false;
         }
 

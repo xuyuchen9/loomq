@@ -9,6 +9,8 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -51,6 +53,9 @@ public final class ColdIntentSwapper implements AutoCloseable {
 
     /** 按 executeAtEpochMs 排序的冷 Intent 索引 */
     private final ConcurrentSkipListMap<Long, List<ColdIntentEntry>> coldIndex;
+
+    /** 被用户取消的冷 Intent ID 集合，swapIn 时跳过 */
+    private final Set<String> cancelledColdIds = ConcurrentHashMap.newKeySet();
 
     private final Thread swapInThread;
     private final AtomicBoolean running;
@@ -148,6 +153,47 @@ public final class ColdIntentSwapper implements AutoCloseable {
             entry.intentId(), walPosition, intent.getExecuteAt(), intent.getPrecisionTier());
     }
 
+    // ========== 冷意图取消 ==========
+
+    /**
+     * 尝试取消一个冷 Intent。
+     *
+     * 在 coldIndex 中查找匹配的 intentId，如果找到则标记为取消，
+     * swapIn 时将跳过该 Intent。
+     *
+     * @param intentId 要取消的 Intent ID
+     * @return true 如果该 Intent 在冷索引中且已被标记为取消
+     */
+    public boolean cancelCold(String intentId) {
+        for (List<ColdIntentEntry> entries : coldIndex.values()) {
+            for (ColdIntentEntry entry : entries) {
+                if (entry.intentId().equals(intentId)) {
+                    cancelledColdIds.add(intentId);
+                    logger.info("Cold intent marked as cancelled: id={}", intentId);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 检查指定 Intent 是否在冷索引中（不含已取消的）。
+     *
+     * @param intentId 要检查的 Intent ID
+     * @return true 如果该 Intent 在冷索引中
+     */
+    public boolean isCold(String intentId) {
+        for (List<ColdIntentEntry> entries : coldIndex.values()) {
+            for (ColdIntentEntry entry : entries) {
+                if (entry.intentId().equals(intentId)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     // ========== 换入 (daemon) ==========
 
     private void swapInLoop() {
@@ -194,6 +240,19 @@ public final class ColdIntentSwapper implements AutoCloseable {
      * @return true 如果换入成功
      */
     private boolean swapIn(ColdIntentEntry entry) {
+        // 检查是否已被用户取消
+        if (cancelledColdIds.remove(entry.intentId())) {
+            logger.info("Skipping swap-in of cancelled cold intent: id={}", entry.intentId());
+            coldIndex.compute(entry.executeAtEpochMs(), (k, list) -> {
+                if (list != null) {
+                    list.remove(entry);
+                    return list.isEmpty() ? null : list;
+                }
+                return null;
+            });
+            return true; // 视为成功（已清理）
+        }
+
         try {
             // 1. 从 WAL 读取二进制 payload
             byte[] payload = walWriter.readRecord(entry.walPosition(), entry.recordLength());
