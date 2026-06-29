@@ -302,6 +302,45 @@ public class Intent {
     }
 
     /**
+     * 回滚状态（绕过状态机校验）。
+     *
+     * <p>仅限命令服务在持久化失败时回滚内存状态，不应在正常业务路径使用。</p>
+     *
+     * @param oldStatus   要回滚到的状态
+     * @param oldUpdatedAt 要恢复的 updatedAt 时间戳
+     */
+    public void rollbackStatus(IntentStatus oldStatus, Instant oldUpdatedAt) {
+        this.status = oldStatus;
+        this.updatedAt = oldUpdatedAt;
+    }
+
+    /**
+     * 回滚状态和修订号（绕过状态机校验）。
+     *
+     * <p>仅限命令服务在持久化失败时回滚内存状态，不应在正常业务路径使用。</p>
+     *
+     * @param oldStatus    要回滚到的状态
+     * @param oldUpdatedAt 要恢复的 updatedAt 时间戳
+     * @param oldRevision  要恢复的修订号
+     */
+    public void rollbackStatus(IntentStatus oldStatus, Instant oldUpdatedAt, long oldRevision) {
+        this.status = oldStatus;
+        this.updatedAt = oldUpdatedAt;
+        this.revision = oldRevision;
+    }
+
+    /**
+     * 回滚修订号（绕过单调递增约束）。
+     *
+     * <p>仅限命令服务在持久化失败时回滚内存状态，不应在正常业务路径使用。</p>
+     *
+     * @param oldRevision 要恢复的修订号
+     */
+    public void rollbackRevision(long oldRevision) {
+        this.revision = oldRevision;
+    }
+
+    /**
      * 验证状态转换是否合法
      */
     private void validateTransition(IntentStatus from, IntentStatus to) {

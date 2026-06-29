@@ -1,5 +1,6 @@
 package com.loomq.application.scheduler;
 
+import com.loomq.common.MetricsCollector;
 import com.loomq.domain.intent.PrecisionTier;
 import java.time.Instant;
 import java.util.Map;
@@ -70,8 +71,10 @@ public record ChronoscopeSnapshot(
                 bp != null ? bp.borrowedCount() : 0
             );
 
-            // TODO: wire real wake latency tracking from CohortManager
-            WakeLatencySnapshot latency = new WakeLatencySnapshot(0, 0, 0);
+            MetricsCollector.LatencySnapshot wakeupLatency =
+                MetricsCollector.getInstance().getWakeupLatencySnapshot(tier);
+            WakeLatencySnapshot latency = new WakeLatencySnapshot(
+                wakeupLatency.p50(), wakeupLatency.p95(), wakeupLatency.p99());
 
             tierSnapshots.put(tier, new TierSnapshot(
                 pendingCount,

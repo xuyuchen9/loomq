@@ -151,7 +151,7 @@ public class LoomqEngine implements AutoCloseable {
         }
 
         logger.info("╔════════════════════════════════════════════════════════╗");
-            logger.info("║       LoomQ Core Engine Starting...                    ║");
+        logger.info("║       LoomQ Core Engine Starting...                    ║");
         logger.info("║       Mode: Embedded (Zero HTTP dependencies)          ║");
         logger.info("╚════════════════════════════════════════════════════════╝");
 

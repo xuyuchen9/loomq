@@ -486,6 +486,26 @@ public class PrecisionScheduler {
      */
     public boolean removeFromSchedule(Intent intent) {
         if (intent == null) return false;
+        unindexIntent(intent.getIntentId(), executeAtMs(intent));
+        boolean removedFromBucket = bucketGroupManager.remove(intent);
+        boolean removedFromCohort = cohortManager.remove(intent.getIntentId());
+        return removedFromBucket || removedFromCohort;
+    }
+
+    /**
+     * 从调度结构中移除指定 Intent，并使用指定的旧 executeAt 清理过期索引。
+     *
+     * <p>当 caller 已修改 intent.executeAt 但需要清理旧索引条目时使用此重载。</p>
+     *
+     * @param intent       要移除的 Intent
+     * @param oldExecuteAt 索引中存储的旧 executeAt 时间
+     * @return true 如果从任一位置成功移除
+     */
+    public boolean removeFromSchedule(Intent intent, Instant oldExecuteAt) {
+        if (intent == null) return false;
+        if (oldExecuteAt != null) {
+            unindexIntent(intent.getIntentId(), oldExecuteAt.toEpochMilli());
+        }
         boolean removedFromBucket = bucketGroupManager.remove(intent);
         boolean removedFromCohort = cohortManager.remove(intent.getIntentId());
         return removedFromBucket || removedFromCohort;
@@ -566,9 +586,8 @@ public class PrecisionScheduler {
                         notifyObservers(o -> o.onDeliveryFailed(intent,
                             new com.loomq.common.exception.BackPressureException(
                                 "Dispatch queue full for tier " + tier, null, 1000)));
-                        // 回退状态，下次 scan cycle 重新入队
-                        intent.transitionTo(IntentStatus.SCHEDULED);
-                        intentStore.update(intent);
+                        // 重新放回调度结构等待下次 scan cycle（intent 仍为 SCHEDULED 状态，无需回退）
+                        addToBucketAndDispatch(intent);
                     }
                 }
 
@@ -1056,6 +1075,8 @@ public class PrecisionScheduler {
             if (intent.getAttempts() >= maxAttempts) {
                 intent.transitionTo(IntentStatus.DEAD_LETTERED);
                 intentStore.update(intent);
+                unindexIntent(intent.getIntentId(), executeAtMs(intent));
+                notifyObservers(o -> o.onDeadLettered(intent));
                 logger.warn("Intent dead-lettered after max attempts: id={}", intent.getIntentId());
             } else {
                 long oldExecuteAtMs = executeAtMs(intent);
