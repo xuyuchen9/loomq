@@ -16,17 +16,23 @@ public class StandaloneElection implements LeaderElection {
     private static final Logger log = LoggerFactory.getLogger(StandaloneElection.class);
 
     private final WalAccessor wal;
+    private final String nodeId;
     private volatile boolean started = false;
     private volatile long currentEpoch = 1L;
     private volatile Consumer<Long> onBecomeLeader;
     private volatile Consumer<Long> onBecomeFollower;
 
     public StandaloneElection() {
-        this(null);
+        this(null, "standalone");
     }
 
     public StandaloneElection(WalAccessor wal) {
+        this(wal, "standalone");
+    }
+
+    public StandaloneElection(WalAccessor wal, String nodeId) {
         this.wal = wal;
+        this.nodeId = (nodeId != null && !nodeId.isBlank()) ? nodeId : "standalone";
         if (wal != null) {
             long persisted = wal.getLastLogEpoch();
             if (persisted > 0) this.currentEpoch = persisted;
@@ -50,7 +56,7 @@ public class StandaloneElection implements LeaderElection {
 
     @Override
     public String currentLeader() {
-        return "standalone";
+        return nodeId;
     }
 
     @Override

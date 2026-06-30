@@ -51,12 +51,12 @@ public class RaftNode implements AutoCloseable, RaftStatusProvider {
     private volatile long leaderGeneration = 0;
 
     public RaftNode(RaftConfig config, WalAccessor wal, IntentStore store, RaftTransport transport) {
-        this(config, wal, store, transport, null, new StandaloneElection(wal));
+        this(config, wal, store, transport, null, new StandaloneElection(wal, config.nodeId()));
     }
 
     public RaftNode(RaftConfig config, WalAccessor wal, IntentStore store, RaftTransport transport,
                     RaftRuntimeListener runtimeListener) {
-        this(config, wal, store, transport, runtimeListener, new StandaloneElection(wal));
+        this(config, wal, store, transport, runtimeListener, new StandaloneElection(wal, config.nodeId()));
     }
 
     /**
