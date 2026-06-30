@@ -11,7 +11,6 @@ import com.loomq.config.ServerConfig;
 import com.loomq.http.netty.HttpErrorResponse;
 import com.loomq.metrics.LoomQMetrics;
 import com.loomq.spi.RaftStatusProvider;
-import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import org.junit.jupiter.api.Test;
